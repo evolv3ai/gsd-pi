@@ -5,12 +5,13 @@
 /**
  * complete-milestone handler — the core operation behind gsd_complete_milestone.
  *
- * Validates all slices are complete, updates milestone status in DB,
- * renders MILESTONE-SUMMARY.md to disk, stores rendered markdown in DB
- * for recovery, and invalidates caches.
+ * Adopted Milestones validate canonical closeout evidence and complete through
+ * one Domain Operation before rendering the durable summary projection.
+ * Unadopted imports retain the legacy assessment and hierarchy guards.
  */
 
 import { existsSync } from "node:fs";
+import { unlink } from "node:fs/promises";
 
 import {
   transaction,
@@ -23,13 +24,33 @@ import {
 import { clearPathCache, resolveMilestoneFile, targetMilestoneFile } from "../paths.js";
 import { resolveCanonicalMilestoneRoot } from "../worktree-manager.js";
 import { isClosedStatus, isDeferredStatus } from "../status-guards.js";
-import { saveFile, clearParseCache } from "../files.js";
+import { saveFile, clearParseCache, loadFile } from "../files.js";
 import { invalidateStateCache } from "../state.js";
-import { stripIdPrefix } from "../workflow-projections.js";
 import { flushWorkflowProjections } from "../projection-flush.js";
 import { writeManifest } from "../workflow-manifest.js";
 import { appendEvent } from "../workflow-events.js";
 import { logWarning, logError } from "../workflow-logger.js";
+import {
+  isMilestoneLifecycleAdopted,
+} from "../db/milestone-closeout-readiness.js";
+import type { ExecutionInvocation } from "../execution-invocation.js";
+import {
+  completeMilestone,
+  isCurrentMilestoneCompletionOperation,
+  readMilestoneCompletionReplaySourceRevision,
+  type MilestoneCompletionCloseout,
+  type MilestoneCompletionReceipt,
+} from "../milestone-lifecycle-domain-operation.js";
+import { loadEffectiveGSDPreferences } from "../preferences.js";
+import {
+  captureVerificationSourceSnapshot,
+  resolveVerificationRepositoryTargets,
+} from "../verification-source-integrity.js";
+import {
+  readMilestoneCompletionProjection,
+  renderMilestoneSummaryMarkdown,
+  type MilestoneCompletionProjection,
+} from "../milestone-summary-projection.js";
 
 export interface CompleteMilestoneParams {
   milestoneId: string;
@@ -64,72 +85,112 @@ export interface CompleteMilestoneResult {
   summaryPath: string;
   stale?: boolean;
   alreadyComplete?: boolean;
+  operationId?: string;
+  resultingRevision?: number;
+  replayed?: boolean;
+  current?: boolean;
+  superseded?: boolean;
 }
 
-function renderMilestoneSummaryMarkdown(params: CompleteMilestoneParams, completedAt: string): string {
-  const displayTitle = stripIdPrefix(params.title, params.milestoneId);
+let projectionInterleaveForTest: (() => Promise<void>) | null = null;
 
-  // Apply defaults for optional enrichment fields (#2771)
-  const keyDecisions = params.keyDecisions ?? [];
-  const keyFiles = params.keyFiles ?? [];
-  const lessonsLearned = params.lessonsLearned ?? [];
+export function _setCompleteMilestoneProjectionInterleaveForTest(
+  hook: (() => Promise<void>) | null,
+): void {
+  projectionInterleaveForTest = hook;
+}
 
-  const keyDecisionsYaml = keyDecisions.length > 0
-    ? `\n${keyDecisions.map(d => `  - ${d}`).join("\n")}`
-    : " []";
+async function removeOwnedProjection(path: string, content: string): Promise<void> {
+  if (await loadFile(path) !== content) return;
+  try {
+    await unlink(path);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+  }
+}
 
-  const keyFilesYaml = keyFiles.length > 0
-    ? `\n${keyFiles.map(f => `  - ${f}`).join("\n")}`
-    : " []";
+async function repairSupersededSummary(
+  basePath: string,
+  milestoneId: string,
+  summaryPath: string,
+  deliveredContent: string,
+): Promise<void> {
+  const currentProjection = readMilestoneCompletionProjection(milestoneId);
+  if (currentProjection && isCurrentMilestoneCompletionOperation(
+    currentProjection.operationId,
+    milestoneId,
+  )) {
+    await writeMilestoneSummaryProjectionIfCurrent(
+      basePath,
+      milestoneId,
+      currentProjection,
+    );
+    return;
+  }
 
-  const lessonsYaml = lessonsLearned.length > 0
-    ? lessonsLearned.map(l => `  - ${l}`).join("\n")
-    : "  - (none)";
+  // A canonically complete head without a matching durable event is sabotage or
+  // an imported compatibility state. Preserve its bytes rather than deleting a
+  // projection we cannot safely attribute to this delivery.
+  if (isClosedStatus(getMilestone(milestoneId)?.status ?? "")) return;
+  await removeOwnedProjection(summaryPath, deliveredContent);
+}
 
-  return `---
-id: ${params.milestoneId}
-title: "${displayTitle}"
-status: complete
-completed_at: ${completedAt}
-key_decisions:${keyDecisionsYaml}
-key_files:${keyFilesYaml}
-lessons_learned:
-${lessonsYaml}
----
+async function writeMilestoneSummaryProjectionIfCurrent(
+  basePath: string,
+  milestoneId: string,
+  projection: MilestoneCompletionProjection,
+): Promise<boolean> {
+  const milestone = getMilestone(milestoneId);
+  if (!milestone) return false;
+  const isCurrent = () => isCurrentMilestoneCompletionOperation(
+    projection.operationId,
+    milestoneId,
+  );
+  if (!isCurrent()) return false;
 
-# ${params.milestoneId}: ${displayTitle}
+  const summaryPath = targetMilestoneFile(basePath, milestoneId, "SUMMARY", milestone.title);
+  const summaryMd = renderMilestoneSummaryMarkdown(
+    milestoneId,
+    projection.completedAt,
+    projection.closeout,
+  );
+  await saveFile(summaryPath, summaryMd);
+  if (isCurrent()) return existsSync(summaryPath);
 
-**${params.oneLiner}**
+  await repairSupersededSummary(basePath, milestoneId, summaryPath, summaryMd);
+  return false;
+}
 
-## What Happened
+/** Rebuild a missing adopted SUMMARY without creating or replaying authority. */
+export async function repairAdoptedMilestoneSummaryProjection(
+  basePath: string,
+  milestoneId: string,
+): Promise<boolean> {
+  const projection = readMilestoneCompletionProjection(milestoneId);
+  if (!projection) return false;
+  return writeMilestoneSummaryProjectionIfCurrent(basePath, milestoneId, projection);
+}
 
-${params.narrative}
-
-## Success Criteria Results
-
-${params.successCriteriaResults || "Not provided."}
-
-## Definition of Done Results
-
-${params.definitionOfDoneResults || "Not provided."}
-
-## Requirement Outcomes
-
-${params.requirementOutcomes || "Not provided."}
-
-## Deviations
-
-${params.deviations || "None."}
-
-## Follow-ups
-
-${params.followUps || "None."}
-`;
+function completionCloseout(params: CompleteMilestoneParams): MilestoneCompletionCloseout {
+  return {
+    title: params.title,
+    oneLiner: params.oneLiner,
+    narrative: params.narrative,
+    successCriteriaResults: params.successCriteriaResults ?? "",
+    definitionOfDoneResults: params.definitionOfDoneResults ?? "",
+    requirementOutcomes: params.requirementOutcomes ?? "",
+    keyDecisions: params.keyDecisions ?? [],
+    keyFiles: params.keyFiles ?? [],
+    lessonsLearned: params.lessonsLearned ?? [],
+    followUps: params.followUps ?? "",
+    deviations: params.deviations ?? "",
+  };
 }
 
 export async function handleCompleteMilestone(
   params: CompleteMilestoneParams,
   basePath: string,
+  invocation?: ExecutionInvocation,
 ): Promise<CompleteMilestoneResult | { error: string }> {
   // ── Validate required fields ────────────────────────────────────────────
   if (!params.milestoneId || typeof params.milestoneId !== "string" || params.milestoneId.trim() === "") {
@@ -140,18 +201,73 @@ export async function handleCompleteMilestone(
   }
 
   const artifactBasePath = resolveCanonicalMilestoneRoot(basePath, params.milestoneId);
+  const adoptedLifecycle = isMilestoneLifecycleAdopted(params.milestoneId);
 
-  // ── Verify that verification passed ─────────────────────────────────────
-  if (params.verificationPassed !== true) {
+  // Legacy imports retain the caller gate. Adopted Milestones derive readiness
+  // only from the current canonical database receipt inside milestone.complete.
+  if (!adoptedLifecycle && params.verificationPassed !== true) {
     return { error: "verification did not pass — milestone completion blocked. verificationPassed must be explicitly set to true after all verification steps succeed" };
   }
 
+  let currentSourceRevision: string | undefined;
+  if (adoptedLifecycle) {
+    const replaySourceRevision = invocation
+      ? readMilestoneCompletionReplaySourceRevision(invocation.idempotencyKey)
+      : null;
+    if (replaySourceRevision) {
+      currentSourceRevision = replaySourceRevision;
+    } else {
+      const targets = resolveVerificationRepositoryTargets(
+        artifactBasePath,
+        loadEffectiveGSDPreferences()?.preferences,
+        null,
+        null,
+      );
+      if (targets.missingRepositoryIds.length > 0) {
+        return {
+          error: `verification source repositories are missing: ${targets.missingRepositoryIds.join(", ")}`,
+        };
+      }
+      const source = captureVerificationSourceSnapshot(targets.repositories.map((repository) => ({
+        id: repository.id,
+        cwd: repository.root,
+      })));
+      if (!source.ok) return { error: source.error };
+      currentSourceRevision = source.snapshot.aggregateRevision;
+    }
+  }
+
   // ── Guards + DB writes inside a single transaction (prevents TOCTOU) ───
-  const completedAt = new Date().toISOString();
+  let completedAt = new Date().toISOString();
   let guardError: string | null = null;
   let alreadyComplete = false;
+  let canonicalReceipt: MilestoneCompletionReceipt | undefined;
 
-  transaction(() => {
+  if (adoptedLifecycle) {
+    if (!invocation) {
+      return { error: "adopted Milestone completion requires canonical invocation identity" };
+    }
+    try {
+      canonicalReceipt = completeMilestone({
+        invocation,
+        milestoneId: params.milestoneId,
+        sourceRevision: currentSourceRevision!,
+        closeout: completionCloseout(params),
+        audit: {
+          ...(params.actorName ? { actorName: params.actorName } : {}),
+          ...(params.triggerReason ? { triggerReason: params.triggerReason } : {}),
+        },
+      });
+      completedAt = canonicalReceipt.completedAt;
+      alreadyComplete = canonicalReceipt.status === "replayed";
+    } catch (error) {
+      return { error: error instanceof Error ? error.message : String(error) };
+    }
+  } else transaction(() => {
+    if (isMilestoneLifecycleAdopted(params.milestoneId)) {
+      guardError = `Refusing legacy completion for adopted Milestone ${params.milestoneId}`;
+      return;
+    }
     // State machine preconditions (inside txn for atomicity)
     const milestone = getMilestone(params.milestoneId);
     if (!milestone) {
@@ -163,7 +279,6 @@ export async function handleCompleteMilestone(
       return;
     }
 
-    // Defense-in-depth: only a passing milestone validation permits closeout.
     const validation = getLatestAssessmentByScope(params.milestoneId, "milestone-validation");
     if (validation?.status !== "pass") {
       guardError =
@@ -207,7 +322,11 @@ export async function handleCompleteMilestone(
   }
 
   // ── Filesystem operations (outside transaction) ─────────────────────────
-  const summaryMd = renderMilestoneSummaryMarkdown(params, completedAt);
+  const summaryMd = renderMilestoneSummaryMarkdown(
+    params.milestoneId,
+    completedAt,
+    canonicalReceipt?.closeout ?? completionCloseout(params),
+  );
 
   const summaryPath =
     resolveMilestoneFile(artifactBasePath, params.milestoneId, "SUMMARY") ??
@@ -218,14 +337,43 @@ export async function handleCompleteMilestone(
       getMilestone(params.milestoneId)?.title,
     );
 
-  // Guard (#4598): if SUMMARY.md already exists on disk, do not overwrite it.
-  // This handles re-dispatch scenarios (DB/disk state divergence) where a prior
-  // completion already wrote the file. Overwriting would silently destroy the
-  // richer content the agent produced during the original completion run.
+  const isCurrent = canonicalReceipt
+    ? () => isCurrentMilestoneCompletionOperation(canonicalReceipt.operationId, params.milestoneId)
+    : () => true;
+
+  if (canonicalReceipt && !canonicalReceipt.isCurrent) {
+    return {
+      milestoneId: params.milestoneId,
+      summaryPath,
+      stale: true,
+      alreadyComplete: true,
+      operationId: canonicalReceipt.operationId,
+      resultingRevision: canonicalReceipt.resultingRevision,
+      replayed: true,
+      current: false,
+      superseded: true,
+    };
+  }
+
+  await projectionInterleaveForTest?.();
+
+  // Legacy re-dispatch preserves an existing hand-authored SUMMARY. Adopted
+  // Milestones deterministically project the durable completion closeout.
   let projectionStale = false;
-  if (!existsSync(summaryPath)) {
+  let superseded = !isCurrent();
+  if (!superseded && (canonicalReceipt || !existsSync(summaryPath))) {
     try {
       await saveFile(summaryPath, summaryMd);
+      if (!isCurrent()) {
+        superseded = true;
+        projectionStale = true;
+        await repairSupersededSummary(
+          artifactBasePath,
+          params.milestoneId,
+          summaryPath,
+          summaryMd,
+        );
+      }
     } catch (renderErr) {
       projectionStale = true;
       logWarning("projection", `complete_milestone projection write failed for ${params.milestoneId}; DB completion remains committed`, {
@@ -243,30 +391,60 @@ export async function handleCompleteMilestone(
   // Separate try/catch per step so a projection failure doesn't prevent
   // the event log entry (critical for worktree reconciliation).
   try {
-    const flushed = await flushWorkflowProjections(artifactBasePath, { milestoneId: params.milestoneId });
-    projectionStale ||= flushed.stale;
+    if (!superseded) {
+      const flushed = await flushWorkflowProjections(
+        artifactBasePath,
+        { milestoneId: params.milestoneId },
+        canonicalReceipt ? { operationId: canonicalReceipt.operationId, isCurrent } : undefined,
+      );
+      projectionStale ||= flushed.stale;
+      superseded ||= flushed.superseded;
+    }
   } catch (projErr) {
     projectionStale = true;
     logWarning("tool", `complete-milestone projection warning: ${(projErr as Error).message}`);
   }
-  try {
-    writeManifest(artifactBasePath);
-  } catch (mfErr) {
-    logWarning("tool", `complete-milestone manifest warning: ${(mfErr as Error).message}`);
+  if (!superseded && isCurrent()) {
+    try {
+      writeManifest(artifactBasePath);
+    } catch (mfErr) {
+      logWarning("tool", `complete-milestone manifest warning: ${(mfErr as Error).message}`);
+    }
   }
-  try {
-    if (!alreadyComplete) {
-      appendEvent(artifactBasePath, {
-        cmd: "complete-milestone",
-        params: { milestoneId: params.milestoneId },
-        ts: new Date().toISOString(),
-        actor: "agent",
-        actor_name: params.actorName,
-        trigger_reason: params.triggerReason,
+  if (!canonicalReceipt) {
+    try {
+      if (!alreadyComplete) {
+        appendEvent(artifactBasePath, {
+          cmd: "complete-milestone",
+          params: { milestoneId: params.milestoneId },
+          ts: new Date().toISOString(),
+          actor: "agent",
+          actor_name: params.actorName,
+          trigger_reason: params.triggerReason,
+        });
+      }
+    } catch (eventErr) {
+      logError("tool", `complete-milestone event log FAILED — completion invisible to reconciliation`, { error: (eventErr as Error).message });
+    }
+  }
+
+  const current = isCurrent();
+  superseded ||= !current;
+  projectionStale ||= superseded;
+  if (canonicalReceipt && superseded) {
+    try {
+      await repairSupersededSummary(
+        artifactBasePath,
+        params.milestoneId,
+        summaryPath,
+        summaryMd,
+      );
+    } catch (cleanupError) {
+      projectionStale = true;
+      logWarning("projection", `complete_milestone superseded projection cleanup failed for ${params.milestoneId}`, {
+        error: (cleanupError as Error).message,
       });
     }
-  } catch (eventErr) {
-    logError("tool", `complete-milestone event log FAILED — completion invisible to reconciliation`, { error: (eventErr as Error).message });
   }
 
   return {
@@ -274,5 +452,12 @@ export async function handleCompleteMilestone(
     summaryPath,
     ...(projectionStale ? { stale: true } : {}),
     ...(alreadyComplete ? { alreadyComplete: true } : {}),
+    ...(canonicalReceipt ? {
+      operationId: canonicalReceipt.operationId,
+      resultingRevision: canonicalReceipt.resultingRevision,
+      replayed: canonicalReceipt.status === "replayed",
+      current,
+      ...(superseded ? { superseded: true } : {}),
+    } : {}),
   };
 }

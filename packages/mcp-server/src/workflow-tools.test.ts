@@ -7,6 +7,7 @@ import { mkdirSync, rmSync, writeFileSync, readFileSync, existsSync, statSync } 
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { randomUUID } from "node:crypto";
+import { execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { setTimeout as delay } from "node:timers/promises";
 import { z } from "zod";
@@ -424,6 +425,31 @@ describe("workflow MCP tools", () => {
       "repairSummary",
     ]);
     assert.ok(!("idempotencyKey" in tool.params));
+  });
+
+  it("keeps Milestone lifecycle invocation identity out of public schemas", () => {
+    const server = makeMockServer();
+    registerWorkflowTools(server as any);
+
+    for (const name of [
+      "gsd_complete_milestone",
+      "gsd_milestone_complete",
+      "gsd_milestone_reopen",
+      "gsd_reopen_milestone",
+      "gsd_prepare_milestone_subjective_uat",
+      "gsd_answer_milestone_subjective_uat",
+    ]) {
+      const tool = server.tools.find((candidate) => candidate.name === name);
+      assert.ok(tool, `${name} must be registered`);
+      assert.ok(!("idempotencyKey" in tool.params), `${name} identity must remain private`);
+      assert.ok(!("actorId" in tool.params), `${name} actor identity must remain private`);
+    }
+    const answer = server.tools.find((candidate) =>
+      candidate.name === "gsd_answer_milestone_subjective_uat"
+    );
+    assert.ok(answer);
+    assert.ok("selectedOptionId" in answer.params);
+    assert.ok("verbatimResponse" in answer.params);
   });
 
   it("routes task recovery resume to the worktree owning the action", async () => {
@@ -1590,7 +1616,7 @@ describe("workflow MCP tools", () => {
     }
   });
 
-  it("Slice lifecycle mutations reject missing replay-stable private execution metadata", async () => {
+  it("Workflow lifecycle mutations reject missing replay-stable private execution metadata", async (t) => {
     const server = makeMockServer();
     registerWorkflowTools(server as any);
     const cases = [
@@ -1613,21 +1639,50 @@ describe("workflow MCP tools", () => {
         name: "gsd_skip_slice",
         params: { milestoneId: "M001", sliceId: "S01", reason: "Must not execute." },
       },
+      {
+        name: "gsd_validate_milestone",
+        params: {
+          milestoneId: "M001",
+          verdict: "pass",
+          remediationRound: 0,
+          successCriteriaChecklist: "- [x] Complete",
+          sliceDeliveryAudit: "| S01 | pass |",
+          crossSliceIntegration: "Passed",
+          requirementCoverage: "Covered",
+          verdictRationale: "Must not execute.",
+        },
+      },
+      {
+        name: "gsd_complete_milestone",
+        params: {
+          milestoneId: "M001",
+          title: "Must not execute",
+          oneLiner: "Missing identity",
+          narrative: "The request must fail before mutation.",
+          verificationPassed: true,
+        },
+      },
+      {
+        name: "gsd_milestone_reopen",
+        params: { milestoneId: "M001", reason: "Must not execute." },
+      },
     ];
 
     for (const entry of cases) {
-      const base = makeTmpBase();
-      try {
-        const tool = server.tools.find((candidate) => candidate.name === entry.name);
-        assert.ok(tool, `${entry.name} must be registered`);
-        const result = await tool.handler({ projectDir: base, ...entry.params }, {
-          _meta: { "io.opengsd/idempotency-key": "   " },
-        });
-        assertToolError(result, /replay-stable.*io\.opengsd\/idempotency-key/i);
-        assert.equal(existsSync(join(base, ".gsd", "gsd.db")), false);
-      } finally {
-        cleanup(base);
-      }
+      await t.test(entry.name, async () => {
+        const base = makeTmpBase();
+        try {
+          const tool = server.tools.find((candidate) => candidate.name === entry.name);
+          assert.ok(tool, `${entry.name} must be registered`);
+          const result = await tool.handler({ projectDir: base, ...entry.params }, {
+            _meta: { "io.opengsd/idempotency-key": "   " },
+          });
+          assertToolError(result, /replay-stable.*io\.opengsd\/idempotency-key/i);
+          assert.equal(existsSync(join(base, ".gsd", "gsd.db")), false);
+        } finally {
+          cleanup(base);
+        }
+      });
     }
   });
 
@@ -1645,12 +1700,16 @@ describe("workflow MCP tools", () => {
     const reopenCapturePath = join(base, "captured-reopen-args.json");
     const resumeCapturePath = join(base, "captured-recovery-resume-args.json");
     const sliceCapturePath = join(base, "captured-slice-lifecycle-args.json");
+    const milestoneCapturePath = join(base, "captured-milestone-lifecycle-args.json");
+    const validationCapturePath = join(base, "captured-milestone-validation-args.json");
     const mockModulePath = join(base, "mock-executors.mjs");
     const prevModule = process.env.GSD_WORKFLOW_EXECUTORS_MODULE;
     const prevCapture = process.env.GSD_TEST_TASK_COMPLETE_CAPTURE_PATH;
     const prevReopenCapture = process.env.GSD_TEST_TASK_REOPEN_CAPTURE_PATH;
     const prevResumeCapture = process.env.GSD_TEST_TASK_RECOVERY_RESUME_CAPTURE_PATH;
     const prevSliceCapture = process.env.GSD_TEST_SLICE_LIFECYCLE_CAPTURE_PATH;
+    const prevMilestoneCapture = process.env.GSD_TEST_MILESTONE_LIFECYCLE_CAPTURE_PATH;
+    const prevValidationCapture = process.env.GSD_TEST_MILESTONE_VALIDATION_CAPTURE_PATH;
     try {
       // Mock module: implements the WorkflowToolExecutors shape.
       // executeTaskComplete writes its received args to disk for assertion.
@@ -1660,15 +1719,43 @@ import { readFileSync, writeFileSync } from "node:fs";
 
 const noop = async () => ({ content: [{ type: "text", text: "noop" }] });
 
+function readCaptures(capturePath) {
+  try {
+    return JSON.parse(readFileSync(capturePath, "utf8"));
+  } catch (error) {
+    if (error?.code === "ENOENT") return [];
+    throw error;
+  }
+}
+
 const captureSliceLifecycle = async (executor, params, projectDir, invocation) => {
   const capturePath = process.env.GSD_TEST_SLICE_LIFECYCLE_CAPTURE_PATH;
   if (capturePath) {
-    let captures = [];
-    try { captures = JSON.parse(readFileSync(capturePath, "utf8")); } catch {}
+    const captures = readCaptures(capturePath);
     captures.push({ executor, params, projectDir, invocation });
     writeFileSync(capturePath, JSON.stringify(captures, null, 2));
   }
   return { content: [{ type: "text", text: "mock slice " + executor }] };
+};
+
+const captureMilestoneLifecycle = async (executor, params, projectDir, invocation) => {
+  const capturePath = process.env.GSD_TEST_MILESTONE_LIFECYCLE_CAPTURE_PATH;
+  if (capturePath) {
+    const captures = readCaptures(capturePath);
+    captures.push({ executor, params, projectDir, invocation });
+    writeFileSync(capturePath, JSON.stringify(captures, null, 2));
+  }
+  return { content: [{ type: "text", text: "mock milestone " + executor }] };
+};
+
+const captureMilestoneValidation = async (params, projectDir, options) => {
+  const capturePath = process.env.GSD_TEST_MILESTONE_VALIDATION_CAPTURE_PATH;
+  if (capturePath) {
+    const captures = readCaptures(capturePath);
+    captures.push({ params, projectDir, invocation: options?.invocation });
+    writeFileSync(capturePath, JSON.stringify(captures, null, 2));
+  }
+  return { content: [{ type: "text", text: "mock milestone validate" }] };
 };
 
 export const SUPPORTED_SUMMARY_ARTIFACT_TYPES = ["SUMMARY", "UAT", "CONTEXT", "PLAN"];
@@ -1680,8 +1767,9 @@ export const executeReplanTask = noop;
 export const executeReworkBriefSave = noop;
 export const executeSliceComplete = (params, projectDir, invocation) =>
   captureSliceLifecycle("complete", params, projectDir, invocation);
-export const executeCompleteMilestone = noop;
-export const executeValidateMilestone = noop;
+export const executeCompleteMilestone = (params, projectDir, invocation) =>
+  captureMilestoneLifecycle("complete", params, projectDir, invocation);
+export const executeValidateMilestone = captureMilestoneValidation;
 export const executeReassessRoadmap = noop;
 export const executeSaveGateResult = noop;
 export const executeSummarySave = noop;
@@ -1690,7 +1778,8 @@ export const executeSliceReopen = (params, projectDir, invocation) =>
   captureSliceLifecycle("reopen", params, projectDir, invocation);
 export const executeSkipSlice = (params, projectDir, invocation) =>
   captureSliceLifecycle("skip", params, projectDir, invocation);
-export const executeMilestoneReopen = noop;
+export const executeMilestoneReopen = (params, projectDir, invocation) =>
+  captureMilestoneLifecycle("reopen", params, projectDir, invocation);
 
 export const executeTaskReopen = async (params, projectDir, invocation) => {
   const capturePath = process.env.GSD_TEST_TASK_REOPEN_CAPTURE_PATH;
@@ -1728,6 +1817,8 @@ export const executeTaskComplete = async (params, projectDir, invocation) => {
       process.env.GSD_TEST_TASK_REOPEN_CAPTURE_PATH = reopenCapturePath;
       process.env.GSD_TEST_TASK_RECOVERY_RESUME_CAPTURE_PATH = resumeCapturePath;
       process.env.GSD_TEST_SLICE_LIFECYCLE_CAPTURE_PATH = sliceCapturePath;
+      process.env.GSD_TEST_MILESTONE_LIFECYCLE_CAPTURE_PATH = milestoneCapturePath;
+      process.env.GSD_TEST_MILESTONE_VALIDATION_CAPTURE_PATH = validationCapturePath;
 
       // Fresh import bypasses the cached workflowToolExecutorsPromise so the
       // mock module is actually loaded for this test.
@@ -1746,6 +1837,12 @@ export const executeTaskComplete = async (params, projectDir, invocation) => {
       const sliceReopenTool = server.tools.find((t) => t.name === "gsd_slice_reopen");
       const sliceReopenAlias = server.tools.find((t) => t.name === "gsd_reopen_slice");
       const skipSliceTool = server.tools.find((t) => t.name === "gsd_skip_slice");
+      const validateMilestoneTool = server.tools.find((t) => t.name === "gsd_validate_milestone");
+      const validateMilestoneAlias = server.tools.find((t) => t.name === "gsd_milestone_validate");
+      const completeMilestoneTool = server.tools.find((t) => t.name === "gsd_complete_milestone");
+      const completeMilestoneAlias = server.tools.find((t) => t.name === "gsd_milestone_complete");
+      const reopenMilestoneTool = server.tools.find((t) => t.name === "gsd_milestone_reopen");
+      const reopenMilestoneAlias = server.tools.find((t) => t.name === "gsd_reopen_milestone");
       assert.ok(taskTool, "task tool should be registered");
       assert.ok(aliasTool, "task completion alias should be registered");
       assert.ok(reopenTool, "task reopen tool should be registered");
@@ -1756,6 +1853,12 @@ export const executeTaskComplete = async (params, projectDir, invocation) => {
       assert.ok(sliceReopenTool, "slice reopen tool should be registered");
       assert.ok(sliceReopenAlias, "slice reopen alias should be registered");
       assert.ok(skipSliceTool, "slice skip tool should be registered");
+      assert.ok(validateMilestoneTool, "milestone validation tool should be registered");
+      assert.ok(validateMilestoneAlias, "milestone validation alias should be registered");
+      assert.ok(completeMilestoneTool, "milestone completion tool should be registered");
+      assert.ok(completeMilestoneAlias, "milestone completion alias should be registered");
+      assert.ok(reopenMilestoneTool, "milestone reopen tool should be registered");
+      assert.ok(reopenMilestoneAlias, "milestone reopen alias should be registered");
 
       // Mirrors the ADR-011 escalation schema: question + 2-4 options
       // (each with id/label/tradeoffs) + recommendation + rationale +
@@ -1917,6 +2020,119 @@ export const executeTaskComplete = async (params, projectDir, invocation) => {
         }
       }
 
+      const validationEvidence = [{
+        verificationClass: "UAT",
+        evidenceClass: "browser",
+        rationale: "The browser journey passed.",
+        commandOrTool: "gsd-browser",
+        workingDirectory: realpathSync(base),
+        startedAt: "2026-07-14T12:00:00.000Z",
+        endedAt: "2026-07-14T12:01:00.000Z",
+        observation: "passed",
+        durableOutputRef: "artifact://uat/browser-run",
+        testedSourceRevision: "sha256:tested-source",
+        environment: { browser: "chromium" },
+      }];
+      const validationArgs = {
+        projectDir: base,
+        milestoneId: "M001",
+        verdict: "pass",
+        remediationRound: 0,
+        successCriteriaChecklist: "- [x] Complete",
+        sliceDeliveryAudit: "| S01 | pass |",
+        crossSliceIntegration: "Passed",
+        requirementCoverage: "Covered",
+        verdictRationale: "Current structured evidence passed.",
+        verificationEvidence: validationEvidence,
+      };
+      const validationMetadata = {
+        _meta: { "io.opengsd/idempotency-key": "stable-milestone-validation" },
+      };
+      await validateMilestoneTool!.handler(validationArgs, validationMetadata);
+      const firstValidationCapture = readFileSync(validationCapturePath, "utf-8");
+      writeFileSync(validationCapturePath, "{malformed", "utf-8");
+      const malformedCaptureResult = await validateMilestoneAlias!.handler(validationArgs, validationMetadata);
+      assertToolError(malformedCaptureResult, /JSON|Unexpected|position/i);
+      writeFileSync(validationCapturePath, firstValidationCapture, "utf-8");
+      await validateMilestoneAlias!.handler(validationArgs, validationMetadata);
+      const validationCaptures = JSON.parse(readFileSync(validationCapturePath, "utf-8"));
+      assert.equal(validationCaptures.length, 2);
+      for (const capture of validationCaptures) {
+        assert.equal(capture.projectDir, realpathSync(base));
+        assert.equal(capture.params.projectDir, undefined);
+        assert.deepEqual(capture.params.verificationEvidence, validationEvidence);
+        assert.deepEqual(capture.invocation, {
+          idempotencyKey: "mcp:gsd_validate_milestone:stable-milestone-validation",
+          sourceTransport: "workflow-mcp",
+          actorType: "agent",
+          traceId: "stable-milestone-validation",
+        });
+      }
+      const invalidEvidence = await validateMilestoneTool!.handler({
+          ...validationArgs,
+          verificationEvidence: validationEvidence.map(({ testedSourceRevision: _tested, ...evidence }) => evidence),
+        }, {
+          _meta: { "io.opengsd/idempotency-key": "invalid-milestone-validation" },
+        });
+      assertToolError(invalidEvidence, /testedSourceRevision/i);
+
+      const milestoneCases = [
+        {
+          tools: [completeMilestoneTool!, completeMilestoneAlias!],
+          executor: "complete",
+          canonicalName: "gsd_complete_milestone",
+          params: {
+            projectDir: base,
+            milestoneId: "M001",
+            title: "Milestone identity",
+            oneLiner: "One completion operation",
+            narrative: "Canonical and alias calls converge.",
+            verificationPassed: true,
+            actorName: "milestone-agent",
+            triggerReason: "Current validation passed.",
+          },
+        },
+        {
+          tools: [reopenMilestoneTool!, reopenMilestoneAlias!],
+          executor: "reopen",
+          canonicalName: "gsd_milestone_reopen",
+          params: {
+            projectDir: base,
+            milestoneId: "M001",
+            reason: "Redo the Milestone.",
+            actorName: "milestone-agent",
+            triggerReason: "A post-closeout regression was confirmed.",
+          },
+        },
+      ] as const;
+      for (const entry of milestoneCases) {
+        for (const tool of entry.tools) {
+          await tool.handler(entry.params, {
+            requestId: `request-${entry.executor}`,
+            _meta: { "io.opengsd/idempotency-key": `stable-milestone-${entry.executor}` },
+          });
+        }
+      }
+
+      const milestoneCaptures = JSON.parse(readFileSync(milestoneCapturePath, "utf-8"));
+      assert.equal(milestoneCaptures.length, 4);
+      for (const entry of milestoneCases) {
+        const matching = milestoneCaptures.filter((capture: any) => capture.executor === entry.executor);
+        assert.equal(matching.length, entry.tools.length);
+        for (const capture of matching) {
+          assert.equal(capture.projectDir, realpathSync(base));
+          assert.equal(capture.params.projectDir, undefined);
+          assert.equal(capture.params.actorName, entry.params.actorName);
+          assert.equal(capture.params.triggerReason, entry.params.triggerReason);
+          assert.deepEqual(capture.invocation, {
+            idempotencyKey: `mcp:${entry.canonicalName}:stable-milestone-${entry.executor}`,
+            sourceTransport: "workflow-mcp",
+            actorType: "agent",
+            traceId: `stable-milestone-${entry.executor}`,
+          });
+        }
+      }
+
       const sliceCaptures = JSON.parse(readFileSync(sliceCapturePath, "utf-8"));
       assert.equal(sliceCaptures.length, 5);
       for (const entry of sliceCases) {
@@ -1962,6 +2178,16 @@ export const executeTaskComplete = async (params, projectDir, invocation) => {
         delete process.env.GSD_TEST_SLICE_LIFECYCLE_CAPTURE_PATH;
       } else {
         process.env.GSD_TEST_SLICE_LIFECYCLE_CAPTURE_PATH = prevSliceCapture;
+      }
+      if (prevMilestoneCapture === undefined) {
+        delete process.env.GSD_TEST_MILESTONE_LIFECYCLE_CAPTURE_PATH;
+      } else {
+        process.env.GSD_TEST_MILESTONE_LIFECYCLE_CAPTURE_PATH = prevMilestoneCapture;
+      }
+      if (prevValidationCapture === undefined) {
+        delete process.env.GSD_TEST_MILESTONE_VALIDATION_CAPTURE_PATH;
+      } else {
+        process.env.GSD_TEST_MILESTONE_VALIDATION_CAPTURE_PATH = prevValidationCapture;
       }
       cleanup(base);
     }
@@ -2888,6 +3114,12 @@ export const executeTaskComplete = async (params, projectDir, invocation) => {
   it("gsd_validate_milestone and gsd_milestone_complete work end-to-end", async () => {
     const base = makeTmpBase();
     try {
+      writeFileSync(join(base, "source.ts"), "export const source = 'validated';\n");
+      execFileSync("git", ["init"], { cwd: base, stdio: "ignore" });
+      execFileSync("git", ["config", "user.email", "test@example.com"], { cwd: base });
+      execFileSync("git", ["config", "user.name", "Test"], { cwd: base });
+      execFileSync("git", ["add", "source.ts"], { cwd: base });
+      execFileSync("git", ["commit", "-m", "fixture"], { cwd: base, stdio: "ignore" });
       const server = makeMockServer();
       registerWorkflowTools(server as any);
       const milestoneTool = server.tools.find((t) => t.name === "gsd_plan_milestone");
@@ -2961,8 +3193,15 @@ export const executeTaskComplete = async (params, projectDir, invocation) => {
         crossSliceIntegration: "No cross-slice mismatches found.",
         requirementCoverage: "No requirement gaps remain.",
         verdictRationale: "The milestone delivered its scope.",
+      }, {
+        _meta: { "io.opengsd/idempotency-key": "m005-validation" },
       });
       assert.match((validationResult as any).content[0].text as string, /Validated milestone M005/);
+      const validationDetails = (validationResult as any).structuredContent;
+      assert.match(validationDetails.operationId, /\S/);
+      assert.equal(typeof validationDetails.resultingRevision, "number");
+      assert.match(validationDetails.attemptId, /\S/);
+      assert.match(validationDetails.resultId, /\S/);
 
       const completionResult = await completeMilestoneAlias!.handler({
         projectDir: base,

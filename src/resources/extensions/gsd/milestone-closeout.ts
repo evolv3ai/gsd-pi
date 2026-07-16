@@ -18,7 +18,11 @@ import {
 } from "./gsd-db.js";
 import { isClosedStatus } from "./status-guards.js";
 import { resolveExpectedArtifactPath } from "./auto-artifact-paths.js";
-import { handleCompleteMilestone } from "./tools/complete-milestone.js";
+import {
+  handleCompleteMilestone,
+  repairAdoptedMilestoneSummaryProjection,
+} from "./tools/complete-milestone.js";
+import { isMilestoneLifecycleAdopted } from "./db/milestone-closeout-readiness.js";
 import { runSafely } from "./auto-utils.js";
 import { extractVerdict, isAcceptableUatVerdict } from "./verdict-parser.js";
 import { uatSignoffBlockerGuidance } from "./guidance.js";
@@ -83,6 +87,20 @@ export async function repairMissingMilestoneSummaryProjection(
   const summaryPath = resolveExpectedArtifactPath("complete-milestone", milestoneId, artifactBasePath);
   if (summaryPath && existsSync(summaryPath)) {
     return { ok: true };
+  }
+
+  if (isMilestoneLifecycleAdopted(milestoneId)) {
+    try {
+      const repaired = await repairAdoptedMilestoneSummaryProjection(
+        artifactBasePath,
+        milestoneId,
+      );
+      return repaired
+        ? { ok: true }
+        : { ok: false, error: "milestone SUMMARY projection write failed" };
+    } catch (error) {
+      return { ok: false, error: error instanceof Error ? error.message : String(error) };
+    }
   }
 
   const result = await handleCompleteMilestone(
@@ -229,7 +247,7 @@ export async function evaluateCompleteMilestoneDispatch(
       if (verdict !== "pass") {
         return {
           action: "stop",
-          reason: `Cannot complete milestone ${mid}: VALIDATION verdict is "${verdict}". Address the validation findings and re-run validation, or run \`/gsd verdict pass --rationale "..."\` to override.`,
+          reason: `Cannot complete milestone ${mid}: VALIDATION verdict is "${verdict}". Address the findings and re-run validation. Only an unadopted compatibility milestone can use \`/gsd verdict pass --rationale "..."\` to override.`,
           level: "warning",
         };
       }

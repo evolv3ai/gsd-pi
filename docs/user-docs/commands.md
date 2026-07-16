@@ -25,7 +25,7 @@
 | `/gsd debug continue <slug>` | Resume an existing debug session slug |
 | `/gsd debug --diagnose` | Inspect malformed artifacts and session health (`--diagnose [<slug> | <issue text>]`) |
 | `/gsd dispatch` | Dispatch a specific phase directly (research, plan, execute, complete, validate, reassess, uat, replan) |
-| `/gsd verdict <pass\|needs-attention\|needs-remediation>` | Override the recorded milestone validation verdict with an explicit rationale |
+| `/gsd verdict <pass\|needs-attention\|needs-remediation>` | Override an unadopted compatibility milestone's recorded validation verdict with an explicit rationale; adopted milestones must rerun canonical validation with current evidence |
 | `/gsd history` | View execution history (supports `--cost`, `--phase`, `--model` filters) |
 | `/gsd usage` | Show current LLM context-window usage and session token totals |
 | `/gsd session-report` | Show session cost, tokens, and work summary (`--json`, `--save`) |
@@ -136,8 +136,10 @@ succeeded but a SUMMARY, UAT, PLAN, ROADMAP, or STATE file could not be
 refreshed. Repair the filesystem obstruction, then run `/gsd doctor fix` or
 `/gsd rebuild markdown`; do not edit Markdown to change status. Hosts that
 preserve the original private invocation identity may instead perform an exact
-retry. Milestone completion and reopen do not yet have
-the same receipt guarantees; that is the next lifecycle cutover.
+retry. Adopted Milestone validation, completion, and full-redo reopen use the
+same atomic receipt contract. An exact retry can repair projection delivery
+only while its operation still owns the current lifecycle head; a historical
+receipt reports `duplicate` and `superseded` and cannot overwrite newer status.
 
 ## Parallel Orchestration
 

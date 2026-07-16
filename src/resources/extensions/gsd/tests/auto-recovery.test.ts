@@ -6,10 +6,11 @@ import { chmodSync, mkdtempSync, mkdirSync, rmSync, writeFileSync, existsSync, r
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { randomUUID } from "node:crypto";
+import { createRequire } from "node:module";
 
 import { verifyExpectedArtifact, hasImplementationArtifacts, resolveExpectedArtifactPath, diagnoseExpectedArtifact, diagnoseWorktreeIntegrityFailure, buildLoopRemediationSteps, writeBlockerPlaceholder, refreshRecoveryDbForArtifact, writeReactiveExecuteBlocker } from "../auto-recovery.ts";
 import { resolveMilestoneFile } from "../paths.ts";
-import { _getAdapter, openDatabase, closeDatabase, insertMilestone, insertSlice, insertGateRow, insertTask, insertAssessment, getMilestone, getMilestoneCommitAttributionShas, getTask, getSlice, saveGateResult } from "../gsd-db.ts";
+import { _getAdapter, openDatabase, closeDatabase, insertMilestone, insertSlice, insertGateRow, insertTask, insertAssessment, getMilestone, getMilestoneCommitAttributionShas, getTask, getSlice, saveGateResult, updateMilestoneStatus } from "../gsd-db.ts";
 import { claimTaskAttempt, settleTaskAttempt } from "../task-execution-domain-operation.ts";
 import { internalExecutionInvocation } from "../execution-invocation.ts";
 import { readEvents } from "../workflow-events.ts";
@@ -116,6 +117,137 @@ function seedCanonicalTaskAttempt(outcome?: "succeeded" | "failed"): void {
 
 function runGit(base: string, args: string[]): void {
   execFileSync("git", args, { cwd: base, stdio: ["ignore", "pipe", "pipe"] });
+}
+
+function makeCompleteMilestoneRecoveryProject(): string {
+  const base = mkdtempSync(join(tmpdir(), "auto-recovery-adopted-complete-ms-"));
+  mkdirSync(join(base, ".gsd", "milestones", "M001"), { recursive: true });
+  openDatabase(join(base, ".gsd", "gsd.db"));
+  tmpDirs.push(base);
+  insertMilestone({ id: "M001", title: "Milestone", status: "active" });
+  insertSlice({
+    milestoneId: "M001",
+    id: "S01",
+    title: "Done Slice",
+    status: "complete",
+    risk: "low",
+    depends: [],
+  });
+  insertTask({
+    milestoneId: "M001",
+    sliceId: "S01",
+    id: "T01",
+    title: "Done Task",
+    status: "complete",
+  });
+  insertAssessment({
+    path: ".gsd/milestones/M001/M001-VALIDATION.md",
+    milestoneId: "M001",
+    status: "pass",
+    scope: "milestone-validation",
+    fullContent: "---\nverdict: pass\n---\n",
+  });
+  writeFileSync(join(base, ".gsd", "milestones", "M001", "M001-SUMMARY.md"), "# Complete-looking projection\n");
+  writeFileSync(join(base, ".gsd", "milestones", "M001", "M001-VALIDATION.md"), "---\nverdict: pass\n---\n");
+  runGit(base, ["init", "-b", "main"]);
+  runGit(base, ["config", "user.email", "test@example.com"]);
+  runGit(base, ["config", "user.name", "Test User"]);
+  writeFileSync(join(base, "README.md"), "# base\n");
+  runGit(base, ["add", "README.md"]);
+  runGit(base, ["commit", "-m", "init"]);
+  runGit(base, ["checkout", "-b", "milestone/M001"]);
+  writeFileSync(join(base, "feature.ts"), "export const shipped = true;\n");
+  runGit(base, ["add", "feature.ts"]);
+  runGit(base, ["commit", "-m", "feat: implementation evidence"]);
+  return base;
+}
+
+function completeAdoptedMilestoneReceipt(receiptShape: "full" | "projection-only"): string {
+  const completedAt = "2026-07-14T12:00:00.000Z";
+  const fence = readDomainOperationFence();
+  const operation = executeDomainOperation({
+    operationType: "milestone.complete",
+    idempotencyKey: "test:auto-recovery:milestone-complete",
+    expectedRevision: fence.revision,
+    expectedAuthorityEpoch: fence.authorityEpoch,
+    actorType: "test",
+    sourceTransport: "test",
+    payload: { milestoneId: "M001" },
+  }, (context) => {
+    updateMilestoneStatus("M001", "complete", completedAt);
+    const lifecycle = adoptOrTransitionLifecycle(context, {
+      itemKind: "milestone",
+      milestoneId: "M001",
+      lifecycleStatus: "completed",
+      adoptedFromStatus: "completed",
+    });
+    return {
+      events: [{
+        eventType: "milestone.completed",
+        entityType: "milestone",
+        entityId: "M001",
+        payload: {
+          milestoneLifecycleId: lifecycle.lifecycleId,
+          completedAt,
+          ...(receiptShape === "full" ? {
+            validationEventId: "validation-event-M001",
+            validationRevision: 1,
+            completedSliceIds: ["S01"],
+            cancelledSliceIds: [],
+            completedTaskIds: ["T01"],
+            cancelledTaskIds: [],
+            waiverIds: [],
+            dispositionIds: [],
+          } : {}),
+          closeout: {
+            title: "Milestone",
+            oneLiner: "Complete",
+            narrative: "Completed through a durable receipt.",
+            successCriteriaResults: "Passed.",
+            definitionOfDoneResults: "Passed.",
+            requirementOutcomes: "Passed.",
+            keyDecisions: [],
+            keyFiles: [],
+            lessonsLearned: [],
+            followUps: "",
+            deviations: "",
+          },
+        },
+        destinations: ["projection"],
+      }],
+      projections: [{
+        projectionKey: "lifecycle/m001",
+        projectionKind: "milestone-lifecycle",
+        rendererVersion: "1",
+      }],
+    };
+  });
+  return operation.operationId;
+}
+
+function completeAdoptedMilestoneWithReceipt(): string {
+  return completeAdoptedMilestoneReceipt("full");
+}
+
+function completeAdoptedMilestoneWithMalformedReceipt(): string {
+  return completeAdoptedMilestoneReceipt("projection-only");
+}
+
+function milestoneLifecycleHead(): {
+  lifecycleStatus: string;
+  lastOperationId: string;
+} {
+  const row = _getAdapter()!.prepare(`
+    SELECT lifecycle_status, last_operation_id
+    FROM workflow_item_lifecycles
+    WHERE item_kind = 'milestone' AND milestone_id = 'M001'
+      AND slice_id IS NULL AND task_id IS NULL
+  `).get();
+  assert.ok(row, "canonical Milestone lifecycle fixture must exist");
+  return {
+    lifecycleStatus: String(row["lifecycle_status"]),
+    lastOperationId: String(row["last_operation_id"]),
+  };
 }
 
 afterEach(() => {
@@ -555,6 +687,147 @@ test("refreshRecoveryDbForArtifact closes complete-milestone DB row when artifac
   _setGhRateLimitOkForTest(null);
   _resetGhCache();
   _resetConfigCache();
+});
+
+test("adopted Milestone recovery cannot promote complete-looking artifacts into authority", () => {
+  const base = makeCompleteMilestoneRecoveryProject();
+  adoptCanonicalHistory({ itemKind: "milestone", milestoneId: "M001" }, "ready");
+  const revisionBefore = readDomainOperationFence().revision;
+
+  const result = refreshRecoveryDbForArtifact("complete-milestone", "M001", base);
+
+  assert.equal(result.ok, false, "artifact-only recovery must fail closed after canonical adoption");
+  if (!result.ok) {
+    assert.equal(result.fatal, true);
+    assert.match(`${result.reason} ${result.message}`, /adopt|canonical|receipt/i);
+  }
+  assert.equal(getMilestone("M001")?.status, "active");
+  assert.equal(milestoneLifecycleHead().lifecycleStatus, "ready");
+  assert.equal(readDomainOperationFence().revision, revisionBefore, "failed recovery must not advance authority");
+});
+
+test("adopted Milestone recovery fails loudly when legacy completion sabotages a ready canonical head", () => {
+  const base = makeCompleteMilestoneRecoveryProject();
+  adoptCanonicalHistory({ itemKind: "milestone", milestoneId: "M001" }, "ready");
+  _getAdapter()!.prepare(`
+    UPDATE milestones
+    SET status = 'complete', completed_at = '2026-07-14T12:00:00.000Z'
+    WHERE id = 'M001'
+  `).run();
+  const revisionBefore = readDomainOperationFence().revision;
+
+  const result = refreshRecoveryDbForArtifact("complete-milestone", "M001", base);
+
+  assert.equal(result.ok, false, "legacy closed state cannot hide a nonterminal canonical head");
+  if (!result.ok) {
+    assert.equal(result.fatal, true);
+    assert.match(`${result.reason} ${result.message}`, /canonical|receipt|mismatch/i);
+  }
+  assert.equal(getMilestone("M001")?.status, "complete", "failed recovery must not rewrite the sabotaged legacy head");
+  assert.equal(readDomainOperationFence().revision, revisionBefore);
+  assert.equal(milestoneLifecycleHead().lifecycleStatus, "ready");
+});
+
+test("adopted Milestone recovery accepts a matching current completion receipt without new authority", () => {
+  const base = makeCompleteMilestoneRecoveryProject();
+  const completionOperationId = completeAdoptedMilestoneWithReceipt();
+  const revisionBefore = readDomainOperationFence().revision;
+
+  const result = refreshRecoveryDbForArtifact("complete-milestone", "M001", base);
+
+  assert.deepEqual(result, { ok: true });
+  assert.equal(getMilestone("M001")?.status, "complete");
+  assert.equal(readDomainOperationFence().revision, revisionBefore, "receipt observation must not create another operation");
+  assert.equal(milestoneLifecycleHead().lastOperationId, completionOperationId);
+});
+
+test("adopted Milestone recovery verifies the lifecycle head and receipt in one write-fenced snapshot", () => {
+  const base = makeCompleteMilestoneRecoveryProject();
+  completeAdoptedMilestoneWithReceipt();
+  const require = createRequire(import.meta.url);
+  const { DatabaseSync } = require("node:sqlite") as {
+    DatabaseSync: {
+      prototype: { prepare(sql: string): unknown; exec(sql: string): void };
+    };
+  };
+  const originalPrepare = DatabaseSync.prototype.prepare;
+  const originalExec = DatabaseSync.prototype.exec;
+  const immediateOwners = new WeakSet<object>();
+  let receiptReadInsideImmediate = false;
+
+  DatabaseSync.prototype.exec = function (sql: string): void {
+    if (/^BEGIN IMMEDIATE\b/i.test(sql.trim())) immediateOwners.add(this);
+    try {
+      originalExec.call(this, sql);
+    } finally {
+      if (/^(?:COMMIT|ROLLBACK)\b/i.test(sql.trim())) immediateOwners.delete(this);
+    }
+  };
+
+  DatabaseSync.prototype.prepare = function (sql: string): unknown {
+    if (/SELECT payload_json FROM workflow_domain_events/.test(sql)) {
+      receiptReadInsideImmediate = immediateOwners.has(this);
+    }
+    return originalPrepare.call(this, sql);
+  };
+
+  try {
+    const result = refreshRecoveryDbForArtifact("complete-milestone", "M001", base);
+    assert.deepEqual(result, { ok: true });
+  } finally {
+    DatabaseSync.prototype.prepare = originalPrepare;
+    DatabaseSync.prototype.exec = originalExec;
+  }
+
+  assert.equal(receiptReadInsideImmediate, true, "receipt must be read under the same write fence as the lifecycle head");
+  assert.equal(milestoneLifecycleHead().lifecycleStatus, "completed");
+});
+
+test("adopted Milestone recovery rejects a skipped legacy shadow for canonical completion", () => {
+  const base = makeCompleteMilestoneRecoveryProject();
+  completeAdoptedMilestoneWithReceipt();
+  _getAdapter()!.prepare(`
+    UPDATE milestones
+    SET status = 'skipped'
+    WHERE id = 'M001'
+  `).run();
+  const revisionBefore = readDomainOperationFence().revision;
+  const lifecycleBefore = milestoneLifecycleHead();
+  const legacyBefore = getMilestone("M001");
+  assert.ok(legacyBefore);
+
+  const result = refreshRecoveryDbForArtifact("complete-milestone", "M001", base);
+
+  assert.equal(result.ok, false, "cancelled legacy meaning must not match canonical completion");
+  if (!result.ok) {
+    assert.equal(result.fatal, true);
+    assert.match(`${result.reason} ${result.message}`, /mismatch|canonical|legacy/i);
+  }
+  assert.equal(readDomainOperationFence().revision, revisionBefore);
+  assert.deepEqual(milestoneLifecycleHead(), lifecycleBefore);
+  assert.equal(getMilestone("M001")?.status, legacyBefore.status);
+  assert.equal(getMilestone("M001")?.completed_at, legacyBefore.completed_at);
+});
+
+test("adopted Milestone recovery rejects a current projection-shaped but incomplete receipt", () => {
+  const base = makeCompleteMilestoneRecoveryProject();
+  completeAdoptedMilestoneWithMalformedReceipt();
+  const revisionBefore = readDomainOperationFence().revision;
+  const lifecycleBefore = milestoneLifecycleHead();
+  const legacyBefore = getMilestone("M001");
+  assert.ok(legacyBefore);
+
+  const result = refreshRecoveryDbForArtifact("complete-milestone", "M001", base);
+
+  assert.equal(result.ok, false, "a partial projection payload is not a canonical completion receipt");
+  if (!result.ok) {
+    assert.equal(result.fatal, true);
+    assert.match(`${result.reason} ${result.message}`, /receipt|corrupt|invalid/i);
+  }
+  assert.equal(readDomainOperationFence().revision, revisionBefore);
+  assert.deepEqual(milestoneLifecycleHead(), lifecycleBefore);
+  assert.equal(getMilestone("M001")?.status, legacyBefore.status);
+  assert.equal(getMilestone("M001")?.completed_at, legacyBefore.completed_at);
 });
 
 test("refreshRecoveryDbForArtifact fails closed for complete-milestone without implementation evidence", () => {

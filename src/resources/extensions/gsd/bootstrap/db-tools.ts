@@ -1021,23 +1021,27 @@ export function registerDbTools(pi: ExtensionAPI): void {
 
   // ─── gsd_complete_milestone ────────────────────────────────────────────
 
-  const milestoneCompleteExecute = async (_toolCallId: string, params: any, _signal: AbortSignal | undefined, _onUpdate: unknown, _ctx: unknown) => {
+  const milestoneCompleteExecute = async (toolCallId: string, params: any, _signal: AbortSignal | undefined, _onUpdate: unknown, _ctx: unknown) => {
     const { executeCompleteMilestone } = await loadWorkflowExecutors();
-    return executeCompleteMilestone(params, resolveWorkflowToolBasePath(_ctx, params));
+    return executeCompleteMilestone(
+      params,
+      resolveWorkflowToolBasePath(_ctx, params),
+      piExecutionInvocation("gsd_complete_milestone", toolCallId),
+    );
   };
 
   const milestoneCompleteTool = {
     name: "gsd_complete_milestone",
     label: "Complete Milestone",
     description:
-      "Record Milestone completion in the legacy database path, then render MILESTONE-SUMMARY.md and readable status projections. " +
-      "This path is not yet a revision- and Authority-Epoch-fenced lifecycle receipt; that Milestone cutover is deferred to S06.",
-    promptSnippet: "Complete a GSD milestone (DB write + summary render)",
+      "Commit validated Milestone completion in one revision- and Authority-Epoch-fenced SQLite operation, then render the readable SUMMARY projection.",
+    promptSnippet: "Complete a validated GSD Milestone atomically, then refresh its readable summary",
     promptGuidelines: [
       "Use gsd_complete_milestone when all slices in a milestone are finished and the milestone needs to be recorded.",
-      "All slices in the milestone must have status 'complete' — the handler validates this before proceeding.",
-      "verificationPassed must be explicitly set to true — the handler rejects completion if verification did not pass.",
-      "On success, returns summaryPath where the MILESTONE-SUMMARY.md was written.",
+      "Adopted Milestones require every Slice to be terminal with current completion or cancellation authorization; legacy imports still require every Slice complete.",
+      "Adopted Milestones derive completion readiness from current durable validation evidence; verificationPassed remains required for legacy imports.",
+      "Exact invocation replays return the original receipt; historical replays report superseded instead of presenting stale work as current.",
+      "On success, summaryPath identifies the readable SUMMARY projection; stale means it needs automated repair.",
     ],
     parameters: Type.Object({
       // ── Core identification + content (required) ──────────────────────
@@ -1066,9 +1070,13 @@ export function registerDbTools(pi: ExtensionAPI): void {
 
   // ─── gsd_validate_milestone (gsd_milestone_validate alias) ─────────────
 
-  const milestoneValidateExecute = async (_toolCallId: string, params: any, _signal: AbortSignal | undefined, _onUpdate: unknown, _ctx: unknown) => {
+  const milestoneValidateExecute = async (toolCallId: string, params: any, _signal: AbortSignal | undefined, _onUpdate: unknown, _ctx: unknown) => {
     const { executeValidateMilestone } = await loadWorkflowExecutors();
-    return executeValidateMilestone(params, resolveWorkflowToolBasePath(_ctx, params));
+    return executeValidateMilestone(
+      params,
+      resolveWorkflowToolBasePath(_ctx, params),
+      { invocation: piExecutionInvocation("gsd_validate_milestone", toolCallId) },
+    );
   };
 
   const milestoneValidateTool = {
@@ -1080,7 +1088,7 @@ export function registerDbTools(pi: ExtensionAPI): void {
     promptSnippet: "Validate a GSD milestone (DB write + VALIDATION.md render)",
     promptGuidelines: [
       "Use gsd_validate_milestone when all slices are done and the milestone needs validation before completion.",
-      "Parameters: milestoneId, verdict, remediationRound, successCriteriaChecklist, sliceDeliveryAudit, crossSliceIntegration, requirementCoverage, verificationClasses (optional), verdictRationale, remediationPlan (optional).",
+      "Parameters: milestoneId, verdict, remediationRound, successCriteriaChecklist, sliceDeliveryAudit, crossSliceIntegration, requirementCoverage, verificationClasses (optional), verificationEvidence (required for planned classes), verdictRationale, remediationPlan (optional).",
       "If verification classes were planned, verificationClasses must be a complete canonical table with one row for every applicable planned class using the exact class names Contract, Integration, Operational, and UAT. Do not submit a partial table.",
       "Planned verification text marked as none/not required/not applicable/N/A (including suffixed variants such as 'not required - backend-only') is treated as not applicable and does not require a class row.",
       "If verdict is 'needs-remediation', also provide remediationPlan and use gsd_reassess_roadmap to add remediation slices to the roadmap.",
@@ -1095,6 +1103,23 @@ export function registerDbTools(pi: ExtensionAPI): void {
       crossSliceIntegration: Type.String({ description: "Markdown describing any cross-slice boundary mismatches" }),
       requirementCoverage: Type.String({ description: "Markdown describing any unaddressed requirements" }),
       verificationClasses: Type.Optional(Type.String({ description: "Complete markdown table describing verification class compliance and gaps; include one canonical row for every applicable planned class (Contract, Integration, Operational, UAT)" })),
+      verificationEvidence: Type.Optional(Type.Array(Type.Object({
+        verificationClass: StringEnum(["Contract", "Integration", "Operational", "UAT"]),
+        sliceId: Type.Optional(Type.String({ minLength: 1, description: "Required Slice binding when this evidence satisfies a browser-required Slice" })),
+        evidenceClass: StringEnum(["command", "runtime", "browser", "artifact"]),
+        rationale: Type.String({ minLength: 1 }),
+        commandOrTool: Type.String({ minLength: 1 }),
+        workingDirectory: Type.String({ minLength: 1 }),
+        startedAt: Type.String({ minLength: 1 }),
+        endedAt: Type.String({ minLength: 1 }),
+        exitCode: Type.Optional(Type.Number()),
+        observation: StringEnum(["passed", "failed", "inconclusive"]),
+        durableOutputRef: Type.String({ minLength: 1 }),
+        testedSourceRevision: Type.String({ minLength: 1 }),
+        environment: Type.Record(Type.String(), Type.Unknown(), { minProperties: 1 }),
+      }, { additionalProperties: false }), {
+        description: "Current source-bound structured evidence for each applicable planned verification class",
+      })),
       verdictRationale: Type.String({ description: "Why this verdict was chosen" }),
       remediationPlan: Type.Optional(Type.String({ description: "Remediation plan (required if verdict is needs-remediation)" })),
     }),
@@ -1102,6 +1127,78 @@ export function registerDbTools(pi: ExtensionAPI): void {
   };
 
   registerWorkflowTool(pi, milestoneValidateTool);
+
+  registerWorkflowTool(pi, {
+    name: "gsd_prepare_milestone_subjective_uat",
+    label: "Prepare Milestone Subjective UAT",
+    description: "Prepare one source-bound subjective Milestone acceptance question with a recommendation before requesting a real user decision.",
+    promptSnippet: "Prepare a genuine subjective Milestone UAT decision",
+    promptGuidelines: [
+      "Use only when acceptance genuinely requires human judgment and cannot be decided by executable evidence.",
+      "After preparation, present the returned options to the user; do not fabricate or infer their answer.",
+    ],
+    parameters: Type.Object({
+      milestoneId: Type.String({ minLength: 1 }),
+      criterionKey: Type.String({ minLength: 1 }),
+      description: Type.String({ minLength: 1 }),
+      focusedPrompt: Type.String({ minLength: 1 }),
+      recommendedDisposition: StringEnum(["accepted", "rejected"]),
+      recommendationRationale: Type.String({ minLength: 1 }),
+      recommendationEvidence: Type.String({ minLength: 1 }),
+      testedSourceRevision: Type.String({ minLength: 1 }),
+      recommendationConfidence: Type.Optional(Type.Number({ minimum: 0, maximum: 1 })),
+      requirementId: Type.Optional(Type.String({ minLength: 1 })),
+      required: Type.Optional(Type.Boolean()),
+    }),
+    execute: async (toolCallId: string, params: any, _signal: AbortSignal | undefined, _onUpdate: unknown, _ctx: unknown) => {
+      const { executePrepareMilestoneSubjectiveUat } = await loadWorkflowExecutors();
+      return executePrepareMilestoneSubjectiveUat(
+        params,
+        resolveWorkflowToolBasePath(_ctx, params),
+        piExecutionInvocation("gsd_prepare_milestone_subjective_uat", toolCallId),
+      );
+    },
+  });
+
+  registerWorkflowTool(pi, {
+    name: "gsd_answer_milestone_subjective_uat",
+    label: "Answer Milestone Subjective UAT",
+    description: "Record a user-selected answer to a prepared subjective Milestone UAT question using the authenticated Pi session identity.",
+    promptSnippet: "Record the user's actual subjective Milestone UAT answer",
+    promptGuidelines: [
+      "Call only after the user explicitly chooses one of the prepared options.",
+      "Pass the user's response verbatim; actor identity is derived from the active session and is not a tool argument.",
+    ],
+    parameters: Type.Object({
+      criterionId: Type.String({ minLength: 1 }),
+      questionId: Type.String({ minLength: 1 }),
+      interactionId: Type.String({ minLength: 1 }),
+      selectedOptionId: Type.String({ minLength: 1 }),
+      verbatimResponse: Type.String({ minLength: 1 }),
+      rationale: Type.String({ minLength: 1 }),
+      testedSourceRevision: Type.String({ minLength: 1 }),
+    }),
+    execute: async (toolCallId: string, params: any, _signal: AbortSignal | undefined, _onUpdate: unknown, _ctx: any) => {
+      const actorId = _ctx?.sessionManager?.getSessionId?.();
+      if (typeof actorId !== "string" || !actorId.trim()) {
+        return {
+          content: [{ type: "text", text: "Error answering subjective UAT: authenticated Pi session identity is unavailable" }],
+          details: { operation: "answer_milestone_subjective_uat", error: "user_identity_unavailable" },
+          isError: true,
+        };
+      }
+      const { executeAnswerMilestoneSubjectiveUat } = await loadWorkflowExecutors();
+      return executeAnswerMilestoneSubjectiveUat(
+        params,
+        resolveWorkflowToolBasePath(_ctx, params),
+        {
+          ...piExecutionInvocation("gsd_answer_milestone_subjective_uat", toolCallId),
+          actorType: "user",
+          actorId: actorId.trim(),
+        },
+      );
+    },
+  });
 
   // ─── gsd_replan_slice (gsd_slice_replan alias) ─────────────────────────
 
@@ -1400,7 +1497,7 @@ export function registerDbTools(pi: ExtensionAPI): void {
     promptGuidelines: [
       "Use gsd_slice_reopen when a completed or cancelled Slice needs a full redo (e.g. integration issue surfaced, requirements changed).",
       "All terminal Tasks return to pending together; prior Attempts, results, verification evidence, and dispatch history remain immutable.",
-      "Will fail under a terminal parent Milestone; canonical Milestone lifecycle reopen remains deferred to S06.",
+      "Will fail under a terminal parent Milestone; reopen the Milestone hierarchy when the entire delivery needs rework.",
       "Will fail if the Slice is not terminal or any transitive downstream Slice has progressed — reopen downstream work first.",
       "Exact invocation replays report duplicate; a historical replay may also report superseded. stale means projection cleanup or refresh needs repair.",
       "Use the canonical name gsd_slice_reopen; gsd_reopen_slice is only an alias.",
@@ -1420,54 +1517,26 @@ export function registerDbTools(pi: ExtensionAPI): void {
 
   // ─── gsd_milestone_reopen (gsd_reopen_milestone alias) ─────────────────
 
-  const reopenMilestoneExecute = async (_toolCallId: string, params: any, _signal: AbortSignal | undefined, _onUpdate: unknown, _ctx: unknown) => {
-    const basePath = resolveCtxCwd(_ctx);
-    const dbAvailable = await ensureDbOpen(basePath);
-    if (!dbAvailable) {
-      return {
-        content: [{ type: "text" as const, text: "Error: GSD database is not available. Cannot reopen milestone." }],
-        details: { operation: "reopen_milestone", error: "db_unavailable" } as any,
-      };
-    }
-    try {
-      const { handleReopenMilestone } = await import("../tools/reopen-milestone.js");
-      const result = await handleReopenMilestone(params, basePath);
-      if ("error" in result) {
-        return {
-          content: [{ type: "text" as const, text: `Error reopening milestone: ${result.error}` }],
-          details: { operation: "reopen_milestone", error: result.error } as any,
-        };
-      }
-      return {
-        content: [{ type: "text" as const, text: `Reopened milestone ${result.milestoneId}; reset ${result.slicesReset} slice(s) and ${result.tasksReset} task(s).` }],
-        details: {
-          operation: "reopen_milestone",
-          milestoneId: result.milestoneId,
-          slicesReset: result.slicesReset,
-          tasksReset: result.tasksReset,
-        } as any,
-      };
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      logError("tool", `reopen_milestone tool failed: ${msg}`, { tool: "gsd_milestone_reopen", error: String(err) });
-      return {
-        content: [{ type: "text" as const, text: `Error reopening milestone: ${msg}` }],
-        details: { operation: "reopen_milestone", error: msg } as any,
-      };
-    }
+  const reopenMilestoneExecute = async (toolCallId: string, params: any, _signal: AbortSignal | undefined, _onUpdate: unknown, _ctx: unknown) => {
+    const { executeMilestoneReopen } = await loadWorkflowExecutors();
+    return executeMilestoneReopen(
+      params,
+      resolveWorkflowToolBasePath(_ctx, params),
+      piExecutionInvocation("gsd_milestone_reopen", toolCallId),
+    );
   };
 
   const reopenMilestoneTool = {
     name: "gsd_milestone_reopen",
     label: "Reopen Milestone",
     description:
-      "Reset a closed milestone back to 'active', all of its slices to 'in_progress', and all tasks to 'pending'. " +
-      "Cleans up MILESTONE-SUMMARY.md, slice summaries, and task summaries so the DB-filesystem reconciler does not auto-correct status back to complete.",
-    promptSnippet: "Reopen a closed GSD milestone (resets slices and tasks, removes summaries)",
+      "Reopen a terminal Milestone and its completed work in one revision- and Authority-Epoch-fenced SQLite operation while preserving immutable history, then remove stale readable summaries.",
+    promptSnippet: "Reopen a terminal GSD Milestone atomically, then refresh readable projections",
     promptGuidelines: [
-      "Use gsd_milestone_reopen when a closed milestone needs to be re-done (e.g. validation failure surfaced after closure).",
-      "All slices reset to 'in_progress' and all tasks reset to 'pending' — no partial reopen.",
-      "Will fail if the milestone is not currently closed — there is nothing to reopen.",
+      "Use gsd_milestone_reopen when a terminal Milestone needs to be re-done (e.g. validation failure surfaced after closure).",
+      "All terminal slices and tasks reopen together — no partial reopen — while prior Attempts and evidence remain immutable.",
+      "Will fail if the Milestone is not currently terminal — there is nothing to reopen.",
+      "Exact invocation replays report duplicate; historical replays report superseded and cannot remove newer projections.",
       "Use the canonical name gsd_milestone_reopen; gsd_reopen_milestone is only an alias.",
     ],
     parameters: Type.Object({

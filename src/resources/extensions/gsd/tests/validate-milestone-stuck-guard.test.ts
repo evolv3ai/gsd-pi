@@ -15,9 +15,14 @@ import {
   insertAssessment,
   insertMilestone,
   insertSlice,
+  executeDomainOperation,
+  readDomainOperationFence,
 } from "../gsd-db.ts";
 import { invalidateAllCaches } from "../cache.ts";
 import { _clearGsdRootCache } from "../paths.ts";
+import { adoptOrTransitionLifecycle } from "../db/writers/lifecycle-commands.ts";
+import { validateMilestone } from "../milestone-validation-domain-operation.ts";
+import { prepareMilestoneSubjectiveUat } from "../milestone-subjective-uat-domain-operation.ts";
 
 let tempDir: string;
 let dbPath: string;
@@ -86,16 +91,24 @@ remediation_round: 1
 Test fixture
 `;
   writeFileSync(path, content, "utf-8");
+  insertAssessment({
+    path,
+    milestoneId: "M001",
+    sliceId: null,
+    taskId: null,
+    status: verdict,
+    scope: "milestone-validation",
+    fullContent: content,
+  });
   invalidateAllCaches();
 }
 
 function writeWorktreeValidationFile(verdict: string): void {
   const worktreeRoot = join(tempDir, ".gsd", "worktrees", "M001");
+  const path = join(worktreeRoot, ".gsd", "milestones", "M001", "M001-VALIDATION.md");
   mkdirSync(join(worktreeRoot, ".gsd", "milestones", "M001"), { recursive: true });
   writeFileSync(join(worktreeRoot, ".git"), "gitdir: ../.git/worktrees/M001\n", "utf-8");
-  writeFileSync(
-    join(worktreeRoot, ".gsd", "milestones", "M001", "M001-VALIDATION.md"),
-    `---
+  const content = `---
 verdict: ${verdict}
 remediation_round: 1
 ---
@@ -104,11 +117,92 @@ remediation_round: 1
 
 ## Verdict Rationale
 Worktree fixture
-`,
-    "utf-8",
-  );
+`;
+  writeFileSync(path, content, "utf-8");
+  insertAssessment({
+    path,
+    milestoneId: "M001",
+    sliceId: null,
+    taskId: null,
+    status: verdict,
+    scope: "milestone-validation",
+    fullContent: content,
+  });
   invalidateAllCaches();
   clearPathCache();
+}
+
+function adoptMilestone(): void {
+  const fence = readDomainOperationFence();
+  executeDomainOperation({
+    operationType: "test.milestone.adopt",
+    idempotencyKey: "test/milestone/adopt",
+    expectedRevision: fence.revision,
+    expectedAuthorityEpoch: fence.authorityEpoch,
+    actorType: "test",
+    sourceTransport: "test",
+    payload: { milestoneId: "M001" },
+  }, (context) => {
+    adoptOrTransitionLifecycle(context, {
+      itemKind: "milestone",
+      milestoneId: "M001",
+      lifecycleStatus: "ready",
+    });
+    return {
+      events: [{
+        eventType: "test.milestone.adopted",
+        entityType: "milestone",
+        entityId: "M001",
+        payload: { milestoneId: "M001" },
+        destinations: ["test"],
+      }],
+      projections: [{
+        projectionKey: "test/milestone/m001",
+        projectionKind: "test",
+        rendererVersion: "1",
+      }],
+    };
+  });
+}
+
+function writeCanonicalValidation(verdict: "fail" | "inconclusive"): void {
+  adoptMilestone();
+  const now = new Date().toISOString();
+  validateMilestone({
+    invocation: {
+      idempotencyKey: `test/milestone/validate/${verdict}`,
+      sourceTransport: "internal",
+      actorType: "agent",
+    },
+    milestoneId: "M001",
+    testedSourceRevision: "sha256:source",
+    policyId: "test",
+    policyVersion: "1",
+    verdict,
+    rationale: "Objective evidence is not ready.",
+    outcome: verdict === "fail" ? "failed" : "interrupted",
+    failureClass: "verification",
+    summary: "Objective validation needs more work.",
+    output: { verdict },
+    criteria: [{
+      criterionKey: "objective",
+      evidenceClass: "artifact",
+      description: "Objective evidence must pass.",
+      verdict,
+      rationale: "Objective evidence is not ready.",
+      evidence: [{
+        evidenceClass: "artifact",
+        commandOrTool: "test",
+        workingDirectory: tempDir,
+        startedAt: now,
+        endedAt: now,
+        observation: verdict === "fail" ? "failed" : "inconclusive",
+        durableOutputRef: "db://test/objective",
+        environment: { runner: "test" },
+      }],
+    }],
+  });
+  invalidateAllCaches();
 }
 
 describe("validate-milestone stuck-loop guard (#4094)", () => {
@@ -154,6 +248,69 @@ describe("validate-milestone stuck-loop guard (#4094)", () => {
     const notifyArgs = ctx.ui.notify.mock.calls[0].arguments;
     assert.match(notifyArgs[0], /needs-attention/);
     assert.equal(notifyArgs[1], "error");
+  });
+
+  test("retries adopted objective needs-attention without pausing for a user", async () => {
+    insertMilestone({ id: "M001" });
+    insertSlice({ id: "S01", milestoneId: "M001", title: "Slice 1", status: "complete" });
+    writeCanonicalValidation("inconclusive");
+    const ctx = makeMockCtx();
+    const pi = makeMockPi();
+    const pauseAutoMock = mock.fn(async () => {});
+    const s = makeMockSession(tempDir, "validate-milestone", "M001");
+
+    const result = await runPostUnitVerification({ s, ctx, pi } as VerificationContext, pauseAutoMock);
+
+    assert.equal(result, "retry");
+    assert.equal(pauseAutoMock.mock.callCount(), 0);
+    assert.match(s.pendingVerificationRetry?.failureContext ?? "", /objective evidence/i);
+  });
+
+  test("pauses adopted validation only for a pending subjective UAT decision", async () => {
+    insertMilestone({ id: "M001" });
+    insertSlice({ id: "S01", milestoneId: "M001", title: "Slice 1", status: "complete" });
+    adoptMilestone();
+    prepareMilestoneSubjectiveUat({
+      invocation: {
+        idempotencyKey: "test/milestone/subjective/prepare",
+        sourceTransport: "internal",
+        actorType: "agent",
+      },
+      milestoneId: "M001",
+      criterionKey: "guided-flow",
+      description: "The guided flow feels clear.",
+      focusedPrompt: "Does the guided flow feel clear?",
+      recommendedDisposition: "accepted",
+      recommendationRationale: "Automated checks passed.",
+      recommendationEvidence: "Current objective evidence.",
+      testedSourceRevision: "sha256:source",
+    });
+    const ctx = makeMockCtx();
+    const pi = makeMockPi();
+    const pauseAutoMock = mock.fn(async () => {});
+    const s = makeMockSession(tempDir, "validate-milestone", "M001");
+
+    const result = await runPostUnitVerification({ s, ctx, pi } as VerificationContext, pauseAutoMock);
+
+    assert.equal(result, "pause");
+    assert.equal(pauseAutoMock.mock.callCount(), 1);
+    assert.equal(s.pendingVerificationRetry, null);
+  });
+
+  test("retries adopted remediation until the agent queues remediation work", async () => {
+    insertMilestone({ id: "M001" });
+    insertSlice({ id: "S01", milestoneId: "M001", title: "Slice 1", status: "complete" });
+    writeCanonicalValidation("fail");
+    const ctx = makeMockCtx();
+    const pi = makeMockPi();
+    const pauseAutoMock = mock.fn(async () => {});
+    const s = makeMockSession(tempDir, "validate-milestone", "M001");
+
+    const result = await runPostUnitVerification({ s, ctx, pi } as VerificationContext, pauseAutoMock);
+
+    assert.equal(result, "retry");
+    assert.equal(pauseAutoMock.mock.callCount(), 0);
+    assert.match(s.pendingVerificationRetry?.failureContext ?? "", /gsd_reassess_roadmap/i);
   });
 
   test("treats skipped slices as closed", async () => {
@@ -206,10 +363,38 @@ describe("validate-milestone stuck-loop guard (#4094)", () => {
     assert.equal(pauseAutoMock.mock.callCount(), 0);
   });
 
-  test("continues when pass validation exists under canonical worktree projection", async () => {
+  test("continues when DB pass references the canonical worktree projection", async () => {
     insertMilestone({ id: "M001" });
     insertSlice({ id: "S01", milestoneId: "M001", title: "Slice 1", status: "complete" });
     writeWorktreeValidationFile("pass");
+
+    const ctx = makeMockCtx();
+    const pi = makeMockPi();
+    const pauseAutoMock = mock.fn(async () => {});
+    const s = makeMockSession(tempDir, "validate-milestone", "M001");
+
+    const result = await runPostUnitVerification({ s, ctx, pi } as VerificationContext, pauseAutoMock);
+
+    assert.equal(result, "continue");
+    assert.equal(pauseAutoMock.mock.callCount(), 0);
+    assert.equal(s.pendingVerificationRetry, null);
+  });
+
+  test("continues when DB pass is current and the validation projection is empty", async () => {
+    insertMilestone({ id: "M001" });
+    insertSlice({ id: "S01", milestoneId: "M001", title: "Slice 1", status: "complete" });
+    const path = join(tempDir, ".gsd", "milestones", "M001", "M001-VALIDATION.md");
+    writeFileSync(path, "", "utf-8");
+    insertAssessment({
+      path,
+      milestoneId: "M001",
+      sliceId: null,
+      taskId: null,
+      status: "pass",
+      scope: "milestone-validation",
+      fullContent: "---\nverdict: pass\n---\n",
+    });
+    invalidateAllCaches();
 
     const ctx = makeMockCtx();
     const pi = makeMockPi();
@@ -299,7 +484,7 @@ describe("validate-milestone stuck-loop guard (#4094)", () => {
     assert.equal(pauseAutoMock.mock.callCount(), 0);
     assert.ok(s.pendingVerificationRetry);
     assert.equal(s.pendingVerificationRetry!.unitId, "M001");
-    assert.match(s.pendingVerificationRetry!.failureContext, /exists but is empty/);
+    assert.match(s.pendingVerificationRetry!.failureContext, /canonical validation result/i);
     assert.equal(s.pendingVerificationRetry!.attempt, 1);
   });
 

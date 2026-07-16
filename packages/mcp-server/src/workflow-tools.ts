@@ -227,8 +227,11 @@ type WorkflowToolExecutors = {
       lessonsLearned?: string[];
       followUps?: string;
       deviations?: string;
+      actorName?: string;
+      triggerReason?: string;
     },
-    basePath?: string,
+    basePath: string,
+    invocation: ExecutionInvocation,
   ) => Promise<unknown>;
   executeValidateMilestone: (
     params: {
@@ -240,10 +243,56 @@ type WorkflowToolExecutors = {
       crossSliceIntegration: string;
       requirementCoverage: string;
       verificationClasses?: string;
+      verificationEvidence?: Array<{
+        verificationClass: "Contract" | "Integration" | "Operational" | "UAT";
+        sliceId?: string;
+        evidenceClass: "command" | "runtime" | "browser" | "artifact";
+        rationale: string;
+        commandOrTool: string;
+        workingDirectory: string;
+        startedAt: string;
+        endedAt: string;
+        exitCode?: number;
+        observation: "passed" | "failed" | "inconclusive";
+        durableOutputRef: string;
+        testedSourceRevision: string;
+        environment: Record<string, unknown>;
+      }>;
       verdictRationale: string;
       remediationPlan?: string;
     },
     basePath?: string,
+    opts?: { invocation?: ExecutionInvocation },
+  ) => Promise<unknown>;
+  executePrepareMilestoneSubjectiveUat: (
+    params: {
+      milestoneId: string;
+      criterionKey: string;
+      description: string;
+      focusedPrompt: string;
+      recommendedDisposition: "accepted" | "rejected";
+      recommendationRationale: string;
+      recommendationEvidence: string;
+      testedSourceRevision: string;
+      recommendationConfidence?: number;
+      requirementId?: string;
+      required?: boolean;
+    },
+    basePath: string,
+    invocation: ExecutionInvocation,
+  ) => Promise<unknown>;
+  executeAnswerMilestoneSubjectiveUat: (
+    params: {
+      criterionId: string;
+      questionId: string;
+      interactionId: string;
+      selectedOptionId: string;
+      verbatimResponse: string;
+      rationale: string;
+      testedSourceRevision: string;
+    },
+    basePath: string,
+    invocation: ExecutionInvocation,
   ) => Promise<unknown>;
   executeReassessRoadmap: (
     params: {
@@ -389,7 +438,8 @@ type WorkflowToolExecutors = {
       actorName?: string;
       triggerReason?: string;
     },
-    basePath?: string,
+    basePath: string,
+    invocation: ExecutionInvocation,
   ) => Promise<unknown>;
 };
 
@@ -1023,6 +1073,21 @@ function mcpWorkflowExecutionInvocation(
   return mcpInvocation(canonicalToolName, "Workflow execution mutation", extra);
 }
 
+function mcpUserResponseInvocation(
+  canonicalToolName: string,
+  extra?: WorkflowMcpRequestExtra,
+): ExecutionInvocation {
+  const actorId = extra?.sessionId?.trim();
+  if (!actorId) {
+    throw new Error(`${canonicalToolName} requires an authenticated MCP session identity`);
+  }
+  return {
+    ...mcpWorkflowExecutionInvocation(canonicalToolName, extra),
+    actorType: "user",
+    actorId,
+  };
+}
+
 export const WORKFLOW_TOOL_NAMES = CONTRACT_WORKFLOW_TOOL_NAMES;
 export const CANONICAL_WORKFLOW_TOOL_NAMES = CONTRACT_CANONICAL_WORKFLOW_TOOL_NAMES;
 export const WORKFLOW_TOOL_ALIAS_NAMES = CONTRACT_WORKFLOW_TOOL_ALIAS_NAMES;
@@ -1238,11 +1303,12 @@ async function handleSliceReopen(
 async function handleMilestoneReopen(
   projectDir: string,
   args: Omit<z.infer<typeof milestoneReopenSchema>, "projectDir">,
+  invocation: ExecutionInvocation,
 ): Promise<unknown> {
   await enforceWorkflowWriteGate("gsd_milestone_reopen", projectDir, args.milestoneId);
   const { executeMilestoneReopen } = await getWorkflowToolExecutors();
   return adaptExecutorResult(
-    await runSerializedWorkflowOperation(() => executeMilestoneReopen(args, projectDir)),
+    await runSerializedWorkflowOperation(() => executeMilestoneReopen(args, projectDir, invocation)),
   );
 }
 
@@ -1313,25 +1379,58 @@ async function handleReworkBriefSave(
 async function handleCompleteMilestone(
   projectDir: string,
   args: z.infer<typeof completeMilestoneSchema>,
+  invocation: ExecutionInvocation,
 ): Promise<unknown> {
   await enforceWorkflowWriteGate("gsd_complete_milestone", projectDir, args.milestoneId);
   const { executeCompleteMilestone } = await getWorkflowToolExecutors();
   const { projectDir: _projectDir, ...params } = args;
   return adaptExecutorResult(
-    await runSerializedWorkflowOperation(() => executeCompleteMilestone(params, projectDir)),
+    await runSerializedWorkflowOperation(() => executeCompleteMilestone(params, projectDir, invocation)),
   );
 }
 
 async function handleValidateMilestone(
   projectDir: string,
   args: z.infer<typeof validateMilestoneSchema>,
+  invocation: ExecutionInvocation,
 ): Promise<unknown> {
   await enforceWorkflowWriteGate("gsd_validate_milestone", projectDir, args.milestoneId);
   const { executeValidateMilestone } = await getWorkflowToolExecutors();
   const { projectDir: _projectDir, ...params } = args;
   return adaptExecutorResult(
-    await runSerializedWorkflowOperation(() => executeValidateMilestone(params, projectDir)),
+    await runSerializedWorkflowOperation(() =>
+      executeValidateMilestone(params, projectDir, { invocation })
+    ),
   );
+}
+
+async function handlePrepareMilestoneSubjectiveUat(
+  projectDir: string,
+  args: z.infer<typeof prepareMilestoneSubjectiveUatSchema>,
+  invocation: ExecutionInvocation,
+): Promise<unknown> {
+  await enforceWorkflowWriteGate(
+    "gsd_prepare_milestone_subjective_uat",
+    projectDir,
+    args.milestoneId,
+  );
+  const { executePrepareMilestoneSubjectiveUat } = await getWorkflowToolExecutors();
+  const { projectDir: _projectDir, ...params } = args;
+  return adaptExecutorResult(await runSerializedWorkflowOperation(() =>
+    executePrepareMilestoneSubjectiveUat(params, projectDir, invocation)
+  ));
+}
+
+async function handleAnswerMilestoneSubjectiveUat(
+  projectDir: string,
+  args: z.infer<typeof answerMilestoneSubjectiveUatSchema>,
+  invocation: ExecutionInvocation,
+): Promise<unknown> {
+  const { executeAnswerMilestoneSubjectiveUat } = await getWorkflowToolExecutors();
+  const { projectDir: _projectDir, ...params } = args;
+  return adaptExecutorResult(await runSerializedWorkflowOperation(() =>
+    executeAnswerMilestoneSubjectiveUat(params, projectDir, invocation)
+  ));
 }
 
 async function handleReassessRoadmap(
@@ -1766,6 +1865,8 @@ const completeMilestoneParams = {
   lessonsLearned: z.array(z.string()).optional(),
   followUps: z.string().optional(),
   deviations: z.string().optional(),
+  actorName: z.string().optional().describe("Caller-provided actor identity for the audit trail"),
+  triggerReason: z.string().optional().describe("Caller-provided reason this action was triggered"),
 };
 const completeMilestoneSchema = z.object(completeMilestoneParams);
 
@@ -1779,10 +1880,56 @@ const validateMilestoneParams = {
   crossSliceIntegration: z.string().describe("Markdown describing cross-slice issues or closure"),
   requirementCoverage: z.string().describe("Markdown describing requirement coverage and gaps"),
   verificationClasses: z.string().optional().describe("Complete markdown table with one canonical row for every applicable planned verification class: Contract, Integration, Operational, and UAT"),
+  verificationEvidence: z.array(z.object({
+    verificationClass: z.enum(["Contract", "Integration", "Operational", "UAT"]),
+    sliceId: nonEmptyString("sliceId").optional(),
+    evidenceClass: z.enum(["command", "runtime", "browser", "artifact"]),
+    rationale: nonEmptyString("rationale"),
+    commandOrTool: nonEmptyString("commandOrTool"),
+    workingDirectory: nonEmptyString("workingDirectory"),
+    startedAt: nonEmptyString("startedAt"),
+    endedAt: nonEmptyString("endedAt"),
+    exitCode: z.number().optional(),
+    observation: z.enum(["passed", "failed", "inconclusive"]),
+    durableOutputRef: nonEmptyString("durableOutputRef"),
+    testedSourceRevision: nonEmptyString("testedSourceRevision"),
+    environment: z.record(z.string(), z.unknown()).refine(
+      (value) => Object.keys(value).length > 0,
+      "environment must contain at least one field",
+    ),
+  }).strict()).optional().describe("Current source-bound structured evidence for each applicable planned verification class"),
   verdictRationale: z.string().describe("Why this verdict was chosen"),
   remediationPlan: z.string().optional(),
 };
 const validateMilestoneSchema = z.object(validateMilestoneParams);
+
+const prepareMilestoneSubjectiveUatParams = {
+  projectDir: projectDirParam,
+  milestoneId: nonEmptyString("milestoneId"),
+  criterionKey: nonEmptyString("criterionKey"),
+  description: nonEmptyString("description"),
+  focusedPrompt: nonEmptyString("focusedPrompt"),
+  recommendedDisposition: z.enum(["accepted", "rejected"]),
+  recommendationRationale: nonEmptyString("recommendationRationale"),
+  recommendationEvidence: nonEmptyString("recommendationEvidence"),
+  testedSourceRevision: nonEmptyString("testedSourceRevision"),
+  recommendationConfidence: z.number().min(0).max(1).optional(),
+  requirementId: nonEmptyString("requirementId").optional(),
+  required: z.boolean().optional(),
+};
+const prepareMilestoneSubjectiveUatSchema = z.object(prepareMilestoneSubjectiveUatParams);
+
+const answerMilestoneSubjectiveUatParams = {
+  projectDir: projectDirParam,
+  criterionId: nonEmptyString("criterionId"),
+  questionId: nonEmptyString("questionId"),
+  interactionId: nonEmptyString("interactionId"),
+  selectedOptionId: nonEmptyString("selectedOptionId"),
+  verbatimResponse: nonEmptyString("verbatimResponse"),
+  rationale: nonEmptyString("rationale"),
+  testedSourceRevision: nonEmptyString("testedSourceRevision"),
+};
+const answerMilestoneSubjectiveUatSchema = z.object(answerMilestoneSubjectiveUatParams);
 
 const roadmapSliceChangeSchema = z.object({
   sliceId: nonEmptyString("sliceId"),
@@ -2692,22 +2839,30 @@ export function registerWorkflowTools(
 
   server.tool(
     "gsd_complete_milestone",
-    "Record a completed milestone to the GSD database and render its SUMMARY.md.",
+    "Commit validated Milestone completion atomically, then render its readable SUMMARY projection.",
     completeMilestoneParams,
-    async (args: Record<string, unknown>) => {
+    async (args: Record<string, unknown>, extra?: WorkflowMcpRequestExtra) => {
       const parsed = parseWorkflowArgs(completeMilestoneSchema, args);
-      return handleCompleteMilestone(parsed.projectDir, parsed);
+      return handleCompleteMilestone(
+        parsed.projectDir,
+        parsed,
+        mcpWorkflowExecutionInvocation("gsd_complete_milestone", extra),
+      );
     },
   );
 
   server.tool(
     "gsd_milestone_complete",
-    "Alias for gsd_complete_milestone. Record a completed milestone to the GSD database and render its SUMMARY.md.",
+    "Alias for gsd_complete_milestone. Commit validated Milestone completion atomically, then render its readable SUMMARY projection.",
     completeMilestoneParams,
-    async (args: Record<string, unknown>) => {
+    async (args: Record<string, unknown>, extra?: WorkflowMcpRequestExtra) => {
       logAliasUsage("gsd_milestone_complete", "gsd_complete_milestone");
       const parsed = parseWorkflowArgs(completeMilestoneSchema, args);
-      return handleCompleteMilestone(parsed.projectDir, parsed);
+      return handleCompleteMilestone(
+        parsed.projectDir,
+        parsed,
+        mcpWorkflowExecutionInvocation("gsd_complete_milestone", extra),
+      );
     },
   );
 
@@ -2715,9 +2870,13 @@ export function registerWorkflowTools(
     "gsd_validate_milestone",
     "Validate a milestone, persist validation results to the GSD database, and render VALIDATION.md.",
     validateMilestoneParams,
-    async (args: Record<string, unknown>) => {
+    async (args: Record<string, unknown>, extra?: WorkflowMcpRequestExtra) => {
       const parsed = parseWorkflowArgs(validateMilestoneSchema, args);
-      return handleValidateMilestone(parsed.projectDir, parsed);
+      return handleValidateMilestone(
+        parsed.projectDir,
+        parsed,
+        mcpWorkflowExecutionInvocation("gsd_validate_milestone", extra),
+      );
     },
   );
 
@@ -2725,10 +2884,42 @@ export function registerWorkflowTools(
     "gsd_milestone_validate",
     "Alias for gsd_validate_milestone. Validate a milestone and render VALIDATION.md.",
     validateMilestoneParams,
-    async (args: Record<string, unknown>) => {
+    async (args: Record<string, unknown>, extra?: WorkflowMcpRequestExtra) => {
       logAliasUsage("gsd_milestone_validate", "gsd_validate_milestone");
       const parsed = parseWorkflowArgs(validateMilestoneSchema, args);
-      return handleValidateMilestone(parsed.projectDir, parsed);
+      return handleValidateMilestone(
+        parsed.projectDir,
+        parsed,
+        mcpWorkflowExecutionInvocation("gsd_validate_milestone", extra),
+      );
+    },
+  );
+
+  server.tool(
+    "gsd_prepare_milestone_subjective_uat",
+    "Prepare a source-bound subjective Milestone UAT question with a recommendation for a real user decision.",
+    prepareMilestoneSubjectiveUatParams,
+    async (args: Record<string, unknown>, extra?: WorkflowMcpRequestExtra) => {
+      const parsed = parseWorkflowArgs(prepareMilestoneSubjectiveUatSchema, args);
+      return handlePrepareMilestoneSubjectiveUat(
+        parsed.projectDir,
+        parsed,
+        mcpWorkflowExecutionInvocation("gsd_prepare_milestone_subjective_uat", extra),
+      );
+    },
+  );
+
+  server.tool(
+    "gsd_answer_milestone_subjective_uat",
+    "Record the user's actual response to a prepared subjective Milestone UAT question using authenticated MCP session identity.",
+    answerMilestoneSubjectiveUatParams,
+    async (args: Record<string, unknown>, extra?: WorkflowMcpRequestExtra) => {
+      const parsed = parseWorkflowArgs(answerMilestoneSubjectiveUatSchema, args);
+      return handleAnswerMilestoneSubjectiveUat(
+        parsed.projectDir,
+        parsed,
+        mcpUserResponseInvocation("gsd_answer_milestone_subjective_uat", extra),
+      );
     },
   );
 
@@ -2955,24 +3146,32 @@ export function registerWorkflowTools(
 
   server.tool(
     "gsd_milestone_reopen",
-    "Reset a closed milestone back to active and reset its slices/tasks for rework.",
+    "Reopen a terminal Milestone hierarchy atomically while preserving immutable history, then refresh readable projections.",
     milestoneReopenParams,
-    async (args: Record<string, unknown>) => {
+    async (args: Record<string, unknown>, extra?: WorkflowMcpRequestExtra) => {
       const parsed = parseWorkflowArgs(milestoneReopenSchema, args);
       const { projectDir, ...milestoneArgs } = parsed;
-      return handleMilestoneReopen(projectDir, milestoneArgs);
+      return handleMilestoneReopen(
+        projectDir,
+        milestoneArgs,
+        mcpWorkflowExecutionInvocation("gsd_milestone_reopen", extra),
+      );
     },
   );
 
   server.tool(
     "gsd_reopen_milestone",
-    "Alias for gsd_milestone_reopen. Reset a closed milestone back to active and reset its slices/tasks for rework.",
+    "Alias for gsd_milestone_reopen. Reopen a terminal Milestone hierarchy atomically, then refresh readable projections.",
     milestoneReopenParams,
-    async (args: Record<string, unknown>) => {
+    async (args: Record<string, unknown>, extra?: WorkflowMcpRequestExtra) => {
       logAliasUsage("gsd_reopen_milestone", "gsd_milestone_reopen");
       const parsed = parseWorkflowArgs(milestoneReopenSchema, args);
       const { projectDir, ...milestoneArgs } = parsed;
-      return handleMilestoneReopen(projectDir, milestoneArgs);
+      return handleMilestoneReopen(
+        projectDir,
+        milestoneArgs,
+        mcpWorkflowExecutionInvocation("gsd_milestone_reopen", extra),
+      );
     },
   );
 

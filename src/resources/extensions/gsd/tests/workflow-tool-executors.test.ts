@@ -25,7 +25,7 @@ import { normalizeRealPath, relSliceFile, targetMilestoneFile } from "../paths.t
 import { recordUnitHarnessAbort } from "../unit-runtime.ts";
 import { markApprovalGateVerified, markDepthVerified, clearDiscussionFlowState, loadWriteGateSnapshot, setPendingGate } from "../bootstrap/write-gate.ts";
 import {
-  executeCompleteMilestone,
+  executeCompleteMilestone as executeCompleteMilestoneWithInvocation,
   executePlanMilestone as executePlanMilestoneWithInvocation,
   executePlanSlice as executePlanSliceWithInvocation,
   executeReplanSlice as executeReplanSliceWithInvocation,
@@ -54,6 +54,17 @@ function executePlanMilestone(
   basePath: string,
 ) {
   return executePlanMilestoneWithInvocation(params, basePath, internalPlanningInvocation());
+}
+
+function executeCompleteMilestone(
+  params: Parameters<typeof executeCompleteMilestoneWithInvocation>[0],
+  basePath: string,
+) {
+  return executeCompleteMilestoneWithInvocation(
+    params,
+    basePath,
+    internalExecutionInvocation("test:complete-milestone"),
+  );
 }
 
 function executePlanSlice(
@@ -2822,7 +2833,7 @@ test("executeSummarySave reconciles bare PROJECT milestone IDs onto existing uni
   }
 });
 
-test("executeSummarySave hard-fails when milestone registration throws so silent No-Active-Milestone is impossible", async () => {
+test("executeSummarySave fails before persisting PROJECT when milestone registration throws", async () => {
   const base = makeTmpBase();
   try {
     openTestDb(base);
@@ -2852,18 +2863,15 @@ test("executeSummarySave hard-fails when milestone registration throws so silent
       ].join("\n"),
     }, base));
 
-    // The artifact is persisted before registration runs, but registration must
-    // surface as isError so the LLM retries (INSERT OR IGNORE makes it idempotent)
-    // instead of announcing "ready" while the DB has zero milestone rows.
     assert.equal(result.isError, true);
     assert.equal(result.details.path, "PROJECT.md");
     assert.equal(result.details.error, "milestone_registration_threw");
     assert.match(String(result.details.registration_error), /simulated milestone registration failure/);
     assert.match(result.content[0].text, /milestone registration failed/);
     assert.match(result.content[0].text, /idempotent/);
-    assert.ok(existsSync(join(base, ".gsd", "PROJECT.md")));
+    assert.equal(existsSync(join(base, ".gsd", "PROJECT.md")), false);
     const artifact = originalPrepare("SELECT path FROM artifacts WHERE path = ?").get("PROJECT.md");
-    assert.equal(artifact?.path, "PROJECT.md");
+    assert.equal(artifact, undefined);
   } finally {
     closeDatabase();
     cleanup(base);

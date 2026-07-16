@@ -1,5 +1,5 @@
 // Project/App: gsd-pi
-// File Purpose: Proves Pi Slice lifecycle aliases share canonical private executor identity.
+// File Purpose: Proves Pi lifecycle aliases share canonical private executor identity.
 
 import assert from "node:assert/strict";
 import { mkdtempSync, realpathSync, rmSync } from "node:fs";
@@ -15,8 +15,8 @@ process.env.GSD_ADVERTISE_TOOL_ALIASES = "1";
 
 import { registerDbTools } from "../bootstrap/db-tools.ts";
 import {
-  readCapturedSliceLifecycleCalls,
-  resetCapturedSliceLifecycleCalls,
+  readCapturedLifecycleCalls,
+  resetCapturedLifecycleCalls,
 } from "./fixtures/slice-lifecycle-executor-capture.ts";
 
 interface RegisteredTool {
@@ -41,10 +41,10 @@ function registeredTools(): RegisteredTool[] {
 }
 
 afterEach(() => {
-  resetCapturedSliceLifecycleCalls();
+  resetCapturedLifecycleCalls();
 });
 
-test("Pi canonical and alias Slice lifecycle calls share canonical executor identity", async () => {
+test("Pi canonical and alias lifecycle calls share canonical executor identity", async (t) => {
   const basePath = mkdtempSync(join(tmpdir(), "gsd-slice-executor-identity-"));
   try {
     const tools = registeredTools();
@@ -74,30 +74,76 @@ test("Pi canonical and alias Slice lifecycle calls share canonical executor iden
         canonicalName: "gsd_skip_slice",
         params: { milestoneId: "M001", sliceId: "S01", reason: "Descoped." },
       },
+      {
+        names: ["gsd_validate_milestone", "gsd_milestone_validate"],
+        executor: "validate",
+        canonicalName: "gsd_validate_milestone",
+        params: {
+          milestoneId: "M001",
+          verdict: "pass",
+          remediationRound: 0,
+          successCriteriaChecklist: "- [x] Complete",
+          sliceDeliveryAudit: "| S01 | pass |",
+          crossSliceIntegration: "Passed",
+          requirementCoverage: "Covered",
+          verdictRationale: "Current structured evidence passed.",
+          verificationEvidence: [{
+            verificationClass: "UAT",
+            evidenceClass: "browser",
+            rationale: "The browser journey passed.",
+            commandOrTool: "gsd-browser",
+            workingDirectory: basePath,
+            startedAt: "2026-07-14T12:00:00.000Z",
+            endedAt: "2026-07-14T12:01:00.000Z",
+            observation: "passed",
+            durableOutputRef: "artifact://uat/browser-run",
+            testedSourceRevision: "sha256:tested-source",
+            environment: { browser: "chromium" },
+          }],
+        },
+      },
+      {
+        names: ["gsd_complete_milestone", "gsd_milestone_complete"],
+        executor: "milestone-complete",
+        canonicalName: "gsd_complete_milestone",
+        params: {
+          milestoneId: "M001",
+          title: "Identity",
+          oneLiner: "One completion operation",
+          narrative: "The adapter preserves private identity.",
+          verificationPassed: true,
+        },
+      },
+      {
+        names: ["gsd_milestone_reopen", "gsd_reopen_milestone"],
+        executor: "milestone-reopen",
+        canonicalName: "gsd_milestone_reopen",
+        params: { milestoneId: "M001", reason: "Redo the Milestone." },
+      },
     ] as const;
 
     for (const entry of cases) {
-      for (const name of entry.names) {
-        const tool = tools.find((candidate) => candidate.name === name);
-        assert.ok(tool, `${name} must be registered`);
-        await tool.execute("shared-call-42", entry.params, undefined, undefined, { cwd: basePath });
-      }
-    }
+      await t.test(`${entry.canonicalName} canonicalizes private identity`, async () => {
+        for (const name of entry.names) {
+          const tool = tools.find((candidate) => candidate.name === name);
+          assert.ok(tool, `${name} must be registered`);
+          await tool.execute("shared-call-42", entry.params, undefined, undefined, { cwd: basePath });
+        }
 
-    const calls = readCapturedSliceLifecycleCalls();
-    assert.equal(calls.length, 5, "all canonical and alias calls must reach the shared executors");
-    for (const entry of cases) {
-      const matching = calls.filter((call) => call.executor === entry.executor);
-      assert.equal(matching.length, entry.names.length);
-      for (const call of matching) {
-        assert.equal(realpathSync(call.basePath), realpathSync(basePath));
-        assert.deepEqual(call.invocation, {
-          idempotencyKey: `pi:${entry.canonicalName}:shared-call-42`,
-          sourceTransport: "pi-tool",
-          actorType: "agent",
-          traceId: "shared-call-42",
-        });
-      }
+        const matching = readCapturedLifecycleCalls().filter(
+          (call) => call.executor === entry.executor,
+        );
+        assert.equal(matching.length, entry.names.length);
+        for (const call of matching) {
+          assert.equal(realpathSync(call.basePath), realpathSync(basePath));
+          assert.deepEqual(call.invocation, {
+            idempotencyKey: `pi:${entry.canonicalName}:shared-call-42`,
+            sourceTransport: "pi-tool",
+            actorType: "agent",
+            traceId: "shared-call-42",
+          });
+        }
+      });
     }
   } finally {
     rmSync(basePath, { recursive: true, force: true });

@@ -3,10 +3,30 @@
 
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync, existsSync, readFileSync } from "node:fs";
+import {
+  mkdtempSync,
+  mkdirSync,
+  writeFileSync,
+  rmSync,
+  existsSync,
+  readFileSync,
+  promises as fsPromises,
+} from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { openDatabase, insertAssessment, insertMilestone, insertSlice, closeDatabase } from "../gsd-db.js";
+import { adoptOrTransitionLifecycle } from "../db/writers/lifecycle-commands.js";
+import {
+  _getAdapter,
+  closeDatabase,
+  executeDomainOperation,
+  getMilestone,
+  insertAssessment,
+  insertMilestone,
+  insertSlice,
+  openDatabase,
+  readDomainOperationFence,
+} from "../gsd-db.js";
+import { reopenMilestone } from "../milestone-lifecycle-domain-operation.js";
 import {
   isMilestoneCloseoutSettled,
   evaluateCompleteMilestoneDispatch,
@@ -28,6 +48,122 @@ function makeDispatchCtx(base: string, phase: string, mid = "M001"): DispatchCon
 }
 
 const tmpDirs: string[] = [];
+const ADOPTED_COMPLETED_AT = "2026-07-14T12:34:56.000Z";
+const SUPERSEDING_COMPLETED_AT = "2026-07-14T12:35:56.000Z";
+
+function operationCount(): number {
+  return Number(_getAdapter()!.prepare(
+    "SELECT COUNT(*) AS count FROM workflow_operations",
+  ).get()!["count"]);
+}
+
+function completionEventPayload(milestoneId: string, completedAt: string) {
+  return {
+    completedAt,
+    closeout: {
+      title: `${milestoneId}: Durable Closeout`,
+      oneLiner: "The durable closeout survived projection loss.",
+      narrative: "Projection repair used the immutable completion event.",
+      successCriteriaResults: "All success criteria passed.",
+      definitionOfDoneResults: "Definition of done satisfied.",
+      requirementOutcomes: "REQ-1 satisfied.",
+      keyDecisions: ["Keep the database authoritative."],
+      keyFiles: ["src/index.ts"],
+      lessonsLearned: ["Repair projections without new authority."],
+      followUps: "None.",
+      deviations: "None.",
+    },
+  };
+}
+
+function seedAdoptedCompletedMilestone(milestoneId: string): void {
+  insertMilestone({
+    id: milestoneId,
+    title: "Durable Closeout",
+    status: "complete",
+  });
+  _getAdapter()!.prepare("UPDATE milestones SET completed_at = ? WHERE id = ?").run(
+    ADOPTED_COMPLETED_AT,
+    milestoneId,
+  );
+
+  const fence = readDomainOperationFence();
+  executeDomainOperation({
+    operationType: "milestone.complete",
+    idempotencyKey: `test/milestone-closeout/${milestoneId}/adopted-completion`,
+    expectedRevision: fence.revision,
+    expectedAuthorityEpoch: fence.authorityEpoch,
+    actorType: "test",
+    sourceTransport: "test",
+    payload: { milestoneId },
+  }, (context) => {
+    adoptOrTransitionLifecycle(context, {
+      itemKind: "milestone",
+      milestoneId,
+      lifecycleStatus: "completed",
+    });
+    return {
+      events: [{
+        eventType: "milestone.completed",
+        entityType: "milestone",
+        entityId: milestoneId,
+        payload: completionEventPayload(milestoneId, ADOPTED_COMPLETED_AT),
+        destinations: ["projection"],
+      }],
+      projections: [{
+        projectionKey: `lifecycle/${milestoneId}`.toLowerCase(),
+        projectionKind: "milestone-lifecycle",
+        rendererVersion: "1",
+      }],
+    };
+  });
+}
+
+function supersedeAdoptedCompletion(milestoneId: string) {
+  const preparationReopen = reopenMilestone({
+    invocation: {
+      idempotencyKey: `test/milestone-closeout/${milestoneId}/prepare-superseding-completion`,
+      sourceTransport: "internal",
+      actorType: "agent",
+    },
+    milestoneId,
+    reason: "Prepare a canonical newer completion.",
+  });
+  const fence = readDomainOperationFence();
+  const completion = executeDomainOperation({
+    operationType: "milestone.complete",
+    idempotencyKey: `test/milestone-closeout/${milestoneId}/superseding-completion`,
+    expectedRevision: fence.revision,
+    expectedAuthorityEpoch: fence.authorityEpoch,
+    actorType: "test",
+    sourceTransport: "test",
+    payload: { milestoneId },
+  }, (context) => {
+    adoptOrTransitionLifecycle(context, {
+      itemKind: "milestone",
+      milestoneId,
+      lifecycleStatus: "completed",
+    });
+    _getAdapter()!.prepare(
+      "UPDATE milestones SET status = 'complete', completed_at = ? WHERE id = ?",
+    ).run(SUPERSEDING_COMPLETED_AT, milestoneId);
+    return {
+      events: [{
+        eventType: "milestone.completed",
+        entityType: "milestone",
+        entityId: milestoneId,
+        payload: completionEventPayload(milestoneId, SUPERSEDING_COMPLETED_AT),
+        destinations: ["projection"],
+      }],
+      projections: [{
+        projectionKey: `lifecycle/${milestoneId}`.toLowerCase(),
+        projectionKind: "milestone-lifecycle",
+        rendererVersion: "1",
+      }],
+    };
+  });
+  return { preparationReopen, completion };
+}
 
 test.after(() => {
   for (const dir of tmpDirs) {
@@ -200,6 +336,129 @@ test("repairMissingMilestoneSummaryProjection succeeds when milestone dir does n
     existsSync(targetMilestoneFile(base, "M042", "SUMMARY", "Done")),
     "repair should write the SUMMARY artifact to the canonical projection path",
   );
+});
+
+test("repairMissingMilestoneSummaryProjection rebuilds an adopted SUMMARY without new authority", async () => {
+  const base = mkdtempSync(join(tmpdir(), "gsd-repair-adopted-summary-"));
+  tmpDirs.push(base);
+  mkdirSync(join(base, ".gsd"), { recursive: true });
+  openDatabase(join(base, ".gsd", "gsd.db"));
+  seedAdoptedCompletedMilestone("M043");
+
+  const beforeFence = readDomainOperationFence();
+  const beforeOperations = operationCount();
+
+  const repair = await repairMissingMilestoneSummaryProjection(base, "M043");
+
+  assert.deepEqual(repair, { ok: true });
+  const summaryPath = targetMilestoneFile(base, "M043", "SUMMARY", "Durable Closeout");
+  assert.match(readFileSync(summaryPath, "utf8"), /durable closeout survived projection loss/i);
+  assert.deepEqual(readDomainOperationFence(), beforeFence, "projection repair must not advance authority");
+  assert.equal(operationCount(), beforeOperations, "projection repair must not create a Domain Operation");
+});
+
+test("adopted SUMMARY repair cannot outlive a newer Milestone reopen", async (t) => {
+  const base = mkdtempSync(join(tmpdir(), "gsd-repair-adopted-summary-race-"));
+  tmpDirs.push(base);
+  mkdirSync(join(base, ".gsd"), { recursive: true });
+  openDatabase(join(base, ".gsd", "gsd.db"));
+  seedAdoptedCompletedMilestone("M044");
+
+  const summaryPath = targetMilestoneFile(base, "M044", "SUMMARY", "Durable Closeout");
+  const beforeFence = readDomainOperationFence();
+  const beforeOperations = operationCount();
+  const originalRename = fsPromises.rename.bind(fsPromises);
+  let reopenReceipt: ReturnType<typeof reopenMilestone> | undefined;
+
+  t.mock.method(fsPromises, "rename", async (...args: Parameters<typeof fsPromises.rename>) => {
+    if (!reopenReceipt && String(args[1]) === summaryPath) {
+      reopenReceipt = reopenMilestone({
+        invocation: {
+          idempotencyKey: "test/milestone-closeout/M044/newer-reopen",
+          sourceTransport: "internal",
+          actorType: "agent",
+        },
+        milestoneId: "M044",
+        reason: "A newer operation reopened the Milestone during projection repair.",
+      });
+    }
+    return originalRename(...args);
+  });
+
+  const repair = await repairMissingMilestoneSummaryProjection(base, "M044");
+
+  const receipt = reopenReceipt;
+  assert.ok(receipt, "the SUMMARY delivery must interleave a newer Milestone reopen");
+  assert.equal(existsSync(summaryPath), false, "superseded completion must not leave a SUMMARY");
+  assert.equal(getMilestone("M044")?.status, "active");
+  assert.equal(operationCount(), beforeOperations + 1, "only the newer reopen may add authority");
+  const finalFence = readDomainOperationFence();
+  assert.equal(finalFence.projectId, beforeFence.projectId);
+  assert.equal(finalFence.revision, receipt.resultingRevision);
+  assert.equal(finalFence.authorityEpoch, receipt.resultingAuthorityEpoch);
+  assert.equal(repair.ok, false, "superseded repair must not report a current SUMMARY");
+});
+
+test("adopted SUMMARY compensation cannot outlive a reopen after a newer completion", async (t) => {
+  const base = mkdtempSync(join(tmpdir(), "gsd-repair-adopted-summary-chained-race-"));
+  tmpDirs.push(base);
+  mkdirSync(join(base, ".gsd"), { recursive: true });
+  openDatabase(join(base, ".gsd", "gsd.db"));
+  seedAdoptedCompletedMilestone("M045");
+
+  const summaryPath = targetMilestoneFile(base, "M045", "SUMMARY", "Durable Closeout");
+  const beforeOperations = operationCount();
+  const originalRename = fsPromises.rename.bind(fsPromises);
+  let destinationRenames = 0;
+  let newerCompletion: ReturnType<typeof supersedeAdoptedCompletion> | undefined;
+  let finalReopen: ReturnType<typeof reopenMilestone> | undefined;
+
+  t.mock.method(fsPromises, "rename", async (...args: Parameters<typeof fsPromises.rename>) => {
+    if (String(args[1]) === summaryPath) {
+      destinationRenames += 1;
+      if (destinationRenames === 1) {
+        newerCompletion = supersedeAdoptedCompletion("M045");
+      } else if (destinationRenames === 2) {
+        finalReopen = reopenMilestone({
+          invocation: {
+            idempotencyKey: "test/milestone-closeout/M045/final-reopen",
+            sourceTransport: "internal",
+            actorType: "agent",
+          },
+          milestoneId: "M045",
+          reason: "A final reopen supersedes the compensation write.",
+        });
+      }
+    }
+    return originalRename(...args);
+  });
+
+  const repair = await repairMissingMilestoneSummaryProjection(base, "M045");
+
+  const completion = newerCompletion;
+  const reopen = finalReopen;
+  assert.ok(
+    completion,
+    `the original repair must lose to a newer completion (${JSON.stringify(repair)})`,
+  );
+  assert.ok(reopen, "the newer completion compensation must interleave a final reopen");
+  assert.equal(destinationRenames, 2);
+  assert.equal(existsSync(summaryPath), false, "no SUMMARY may survive the final reopen");
+  assert.equal(getMilestone("M045")?.status, "active");
+  assert.equal(
+    operationCount(),
+    beforeOperations + 3,
+    "only the canonical preparation reopen, completion B, and reopen C may add authority",
+  );
+  const finalFence = readDomainOperationFence();
+  assert.equal(
+    completion.preparationReopen.resultingRevision + 1,
+    completion.completion.resultingRevision,
+  );
+  assert.equal(completion.completion.resultingRevision + 1, reopen.resultingRevision);
+  assert.equal(finalFence.revision, reopen.resultingRevision);
+  assert.equal(finalFence.authorityEpoch, reopen.resultingAuthorityEpoch);
+  assert.equal(repair.ok, false, "superseded repair must not report a current SUMMARY");
 });
 
 test("repairMissingMilestoneSummaryProjection is idempotent when SUMMARY exists", async () => {
