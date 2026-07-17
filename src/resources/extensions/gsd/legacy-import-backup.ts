@@ -116,6 +116,7 @@ const BACKUP_SNAPSHOT_KEYS = [
   "backup_byte_size",
 ] as const;
 const BACKUP_VERIFICATION_INPUT_KEYS = ["preview", "base", "snapshot"] as const;
+const BACKUP_ARTIFACT_VERIFICATION_INPUT_KEYS = ["backup", "preview", "base"] as const;
 
 export interface LegacyImportBackupSourceFingerprint {
   source_id: string;
@@ -1992,12 +1993,12 @@ function requireOwnedSnapshot(
 }
 
 function requireRollbackJournalHeader(
-  snapshot: LegacyImportBackupSnapshot,
+  path: string,
   expected: LegacyImportBackupSnapshotFileState,
 ): void {
   let fd: number;
   try {
-    fd = openSync(snapshot.staging_path, fsConstants.O_RDONLY | (fsConstants.O_NOFOLLOW ?? 0));
+    fd = openSync(path, fsConstants.O_RDONLY | (fsConstants.O_NOFOLLOW ?? 0));
   } catch {
     preflightFail("read", "LEGACY_IMPORT_BACKUP_READ_FAILED", "backup header could not be opened safely");
   }
@@ -2041,7 +2042,7 @@ function requireRollbackJournalHeader(
   if (failure !== undefined) throw failure;
 }
 
-function requireOnlyMainDatabase(db: DbAdapter, expectedPath: string): void {
+function requireOnlyMainDatabase(db: DbAdapter, expectedPath: string): string {
   const rows = db.prepare("PRAGMA database_list").all();
   const main = rows[0];
   if (
@@ -2051,6 +2052,7 @@ function requireOnlyMainDatabase(db: DbAdapter, expectedPath: string): void {
     || main["name"] !== "main"
     || main["file"] !== expectedPath
   ) verificationFail("LEGACY_IMPORT_BACKUP_OPEN_FAILED", "independent backup connection opened unexpected databases");
+  return main["file"] as string;
 }
 
 function requireExactlyOk(db: DbAdapter, pragma: "quick_check" | "integrity_check"): void {
@@ -2087,17 +2089,22 @@ function requireSchemaAnchors(db: DbAdapter): void {
   }
 }
 
+interface LegacyImportIndependentVerification {
+  base: LegacyImportBaseSnapshot;
+  openedPath: string;
+}
+
 function runIndependentVerification(
   connection: SqliteReadOnlyConnection,
   expectedPath: string,
   expectedBase: LegacyImportBaseSnapshot,
-): LegacyImportBaseSnapshot {
+): LegacyImportIndependentVerification {
   const db = connection.db;
   let transactionActive = false;
   try {
     db.exec("BEGIN DEFERRED");
     transactionActive = true;
-    requireOnlyMainDatabase(db, expectedPath);
+    const openedPath = requireOnlyMainDatabase(db, expectedPath);
     requireExactlyOk(db, "quick_check");
     requireExactlyOk(db, "integrity_check");
     if (db.prepare("PRAGMA foreign_key_check").all().length !== 0) {
@@ -2132,7 +2139,7 @@ function runIndependentVerification(
     }
     db.exec("COMMIT");
     transactionActive = false;
-    return independentBase;
+    return { base: independentBase, openedPath };
   } catch (error) {
     if (transactionActive) {
       try {
@@ -2172,7 +2179,7 @@ export function _verifyLegacyImportBackupSnapshotForTest(
   const staging = privateStagingFrom(input.snapshot);
   try {
     const before = requireOwnedSnapshot(input.snapshot, ops);
-    requireRollbackJournalHeader(input.snapshot, before);
+    requireRollbackJournalHeader(input.snapshot.staging_path, before);
 
     let connection: SqliteReadOnlyConnection;
     try {
@@ -2213,7 +2220,7 @@ export function _verifyLegacyImportBackupSnapshotForTest(
         connection,
         input.snapshot.staging_path,
         input.base,
-      );
+      ).base;
     } catch (error) {
       connectionFailure = error;
     } finally {
@@ -2232,7 +2239,7 @@ export function _verifyLegacyImportBackupSnapshotForTest(
     if (connectionFailure !== undefined) throw connectionFailure;
 
     const after = requireOwnedSnapshot(input.snapshot, ops);
-    requireRollbackJournalHeader(input.snapshot, after);
+    requireRollbackJournalHeader(input.snapshot.staging_path, after);
     return deepFreeze({
       snapshot: input.snapshot,
       independent_base: independentBase!,
@@ -2261,6 +2268,203 @@ export function verifyLegacyImportBackupSnapshot(
   input: LegacyImportBackupVerificationInput,
 ): LegacyImportBackupVerification {
   return _verifyLegacyImportBackupSnapshotForTest(input, {
+    openReadOnly: openSqliteReadOnly,
+  });
+}
+
+export interface LegacyImportBackupArtifactVerificationInput {
+  backup: LegacyImportVerifiedBackup;
+  preview: LegacyImportPreviewArtifact;
+  base: LegacyImportBaseSnapshot;
+}
+
+export interface LegacyImportBackupArtifactVerification {
+  independent_base: LegacyImportBaseSnapshot;
+  opened_path: string;
+  quick_check: "ok";
+  integrity_check: "ok";
+  foreign_key_violations: 0;
+}
+
+export interface LegacyImportBackupArtifactVerificationDependencies {
+  openReadOnly(path: string): SqliteReadOnlyConnection;
+  lstat?(path: string): BigIntStats;
+  read?(fd: number, buffer: Uint8Array, offset: number, length: number): number;
+  createHash?(): Hash;
+}
+
+function artifactVerificationInput(
+  value: LegacyImportBackupArtifactVerificationInput,
+): LegacyImportBackupArtifactVerificationInput {
+  if (!hasExactDataProperties(value, BACKUP_ARTIFACT_VERIFICATION_INPUT_KEYS)) {
+    fail("LEGACY_IMPORT_BACKUP_CONTRACT_INVALID", "backup artifact verification requires one exact input");
+  }
+  let input: LegacyImportBackupArtifactVerificationInput;
+  try {
+    input = structuredClone(value);
+  } catch {
+    fail(
+      "LEGACY_IMPORT_BACKUP_CONTRACT_INVALID",
+      "backup artifact verification input must be detached strict data",
+    );
+  }
+  input.backup = validateLegacyImportVerifiedBackup(input.backup, {
+    preview: input.preview,
+    base: input.base,
+  });
+  return deepFreeze(input);
+}
+
+function requireArtifactSidecarsAbsent(
+  path: string,
+  lstat: (path: string) => BigIntStats,
+): void {
+  for (const suffix of ["-journal", "-shm", "-wal"] as const) {
+    const sidecarPath = `${path}${suffix}`;
+    try {
+      lstat(sidecarPath);
+    } catch (error) {
+      if (systemErrorCode(error) === "ENOENT") continue;
+      verificationFail(
+        "LEGACY_IMPORT_BACKUP_SNAPSHOT_INVALID",
+        "legacy import backup sidecar path could not be inspected safely",
+        { backup_ref: path },
+      );
+    }
+    verificationFail(
+      "LEGACY_IMPORT_BACKUP_SNAPSHOT_INVALID",
+      "legacy import backup artifact has a conflicting SQLite sidecar",
+      { backup_ref: path, sidecar_path: sidecarPath },
+    );
+  }
+}
+
+function inspectBackupArtifact(
+  backup: LegacyImportVerifiedBackup,
+  ops: LegacyImportBackupSnapshotOps,
+): LegacyImportBackupSnapshotFileState {
+  let stat: BigIntStats;
+  let canonicalPath: string;
+  try {
+    stat = ops.lstat(backup.backup_ref);
+    canonicalPath = realpathSync(backup.backup_ref);
+  } catch {
+    verificationFail(
+      "LEGACY_IMPORT_BACKUP_READ_FAILED",
+      "legacy import backup artifact could not be inspected",
+      { backup_ref: backup.backup_ref },
+    );
+  }
+  if (
+    !isAbsolute(backup.backup_ref)
+    || canonicalPath !== backup.backup_ref
+    || !stat.isFile()
+    || stat.isSymbolicLink()
+    || stat.size !== BigInt(backup.backup_byte_size)
+  ) {
+    verificationFail(
+      "LEGACY_IMPORT_BACKUP_SNAPSHOT_INVALID",
+      "legacy import backup artifact is not the expected regular file",
+      { backup_ref: backup.backup_ref },
+    );
+  }
+  const state = snapshotFileState(stat);
+  const evidence = flushAndHashSnapshot({ path: backup.backup_ref }, state, ops, false);
+  if (
+    evidence.sha256 !== backup.backup_sha256
+    || evidence.state.byteSize !== backup.backup_byte_size
+    || !sameIdentity(evidence.state.identity, state.identity)
+  ) {
+    verificationFail(
+      "LEGACY_IMPORT_BACKUP_SNAPSHOT_CHANGED",
+      "legacy import backup artifact bytes do not match its verified metadata",
+      { backup_ref: backup.backup_ref },
+    );
+  }
+  requireRollbackJournalHeader(backup.backup_ref, evidence.state);
+  requireArtifactSidecarsAbsent(backup.backup_ref, ops.lstat);
+  return evidence.state;
+}
+
+export function _verifyLegacyImportBackupArtifactForTest(
+  value: LegacyImportBackupArtifactVerificationInput,
+  dependencies: LegacyImportBackupArtifactVerificationDependencies,
+): LegacyImportBackupArtifactVerification {
+  const input = artifactVerificationInput(value);
+  const ops = verificationOps({
+    ...dependencies,
+    fsync() {},
+  });
+  const before = inspectBackupArtifact(input.backup, ops);
+
+  let connection: SqliteReadOnlyConnection;
+  try {
+    connection = dependencies.openReadOnly(input.backup.backup_ref);
+  } catch (error) {
+    if (error instanceof SqliteReadOnlyConfigurationCloseError) {
+      verificationFail(
+        "LEGACY_IMPORT_BACKUP_CLOSE_FAILED",
+        "legacy import backup artifact failed read-only configuration and close",
+      );
+    }
+    if (error instanceof SqliteReadOnlyConfigurationError) {
+      verificationFail(
+        "LEGACY_IMPORT_BACKUP_READ_ONLY_CONFIGURATION_FAILED",
+        "legacy import backup artifact could not enforce read-only safeguards",
+      );
+    }
+    verificationFail(
+      "LEGACY_IMPORT_BACKUP_OPEN_FAILED",
+      "legacy import backup artifact could not be opened independently",
+    );
+  }
+
+  let independent: LegacyImportIndependentVerification | undefined;
+  let failure: unknown;
+  try {
+    independent = runIndependentVerification(
+      connection,
+      input.backup.backup_ref,
+      input.base,
+    );
+  } catch (error) {
+    failure = error;
+  } finally {
+    try {
+      connection.db.close();
+    } catch {
+      failure = new LegacyImportBackupError(
+        "LEGACY_IMPORT_BACKUP_CLOSE_FAILED",
+        "legacy import backup artifact connection could not be closed safely",
+        { backup_ref: input.backup.backup_ref },
+        "verification",
+        false,
+      );
+    }
+  }
+  if (failure !== undefined) throw failure;
+
+  const after = inspectBackupArtifact(input.backup, ops);
+  if (!sameIdentity(before.identity, after.identity)) {
+    verificationFail(
+      "LEGACY_IMPORT_BACKUP_SNAPSHOT_CHANGED",
+      "legacy import backup artifact identity changed during verification",
+      { backup_ref: input.backup.backup_ref },
+    );
+  }
+  return deepFreeze({
+    independent_base: independent!.base,
+    opened_path: independent!.openedPath,
+    quick_check: "ok",
+    integrity_check: "ok",
+    foreign_key_violations: 0,
+  });
+}
+
+export function verifyLegacyImportBackupArtifact(
+  input: LegacyImportBackupArtifactVerificationInput,
+): LegacyImportBackupArtifactVerification {
+  return _verifyLegacyImportBackupArtifactForTest(input, {
     openReadOnly: openSqliteReadOnly,
   });
 }
@@ -2580,7 +2784,7 @@ function requirePublishedExact(
       || evidence.state.byteSize !== snapshot.backup_byte_size
       || !sameIdentity(evidence.state.identity, state.identity)
     ) throw new Error("published bytes changed");
-    requireRollbackJournalHeader({ ...snapshot, staging_path: finalPath }, evidence.state);
+    requireRollbackJournalHeader(finalPath, evidence.state);
     requireNoPublishedSidecars(finalPath, ops);
     return evidence.state;
   } catch (error) {
@@ -2656,7 +2860,7 @@ function verifyExistingPublishedBackup(
   }
   let failure: unknown;
   try {
-    const existingBase = runIndependentVerification(connection, finalPath, input.base);
+    const existingBase = runIndependentVerification(connection, finalPath, input.base).base;
     if (hashLegacyImportValue(existingBase) !== hashLegacyImportValue(verification.independent_base)) {
       preparationFail(
         "publication",
