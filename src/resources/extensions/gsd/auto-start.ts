@@ -89,7 +89,6 @@ import { isClosedStatus } from "./status-guards.js";
 import { classifyMilestoneSummaryContent } from "./milestone-summary-classifier.js";
 import { extractVerdict } from "./verdict-parser.js";
 import { auditOrphanedPreflightStashes } from "./orphan-stash-audit.js";
-import { parseProject } from "./schemas/parsers.js";
 import { LAYOUT_SEGMENTS } from "./layout-policy.js";
 
 import {
@@ -200,36 +199,8 @@ export async function openProjectDbIfPresent(basePath: string): Promise<void> {
   }
 }
 
-export function reconcileProjectMilestonesFromDisk(basePath: string): number {
-  if (!isDbAvailable()) return 0;
-  const projectPath = join(basePath, ".gsd", "PROJECT.md");
-  if (!existsSync(projectPath)) return 0;
-
-  try {
-    const content = readFileSync(projectPath, "utf-8");
-    const parsed = parseProject(content);
-    if (parsed.milestones.length === 0) return 0;
-
-    const dbMilestones = new Set(getAllMilestones().map((m) => m.id));
-    let inserted = 0;
-    for (const milestone of parsed.milestones) {
-      if (dbMilestones.has(milestone.id)) continue;
-      insertMilestone({
-        id: milestone.id,
-        title: milestone.title,
-        status: milestone.done ? "complete" : "queued",
-      });
-      dbMilestones.add(milestone.id);
-      inserted += 1;
-    }
-    return inserted;
-  } catch (err) {
-    logWarning(
-      "bootstrap",
-      `PROJECT milestone reconciliation failed: ${err instanceof Error ? err.message : String(err)}`,
-    );
-    return 0;
-  }
+export function reconcileProjectMilestonesFromDisk(_basePath: string): number {
+  return 0;
 }
 
 class MilestoneMergeObservationMismatchError extends Error {}
@@ -1266,7 +1237,6 @@ export async function bootstrapAutoSession(
     // only have a failure-path SUMMARY on disk (#4663).
     await openProjectDbIfPresent(base);
     registerAutoWorkerForSession(base);
-    reconcileProjectMilestonesFromDisk(base);
     reconcileMergedMilestonesFromJournal(base);
 
     // Clean stale runtime unit files for completed milestones (#887).

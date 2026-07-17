@@ -419,7 +419,7 @@ test("migration ignores an empty/partial leftover backup and writes a complete o
   );
 });
 
-test("migrateToFlatPhase preserves slice sidecar artifacts and skips recovery placeholder PLAN", async () => {
+test("migrateToFlatPhase leaves unrepresented slice sidecars for explicit recovery", async () => {
   const base = makeTmp({ withTask: false });
   const legacySliceDir = join(base, ".gsd", "milestones", "M001", "slices", "S01");
   writeFileSync(join(legacySliceDir, "S01-CONTEXT.md"), "# Final Slice Context\n\nPrior discussion.", "utf-8");
@@ -431,17 +431,16 @@ test("migrateToFlatPhase preserves slice sidecar artifacts and skips recovery pl
     "utf-8",
   );
 
-  await migrateToFlatPhase(base);
-
-  const phaseDir = join(base, ".gsd", "phases", "01-foundation");
-  assert.equal(readFileSync(join(phaseDir, "01-01-CONTEXT.md"), "utf-8"), "# Final Slice Context\n\nPrior discussion.");
-  assert.equal(readFileSync(join(phaseDir, "01-01-RESEARCH.md"), "utf-8"), "# Slice Research\n\nPrior research.");
-  assert.equal(readFileSync(join(phaseDir, "01-01-CONTINUE.md"), "utf-8"), "# Continue\n\nCompacted marker.");
-  assert.equal(
-    existsSync(join(phaseDir, "01-01-PLAN.md")),
-    false,
-    "recovery placeholder PLAN should not be promoted when no DB tasks can render a real plan",
+  await assert.rejects(
+    () => migrateToFlatPhase(base),
+    /Recommended: run `\/gsd recover --confirm`/,
   );
+
+  assert.equal(existsSync(join(base, ".gsd", "phases")), false);
+  assert.equal(readFileSync(join(legacySliceDir, "S01-CONTEXT.md"), "utf-8"), "# Final Slice Context\n\nPrior discussion.");
+  assert.equal(readFileSync(join(legacySliceDir, "S01-RESEARCH.md"), "utf-8"), "# Slice Research\n\nPrior research.");
+  assert.equal(readFileSync(join(legacySliceDir, "S01-CONTINUE.md"), "utf-8"), "# Continue\n\nCompacted marker.");
+  assert.equal(existsSync(join(base, ".gsd-backups")), false);
 });
 
 test("pruneStaleFlatPhaseBackups removes migrate-* dirs older than retention window", async () => {

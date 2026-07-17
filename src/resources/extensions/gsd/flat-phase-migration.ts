@@ -2,7 +2,7 @@
 // File Purpose: One-time migration from legacy nested .gsd/milestones/ to
 // flat-phase .gsd/phases/. Runs on startup when the legacy structure is detected.
 
-import { cpSync, existsSync, mkdirSync, readdirSync, renameSync, rmSync, statSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, statSync } from "node:fs";
 import { join } from "node:path";
 
 import { renderAllFromDb, renderRoadmapFromDb } from "./markdown-renderer.js";
@@ -12,9 +12,9 @@ import {
   getAllMilestones,
   getArtifactsByPathPrefix,
   getMilestoneSlices,
+  getSliceTasks,
 } from "./gsd-db.js";
-import { migrateFromMarkdown } from "./md-importer.js";
-import { countDbHierarchy } from "./migration-auto-check.js";
+import { countDbHierarchy, scanMarkdownHierarchy } from "./migration-auto-check.js";
 import { logWarning } from "./workflow-logger.js";
 import { LAYOUT_SEGMENTS } from "./layout-policy.js";
 import {
@@ -94,12 +94,11 @@ function expectedPhaseDirs(basePath: string): string[] {
  * Return the most-recent existing `.gsd-backups/migrate-<ts>/` snapshot, or null.
  *
  * The flat-phase migration can re-fire on later dispatches when the legacy
- * `.gsd/milestones/` layout reappears (e.g. a marker-key mismatch re-triggers a
- * whole-tree re-import — issue #1292). The DB was already reconciled from that
- * tree before the backup step runs, so re-snapshotting an identical legacy tree
- * on every dispatch only leaks a fresh `migrate-<ts>/` directory each time. When
- * a prior snapshot already exists we reuse it as the rollback fallback instead
- * of creating a duplicate, bounding the accumulation to one recovery copy.
+ * `.gsd/milestones/` layout reappears (issue #1292). Re-snapshotting an
+ * identical legacy projection on every startup only leaks a fresh
+ * `migrate-<ts>/` directory each time. When a prior snapshot already exists we
+ * reuse it as the rollback fallback instead of creating a duplicate, bounding
+ * the accumulation to one recovery copy.
  */
 function existingMigrateBackup(basePath: string): string | null {
   const backupRoot = join(basePath, ".gsd-backups");
@@ -133,6 +132,61 @@ function hasLegacyMilestoneSubdirs(dirPath: string): boolean {
   } catch {
     return false;
   }
+}
+
+function milestoneIdFromLegacyDirName(name: string): string | null {
+  if (/^\d+$/.test(name)) return name;
+  return name.match(/^(M\d{3}(?:-[a-z0-9]{6})?)(?:-|$)/)?.[1] ?? null;
+}
+
+function legacyHierarchyContainsUnknownIdentity(basePath: string, legacyRoot: string): boolean {
+  const markdown = scanMarkdownHierarchy(basePath);
+  const legacyMilestoneIds = new Set(
+    readdirSync(legacyRoot, { withFileTypes: true })
+      .filter((entry) => entry.isDirectory())
+      .map((entry) => milestoneIdFromLegacyDirName(entry.name))
+      .filter((id): id is string => id !== null),
+  );
+  const milestones = getAllMilestones();
+  const dbMilestones = new Set(milestones.map((milestone) => milestone.id));
+  const dbSlices = new Set<string>();
+  const dbTasks = new Set<string>();
+
+  for (const milestone of milestones) {
+    for (const slice of getMilestoneSlices(milestone.id)) {
+      dbSlices.add(`${milestone.id}/${slice.id}`);
+      for (const task of getSliceTasks(milestone.id, slice.id)) {
+        dbTasks.add(`${milestone.id}/${slice.id}/${task.id}`);
+      }
+    }
+  }
+
+  return (
+    [...markdown.milestones].some((id) => legacyMilestoneIds.has(id) && !dbMilestones.has(id)) ||
+    [...markdown.slices].some((id) => legacyMilestoneIds.has(id.split("/")[0]!) && !dbSlices.has(id)) ||
+    [...markdown.tasks].some((id) => legacyMilestoneIds.has(id.split("/")[0]!) && !dbTasks.has(id))
+  );
+}
+
+function legacyTreeContainsUnrepresentedMarkdown(
+  legacyRoot: string,
+  prefix = "",
+  artifacts = new Map(
+    getArtifactsByPathPrefix("milestones/").map((artifact) => [artifact.path, artifact.full_content]),
+  ),
+): boolean {
+  for (const entry of readdirSync(legacyRoot, { withFileTypes: true })) {
+    const relativePath = prefix ? `${prefix}/${entry.name}` : entry.name;
+    const absolutePath = join(legacyRoot, entry.name);
+    if (entry.isDirectory()) {
+      if (legacyTreeContainsUnrepresentedMarkdown(absolutePath, relativePath, artifacts)) return true;
+      continue;
+    }
+    if (!entry.isFile()) return true;
+    if (!entry.name.toLowerCase().endsWith(".md")) continue;
+    if (artifacts.get(`milestones/${relativePath}`) !== readFileSync(absolutePath, "utf-8")) return true;
+  }
+  return false;
 }
 
 function backupFlatProjectionIfPresent(basePath: string, phasesPath: string, backupDir: string): void {
@@ -342,11 +396,20 @@ export async function migrateToFlatPhase(basePath: string): Promise<void> {
   const resumingInterrupted =
     !hasLegacyMilestoneSubdirs(milestonesPath) && hasLegacyMilestoneSubdirs(migratingPath);
 
-  // 1. Reconcile DB from legacy markdown before backup/removal so on-disk-only
-  // content is imported even when milestone rows already exist in SQLite.
-  // Check BEFORE creating the backup — avoids accumulating .gsd-backups/ entries
-  // on every session start when milestones/ exists but the DB has no rows.
-  migrateFromMarkdown(basePath);
+  // Markdown is a projection, never startup authority. Refuse the layout
+  // conversion before touching disk when the legacy tree contains identities
+  // the canonical DB does not hold; explicit recovery owns that import.
+  const legacySource = resumingInterrupted ? migratingPath : milestonesPath;
+  if (
+    legacyHierarchyContainsUnknownIdentity(basePath, legacySource) ||
+    legacyTreeContainsUnrepresentedMarkdown(legacySource)
+  ) {
+    throw new Error(
+      "flat-phase migration skipped: legacy markdown contains state absent from the canonical DB. " +
+      "Recommended: run `/gsd recover --confirm` to preview and import it explicitly.",
+    );
+  }
+
   const milestonesBefore = getAllMilestones().length;
   if (milestonesBefore === 0) {
     logWarning(
@@ -360,13 +423,11 @@ export async function migrateToFlatPhase(basePath: string): Promise<void> {
   let backupCreatedThisRun = false;
   if (!resumingInterrupted) {
     // 2. Backup (only reached when the DB has rows and migration will proceed).
-    // migrateFromMarkdown above already reconciled the legacy tree into the DB,
-    // so its content is safely persisted. If a prior successful migration
-    // already snapshotted the legacy tree, a re-fire of this gate (issue #1292:
-    // marker-key mismatch re-importing the whole tree at dispatch boundaries)
-    // must not leak a fresh .gsd-backups/migrate-<ts>/ every dispatch. Treat it
-    // as a marker-refresh re-projection: reuse the existing snapshot as the
-    // rollback fallback instead of creating a duplicate.
+    // The comparison above proved that the legacy projection holds no identity
+    // absent from the DB. If a prior successful migration already snapshotted
+    // the legacy tree, a re-fire of this gate must not leak a fresh
+    // .gsd-backups/migrate-<ts>/ on every startup. Reuse the existing snapshot
+    // as the rollback fallback instead of creating a duplicate.
     const priorBackup = existingMigrateBackup(basePath);
     if (priorBackup) {
       backupDir = priorBackup;

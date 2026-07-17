@@ -33,7 +33,7 @@ test("bootstrap reconciliation treats a successful worktree merge as milestone c
   }
 });
 
-test("#5389: bootstrap reconciles PROJECT.md milestones that are missing from DB", () => {
+test("bootstrap does not promote PROJECT.md milestones into canonical authority", () => {
   const base = mkdtempSync(join(tmpdir(), "gsd-project-reconcile-"));
   try {
     mkdirSync(join(base, ".gsd"), { recursive: true });
@@ -51,19 +51,20 @@ test("#5389: bootstrap reconciles PROJECT.md milestones that are missing from DB
 
     openDatabase(join(base, ".gsd", "gsd.db"));
     insertMilestone({ id: "M001", title: "Existing Milestone", status: "complete" });
+    const before = getAllMilestones();
+    const changesBefore = Number(
+      _getAdapter()!.prepare("SELECT total_changes() AS count").get()?.["count"],
+    );
 
     const inserted = reconcileProjectMilestonesFromDisk(base);
     const rows = getAllMilestones();
-    const ids = new Set(rows.map((m) => m.id));
-    const byId = new Map(rows.map((m) => [m.id, m]));
 
-    assert.equal(inserted, 2);
-    assert.equal(ids.has("M001"), true);
-    assert.equal(ids.has("M002"), true);
-    assert.equal(ids.has("M003"), true);
-    assert.equal(byId.get("M001")?.status, "complete");
-    assert.equal(byId.get("M002")?.status, "queued");
-    assert.equal(byId.get("M003")?.status, "queued");
+    assert.equal(inserted, 0);
+    assert.deepEqual(rows, before);
+    assert.equal(
+      Number(_getAdapter()!.prepare("SELECT total_changes() AS count").get()?.["count"]),
+      changesBefore,
+    );
   } finally {
     if (isDbAvailable()) closeDatabase();
     rmSync(base, { recursive: true, force: true });
