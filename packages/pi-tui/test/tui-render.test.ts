@@ -355,6 +355,63 @@ describe("TUI mid-buffer reflow", () => {
 
 		tui.stop();
 	});
+
+	it("triggers full repaint when a same-length reflow shifts a change into committed scrollback", async () => {
+		// 9 lines in a height-5 terminal leaves indices 0-3 in committed scrollback.
+		const terminal = new VirtualTerminal(40, 5);
+		const tui = new TUI(terminal);
+		const component = new TestComponent();
+		tui.addChild(component);
+
+		component.lines = [
+			"Line 0",
+			"Line 1",
+			"Line 2",
+			"BOUNDARY",
+			"Line 4",
+			"Line 5",
+			"Line 6",
+			"Line 7",
+			"Line 8",
+		];
+		tui.start();
+		await terminal.waitForRender();
+
+		const redrawsBefore = tui.fullRedraws;
+
+		// Move BOUNDARY from old index 3 (committed scrollback) to new index 4
+		// without changing the total line count. The old clamp path repainted from
+		// index 4 downward and left BOUNDARY duplicated across scrollback + viewport.
+		const reflowedLines = [
+			"Line 0",
+			"Line 1",
+			"REFLOW",
+			"Line 2",
+			"BOUNDARY",
+			"Line 5",
+			"Line 6",
+			"Line 7",
+			"Line 8",
+		];
+		component.lines = reflowedLines;
+		tui.requestRender();
+		await terminal.waitForRender();
+
+		assert.ok(
+			tui.fullRedraws > redrawsBefore,
+			"same-length reflow reaching into committed scrollback must trigger a full repaint",
+		);
+
+		const currentFrame = terminal.getScrollBuffer().slice(-reflowedLines.length);
+		assert.deepStrictEqual(currentFrame, reflowedLines);
+		assert.strictEqual(
+			currentFrame.filter((line) => line === "BOUNDARY").length,
+			1,
+			"moved boundary line should not be duplicated across the current frame",
+		);
+
+		tui.stop();
+	});
 });
 
 describe("TUI differential rendering", () => {
