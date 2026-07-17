@@ -22,6 +22,10 @@ interface ChildConfig {
     readyPath: string;
     releasePath: string;
   };
+  transactionBarrier?: {
+    readyPath: string;
+    releasePath: string;
+  };
   crash?: {
     sqlPattern: string;
     occurrence: number;
@@ -96,6 +100,25 @@ function installSqlCrash(
   };
 }
 
+function installTransactionBarrier(
+  adapter: DbAdapter,
+  barrier: NonNullable<ChildConfig["transactionBarrier"]>,
+): () => void {
+  const originalExec = adapter.exec;
+  let reached = false;
+  adapter.exec = (sql: string): void => {
+    if (!reached && normalizeSql(sql) === "begin immediate") {
+      reached = true;
+      writeFileSync(barrier.readyPath, String(process.pid), "utf8");
+      waitForRelease(barrier.releasePath);
+    }
+    originalExec.call(adapter, sql);
+  };
+  return () => {
+    adapter.exec = originalExec;
+  };
+}
+
 function childError(error: unknown): ChildError {
   const candidate = error as {
     code?: unknown;
@@ -117,6 +140,7 @@ function loadJson(path: string): unknown {
 
 function main(): void {
   let databaseOpen = false;
+  let restoreExec: (() => void) | undefined;
   let restorePrepare: (() => void) | undefined;
   let outcome: ChildOutcome;
   try {
@@ -132,6 +156,11 @@ function main(): void {
     if (config.barrier) {
       writeFileSync(config.barrier.readyPath, String(process.pid), "utf8");
       waitForRelease(config.barrier.releasePath);
+    }
+    if (config.transactionBarrier) {
+      const adapter = _getAdapter();
+      if (!adapter) throw new Error("legacy import Application worker database adapter is unavailable");
+      restoreExec = installTransactionBarrier(adapter, config.transactionBarrier);
     }
     if (config.crash) {
       const adapter = _getAdapter();
@@ -157,6 +186,7 @@ function main(): void {
     _setDomainOperationFaultForTest(null);
     _setLegacyImportApplicationBoundaryForTest(null);
     restorePrepare?.();
+    restoreExec?.();
     if (databaseOpen) closeDatabase();
   }
   process.stdout.write(`${JSON.stringify(outcome)}\n`);

@@ -2,9 +2,15 @@
 // File Purpose: Public fault, crash, restart, and lost-response proof for legacy Import Application.
 
 import assert from "node:assert/strict";
-import { spawnSync, type SpawnSyncReturns } from "node:child_process";
+import {
+  spawn,
+  spawnSync,
+  type ChildProcessByStdio,
+  type SpawnSyncReturns,
+} from "node:child_process";
 import {
   cpSync,
+  existsSync,
   mkdtempSync,
   mkdirSync,
   readFileSync,
@@ -13,6 +19,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import type { Readable } from "node:stream";
 import { afterEach, test } from "node:test";
 import { fileURLToPath } from "node:url";
 
@@ -55,6 +62,7 @@ const CHILD_PATH = fileURLToPath(new URL("./legacy-import-application-child.ts",
 const RESOLVER_PATH = fileURLToPath(new URL("./resolve-ts.mjs", import.meta.url));
 const tempDirectories = new Set<string>();
 let applicationSequence = 0;
+let childSequence = 0;
 
 const DOMAIN_PRECOMMIT_FAULTS: readonly DomainOperationFaultPoint[] = [
   "after-operation",
@@ -93,6 +101,14 @@ interface ChildConfig {
     sqlPattern: string;
     occurrence: number;
   };
+  barrier?: {
+    readyPath: string;
+    releasePath: string;
+  };
+  transactionBarrier?: {
+    readyPath: string;
+    releasePath: string;
+  };
   killAfterApply?: boolean;
   committedPath?: string;
 }
@@ -110,6 +126,17 @@ interface SqlFaultController {
   hitCount(): number;
   restore(): void;
 }
+
+interface ChildErrorOutcome {
+  code: string;
+  message: string;
+  stage?: string;
+  retryable?: boolean;
+}
+
+type ChildOutcome =
+  | { receipt: LegacyImportApplicationReceipt }
+  | { error: ChildErrorOutcome };
 
 const MUTATION_FAULT_CASES: readonly MutationFaultCase[] = [
   { family: "operation insert", fixture: "gsd-nested", sqlPattern: "insert into workflow_operations", occurrence: 1 },
@@ -312,6 +339,175 @@ function runChild(
   });
 }
 
+function prepareSiblingCase(
+  prepared: PreparedApplicationCase,
+  fixture: Exclude<MutationFixture, "decision-create">,
+): PreparedApplicationCase {
+  applicationSequence += 1;
+  const source = join(prepared.workspace, `source-${fixture}-${applicationSequence}`);
+  const backupDirectory = join(prepared.workspace, `backups-${fixture}-${applicationSequence}`);
+  cpSync(join(CORPUS_ROOT, fixture, "source"), source, {
+    recursive: true,
+    dereference: false,
+    verbatimSymlinks: true,
+  });
+  mkdirSync(backupDirectory);
+  const previewInput = { roots: createLegacyImportCorpusSourceRoots(source) };
+  const base = captureCurrentLegacyImportBaseSnapshot();
+  assert.deepEqual(base, prepared.base);
+  const preview = createLegacyImportPreview(previewInput);
+  const backup = prepareLegacyImportBackup({
+    preview,
+    base,
+    roots: previewInput.roots,
+    destination_directory: backupDirectory,
+    label: "pre-application-sibling",
+  });
+  const input: LegacyImportApplicationInput = {
+    invocation: {
+      idempotencyKey: `legacy-import/fault-${applicationSequence}`,
+      sourceTransport: "internal",
+      actorType: "agent",
+      actorId: "legacy-import-fault-test",
+      traceId: `fault-trace-${applicationSequence}`,
+      turnId: `fault-turn-${applicationSequence}`,
+    },
+    previewInput,
+    preview,
+    backup,
+  };
+  return { ...prepared, base, backup, input };
+}
+
+function spawnChild(
+  prepared: PreparedApplicationCase,
+  input: LegacyImportApplicationInput,
+  config: Omit<ChildConfig, "databasePath" | "applicationInputPath">,
+): ChildProcessByStdio<null, Readable, Readable> {
+  childSequence += 1;
+  const suffix = `${applicationSequence}-${childSequence}`;
+  const applicationInputPath = join(prepared.workspace, `application-input-${suffix}.json`);
+  const configPath = join(prepared.workspace, `child-config-${suffix}.json`);
+  writeFileSync(applicationInputPath, JSON.stringify(input), "utf8");
+  writeFileSync(configPath, JSON.stringify({
+    databasePath: prepared.databasePath,
+    applicationInputPath,
+    ...config,
+  } satisfies ChildConfig), "utf8");
+  const env = { ...process.env };
+  delete env.NODE_TEST_CONTEXT;
+  return spawn(process.execPath, [
+    "--import",
+    RESOLVER_PATH,
+    "--experimental-strip-types",
+    CHILD_PATH,
+    configPath,
+  ], {
+    cwd: process.cwd(),
+    env,
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+}
+
+function collectChild(
+  child: ChildProcessByStdio<null, Readable, Readable>,
+  timeoutMs = 5_000,
+): Promise<ChildOutcome> {
+  return new Promise((resolve, reject) => {
+    let stdout = "";
+    let stderr = "";
+    const timer = setTimeout(() => {
+      child.kill("SIGKILL");
+      reject(new Error(`child outcome timed out after ${timeoutMs}ms`));
+    }, timeoutMs);
+    child.stdout.setEncoding("utf8").on("data", (chunk: string) => {
+      stdout += chunk;
+    });
+    child.stderr.setEncoding("utf8").on("data", (chunk: string) => {
+      stderr += chunk;
+    });
+    child.on("error", (error) => {
+      clearTimeout(timer);
+      reject(error);
+    });
+    child.on("close", (code, signal) => {
+      clearTimeout(timer);
+      if (code !== 0 || signal !== null) {
+        reject(new Error(stderr || stdout || `child exited with code ${code} signal ${signal}`));
+        return;
+      }
+      try {
+        resolve(JSON.parse(stdout.trim()) as ChildOutcome);
+      } catch (error) {
+        reject(new Error(`child emitted invalid JSON: ${stdout}`, { cause: error }));
+      }
+    });
+  });
+}
+
+async function waitForPath(path: string, timeoutMs: number, label: string): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (!existsSync(path)) {
+    if (Date.now() >= deadline) throw new Error(`timed out waiting for ${label}: ${path}`);
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+}
+
+async function runConcurrentApplications(
+  prepared: PreparedApplicationCase,
+  inputs: readonly [LegacyImportApplicationInput, LegacyImportApplicationInput],
+): Promise<readonly [ChildOutcome, ChildOutcome]> {
+  const startRelease = join(prepared.workspace, `start-release-${childSequence}`);
+  const transactionRelease = join(prepared.workspace, `transaction-release-${childSequence}`);
+  const startReady = inputs.map((_, index) => join(prepared.workspace, `start-ready-${childSequence}-${index}`));
+  const transactionReady = inputs.map((_, index) => (
+    join(prepared.workspace, `transaction-ready-${childSequence}-${index}`)
+  ));
+  const children = inputs.map((input, index) => spawnChild(prepared, input, {
+    barrier: { readyPath: startReady[index]!, releasePath: startRelease },
+    transactionBarrier: { readyPath: transactionReady[index]!, releasePath: transactionRelease },
+  })) as [
+    ChildProcessByStdio<null, Readable, Readable>,
+    ChildProcessByStdio<null, Readable, Readable>,
+  ];
+  const outcomes = children.map((child) => collectChild(child)) as [
+    Promise<ChildOutcome>,
+    Promise<ChildOutcome>,
+  ];
+  try {
+    await Promise.all(startReady.map((path) => waitForPath(path, 1_000, "start barrier")));
+    writeFileSync(startRelease, "release", "utf8");
+    await Promise.all(transactionReady.map((path) => waitForPath(path, 750, "transaction barrier")));
+    writeFileSync(transactionRelease, "release", "utf8");
+    return await Promise.all(outcomes);
+  } finally {
+    for (const child of children) {
+      if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
+    }
+    await Promise.allSettled(outcomes);
+  }
+}
+
+function assertSingleImportLineage(prepared: PreparedApplicationCase): void {
+  assert.deepEqual(rows("SELECT revision, authority_epoch FROM project_authority"), [{
+    revision: prepared.base.authority.revision + 1,
+    authority_epoch: prepared.base.authority.authority_epoch,
+  }]);
+  const operations = tableRows("workflow_operations");
+  const applications = tableRows("workflow_import_applications");
+  const events = tableRows("workflow_domain_events");
+  const outbox = tableRows("workflow_outbox");
+  const projections = tableRows("workflow_projection_work");
+  assert.equal(operations.length, 1);
+  assert.equal(applications.length, 1);
+  assert.equal(events.length, 1);
+  assert.equal(outbox.length, 1);
+  const operationId = operations[0]?.["operation_id"];
+  assert.equal(applications[0]?.["operation_id"], operationId);
+  assert.equal(events[0]?.["operation_id"], operationId);
+  assert.ok(projections.every((row) => row["enqueue_operation_id"] === operationId));
+}
+
 function assertReceiptMatchesDurable(
   prepared: PreparedApplicationCase,
   receipt: LegacyImportApplicationReceipt,
@@ -480,4 +676,73 @@ test("lost response after commit reopens and returns the exact durable public re
   assert.deepEqual(durableSnapshot(), afterKill);
   assert.deepEqual(applyLegacyImport(structuredClone(prepared.input)), replayed);
   assert.deepEqual(durableSnapshot(), afterKill);
+});
+
+test("two processes with the same key and input commit once and return receipt-equivalent replay", {
+  concurrency: false,
+}, async () => {
+  const prepared = prepareCase();
+  closeDatabase();
+
+  const outcomes = await runConcurrentApplications(prepared, [prepared.input, prepared.input]);
+
+  const receipts = outcomes.flatMap((outcome) => "receipt" in outcome ? [outcome.receipt] : []);
+  assert.deepEqual(receipts.map((receipt) => receipt.status).sort(), ["committed", "replayed"]);
+  const [first, second] = receipts.map(({ status: _status, ...receipt }) => receipt);
+  assert.deepEqual(first, second);
+  reopenAndSnapshot(prepared);
+  assertSingleImportLineage(prepared);
+  assert.equal(tableRows("workflow_operations")[0]?.["operation_id"], receipts[0]?.operationId);
+});
+
+test("two processes with different keys for one Preview commit once and return typed replay conflict", {
+  concurrency: false,
+}, async () => {
+  const prepared = prepareCase();
+  const competingInput: LegacyImportApplicationInput = {
+    ...structuredClone(prepared.input),
+    invocation: {
+      ...structuredClone(prepared.input.invocation),
+      idempotencyKey: `${prepared.input.invocation.idempotencyKey}-competing`,
+    },
+  };
+  closeDatabase();
+
+  const outcomes = await runConcurrentApplications(prepared, [prepared.input, competingInput]);
+
+  const receipts = outcomes.flatMap((outcome) => "receipt" in outcome ? [outcome.receipt] : []);
+  const errors = outcomes.flatMap((outcome) => "error" in outcome ? [outcome.error] : []);
+  assert.equal(receipts.length, 1);
+  assert.deepEqual(errors, [{
+    code: "LEGACY_IMPORT_APPLICATION_REPLAY_CONFLICT",
+    message: "legacy import durable identity does not match the requested key and Preview",
+    stage: "replay",
+    retryable: false,
+  }]);
+  reopenAndSnapshot(prepared);
+  assertSingleImportLineage(prepared);
+  assert.equal(tableRows("workflow_operations")[0]?.["operation_id"], receipts[0]?.operationId);
+});
+
+test("two distinct valid corpus requests from one base commit once and return typed authority stale", {
+  concurrency: false,
+}, async () => {
+  const prepared = prepareCase("gsd-nested");
+  const sibling = prepareSiblingCase(prepared, "planning-flat-complete");
+  closeDatabase();
+
+  const outcomes = await runConcurrentApplications(prepared, [prepared.input, sibling.input]);
+
+  const receipts = outcomes.flatMap((outcome) => "receipt" in outcome ? [outcome.receipt] : []);
+  const errors = outcomes.flatMap((outcome) => "error" in outcome ? [outcome.error] : []);
+  assert.equal(receipts.length, 1);
+  assert.deepEqual(errors, [{
+    code: "LEGACY_IMPORT_APPLICATION_AUTHORITY_STALE",
+    message: "legacy import authority changed after approval",
+    stage: "transaction",
+    retryable: false,
+  }]);
+  reopenAndSnapshot(prepared);
+  assertSingleImportLineage(prepared);
+  assert.equal(tableRows("workflow_operations")[0]?.["operation_id"], receipts[0]?.operationId);
 });
