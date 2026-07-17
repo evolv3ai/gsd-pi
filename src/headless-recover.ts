@@ -16,7 +16,7 @@
  *
  * Exit codes:
  *   0 — recovery succeeded
- *   1 — `.gsd/` missing, DB could not be opened, or migration threw
+ *   1 — setup, verified-backup rehearsal, or migration failed
  */
 
 import { createJiti } from '@mariozechner/jiti'
@@ -52,13 +52,18 @@ async function loadExtensionModules() {
   const dynamicToolsModule = await jiti.import(gsdExtensionPath('bootstrap/dynamic-tools.ts'), {}) as any
   const migrationCheckModule = await jiti.import(gsdExtensionPath('migration-auto-check.ts'), {}) as any
   const rendererModule = await jiti.import(gsdExtensionPath('markdown-renderer.ts'), {}) as any
+  const workspaceModule = await jiti.import(gsdExtensionPath('db-workspace.ts'), {}) as any
+  const prepareVerifiedRecoverBackup = workspaceModule.prepareVerifiedRecoverBackup
+  if (typeof prepareVerifiedRecoverBackup !== 'function') {
+    throw new Error('selected GSD extensions do not support verified recovery backups; synchronize the extension bundle')
+  }
   type Counts = { milestones: number; slices: number; tasks: number }
   return {
     ensureDbOpen: dynamicToolsModule.ensureDbOpen as (basePath: string) => Promise<boolean>,
     isDbAvailable: dbModule.isDbAvailable as () => boolean,
     clearEngineHierarchy: dbModule.clearEngineHierarchy as () => void,
     transaction: dbModule.transaction as <T>(fn: () => T) => T,
-    backupDatabaseSnapshot: dbModule.backupDatabaseSnapshot as (label: string) => string | null,
+    prepareVerifiedRecoverBackup: prepareVerifiedRecoverBackup as PrepareVerifiedRecoverBackup,
     migrateHierarchyToDb: importerModule.migrateHierarchyToDb as (basePath: string) => Counts,
     invalidateStateCache: stateModule.invalidateStateCache as () => void,
     countDbHierarchy: migrationCheckModule.countDbHierarchy as () => Counts,
@@ -73,7 +78,17 @@ export interface RecoverResult {
   exitCode: number
 }
 
-export async function handleRecover(basePath: string): Promise<RecoverResult> {
+interface VerifiedRecoverBackup {
+  backup_ref: string
+}
+
+type PrepareVerifiedRecoverBackup = (
+  basePath: string,
+) => VerifiedRecoverBackup | Promise<VerifiedRecoverBackup>
+
+export async function handleRecover(
+  basePath: string,
+): Promise<RecoverResult> {
   const gsdDir = join(basePath, '.gsd')
   if (!existsSync(gsdDir)) {
     process.stderr.write(`[headless] recover: no .gsd/ directory at ${basePath}\n`)
@@ -114,11 +129,10 @@ export async function handleRecover(basePath: string): Promise<RecoverResult> {
     return { exitCode: 1 }
   }
 
-  // Snapshot the DB before the destructive clear so recover is reversible.
-  const backupPath = modules.backupDatabaseSnapshot('pre-recover')
-
   let counts: { milestones: number; slices: number; tasks: number }
+  let backup: VerifiedRecoverBackup
   try {
+    backup = await modules.prepareVerifiedRecoverBackup(basePath)
     counts = modules.transaction(() => {
       modules.clearEngineHierarchy()
       return modules.migrateHierarchyToDb(basePath)
@@ -163,9 +177,9 @@ export async function handleRecover(basePath: string): Promise<RecoverResult> {
         `(${markdown.milestones}M/${markdown.slices}S/${markdown.tasks}T on disk); some markdown may have failed to parse\n`,
     )
   }
-  if (backupPath) {
-    process.stderr.write(`[headless] recover: pre-recover snapshot saved to ${backupPath}\n`)
-  }
+  process.stderr.write(
+    `[headless] recover: verified backup and restore rehearsal completed at ${backup.backup_ref}\n`,
+  )
 
   process.stderr.write(
     `gsd-recover: recovered ${counts.milestones}M/${counts.slices}S/${counts.tasks}T hierarchy` +

@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 // gsd-recover.test.ts — Tests for the `gsd recover` recovery logic.
 // Verifies: populate DB → clear hierarchy → recover from markdown → state matches.
 
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 
@@ -498,7 +498,7 @@ describe('gsd-recover', async () => {
     const base = createFixtureBase();
     try {
       writeFile(base, 'milestones/M001/M001-ROADMAP.md', ROADMAP_M001);
-      openDatabase(':memory:');
+      openDatabase(join(base, '.gsd', 'gsd.db'));
       insertMilestone({ id: 'M999', title: 'Existing DB State', status: 'active' });
 
       const { ctx, notes } = makeCtx();
@@ -529,6 +529,11 @@ describe('gsd-recover', async () => {
       assert.ok(getMilestone('M999'), 'data-loss recover is refused, DB row preserved');
       assert.equal(getMilestone('M001'), null, 'markdown not imported on refusal');
       assert.equal(notes.at(-1)?.kind, 'error');
+      assert.equal(
+        existsSync(join(base, '.gsd', 'backups')),
+        false,
+        'data-loss refusal short-circuits before backup preparation',
+      );
     } finally {
       closeDatabase();
       cleanup(base);
@@ -560,7 +565,7 @@ describe('gsd-recover', async () => {
     const base = createFixtureBase();
     try {
       writeFile(base, 'milestones/M001/M001-ROADMAP.md', ROADMAP_M001);
-      openDatabase(':memory:');
+      openDatabase(join(base, '.gsd', 'gsd.db'));
       insertMilestone({ id: 'M999', title: 'Existing DB State', status: 'active' });
 
       const { ctx } = makeCtx(async () => true); // both confirms accepted
@@ -568,6 +573,55 @@ describe('gsd-recover', async () => {
 
       assert.equal(getMilestone('M999'), null, 'acknowledged data-loss recover clears old rows');
       assert.ok(getMilestone('M001'), 'acknowledged data-loss recover imports markdown');
+    } finally {
+      closeDatabase();
+      cleanup(base);
+    }
+  });
+
+  test('handleRecover aborts before destructive work when verified-backup preparation fails', async () => {
+    const base = createFixtureBase();
+    try {
+      writeFile(base, 'milestones/M001/M001-ROADMAP.md', ROADMAP_M001);
+      openDatabase(join(base, '.gsd', 'gsd.db'));
+      insertMilestone({ id: 'M999', title: 'Authoritative sentinel', status: 'active' });
+      writeFileSync(join(base, '.gsd', 'backups'), 'blocks backup directory creation');
+
+      const { ctx, notes } = makeCtx();
+      await handleRecover(ctx, base, '--confirm --allow-data-loss');
+
+      assert.ok(getMilestone('M999'), 'gate failure preserves authoritative DB rows');
+      assert.equal(getMilestone('M001'), null, 'gate failure does not import markdown rows');
+      assert.equal(notes.at(-1)?.kind, 'error');
+      assert.match(notes.at(-1)?.message ?? '', /backups|exist|directory/i);
+    } finally {
+      closeDatabase();
+      cleanup(base);
+    }
+  });
+
+  test('handleRecover reports the drilled content-addressed backup used before recovery', async () => {
+    const base = createFixtureBase();
+    try {
+      writeFile(base, 'milestones/M001/M001-ROADMAP.md', ROADMAP_M001);
+      openDatabase(join(base, '.gsd', 'gsd.db'));
+      insertMilestone({ id: 'M999', title: 'Authoritative sentinel', status: 'active' });
+
+      const { ctx, notes } = makeCtx();
+      await handleRecover(ctx, base, '--confirm --allow-data-loss');
+
+      assert.equal(getMilestone('M999'), null, 'recovery clears old hierarchy only after the gate');
+      assert.ok(getMilestone('M001'), 'recovery imports markdown after the gate');
+      assert.equal(notes.at(-1)?.kind, 'success');
+      const backupsDirectory = join(base, '.gsd', 'backups');
+      const backupNames = readdirSync(backupsDirectory);
+      assert.equal(backupNames.length, 1, 'successful recovery publishes one backup without sidecars');
+      assert.match(backupNames[0]!, /^pre-recover-[0-9a-f]{64}\.sqlite$/u);
+      const backupPath = join(backupsDirectory, backupNames[0]!);
+      assert.ok(
+        notes.at(-1)?.message.includes(backupPath),
+        'success reports the drilled .sqlite backup path',
+      );
     } finally {
       closeDatabase();
       cleanup(base);

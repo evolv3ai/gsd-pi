@@ -11,7 +11,10 @@ import { deriveState } from "./state.js";
 import { gsdProjectionRoot, gsdRoot } from "./paths.js";
 import { nativeBranchList, nativeDetectMainBranch, nativeBranchListMerged, nativeBranchDelete, nativeForEachRef, nativeUpdateRef } from "./native-git-bridge.js";
 import { logWarning } from "./workflow-logger.js";
-import { backupWorkflowDatabaseSnapshot, refreshWorkflowDatabaseFromDisk } from "./db-workspace.js";
+import {
+  prepareVerifiedRecoverBackup,
+  refreshWorkflowDatabaseFromDisk,
+} from "./db-workspace.js";
 
 export async function handleCleanupBranches(ctx: ExtensionCommandContext, basePath: string): Promise<void> {
   let branches: string[];
@@ -517,8 +520,8 @@ async function confirmRecover(
     warning.push(
       "",
       "⚠ The DB holds rows the markdown lacks. Recover will permanently DELETE",
-      "  those rows. A snapshot is written to .gsd/backups/ first, but if the DB",
-      "  is the source of truth you almost certainly want /gsd rebuild markdown.",
+      "  those rows. Before deletion, a verified backup must pass an isolated restore",
+      "  rehearsal. If the DB is the source of truth, use /gsd rebuild markdown instead.",
     );
   }
   const warningText = warning.join("\n");
@@ -554,8 +557,8 @@ async function confirmRecover(
       const acknowledged = await ctx.ui.confirm(
         "Permanently delete DB rows the markdown lacks?",
         "This recover will DELETE authoritative DB rows the markdown does not contain. " +
-          "A snapshot is saved to .gsd/backups/ first, but /gsd rebuild markdown is usually " +
-          "what you want. Proceed with the deletion?",
+          "A verified backup must pass an isolated restore rehearsal first, but /gsd rebuild " +
+          "markdown is usually what you want. Proceed with the deletion?",
       );
       if (!acknowledged) {
         ctx.ui.notify("gsd recover cancelled. No database changes made.", "info");
@@ -581,7 +584,11 @@ async function confirmRecover(
  *
  * Prints counts of recovered items and the resulting project phase.
  */
-export async function handleRecover(ctx: ExtensionCommandContext, basePath: string, args = ""): Promise<void> {
+export async function handleRecover(
+  ctx: ExtensionCommandContext,
+  basePath: string,
+  args = "",
+): Promise<void> {
   const { isDbAvailable: dbAvailable, clearEngineHierarchy, transaction: dbTransaction } = await import("./gsd-db.js");
   const { migrateHierarchyToDb } = await import("./md-importer.js");
   const { invalidateStateCache } = await import("./state.js");
@@ -604,8 +611,8 @@ export async function handleRecover(ctx: ExtensionCommandContext, basePath: stri
   if (!(await confirmRecover(ctx, args, markdown, beforeDb, dataLoss))) return;
 
   try {
-    // 0. Snapshot the DB before the destructive clear so recover is reversible.
-    const backupPath = backupWorkflowDatabaseSnapshot("pre-recover");
+    // 0. Refuse destructive work until a verified backup survives an isolated restore rehearsal.
+    const backup = prepareVerifiedRecoverBackup(basePath);
 
     // 1. Delete + re-populate inside a single transaction for atomicity.
     //    clearEngineHierarchy() uses transaction() internally but transaction()
@@ -652,9 +659,7 @@ export async function handleRecover(ctx: ExtensionCommandContext, basePath: stri
           `Some markdown may have failed to parse — review before continuing.`,
       );
     }
-    if (backupPath) {
-      lines.push(``, `  Backup:     ${backupPath}`);
-    }
+    lines.push(``, `  Verified backup: ${backup.backup_ref}`);
     if (state.activeMilestone) {
       lines.push(`  Active:     ${state.activeMilestone.id}: ${state.activeMilestone.title}`);
     }

@@ -257,7 +257,6 @@ test("scanner ignores multiline SELECT statements", () => {
 });
 
 const DB_WORKSPACE_MECHANICS = new Set([
-  "backupDatabaseSnapshot",
   "checkpointDatabase",
   "closeAllDatabases",
   "closeDatabase",
@@ -368,7 +367,6 @@ test("DB Workspace Interface owns database open-state and maintenance calls", as
   const workspaceDb = await import("../db-workspace.js");
 
   const expected = [
-    "backupWorkflowDatabaseSnapshot",
     "checkpointWorkflowDatabase",
     "closeAllWorkflowDatabases",
     "closeWorkflowDatabase",

@@ -4,11 +4,8 @@
 import assert from "node:assert/strict";
 import {
   cpSync,
-  lstatSync,
   mkdtempSync,
   readFileSync,
-  readlinkSync,
-  readdirSync,
   rmSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -18,7 +15,6 @@ import { fileURLToPath } from "node:url";
 import { test } from "node:test";
 
 import type { LegacyImportPreviewEnvelope } from "../legacy-import-contract.ts";
-import type { LegacyImportSourceRoot } from "../legacy-import-preview-source.ts";
 import {
   canonicalLegacyImportJson,
   createLegacyImportPreview,
@@ -29,6 +25,8 @@ import {
 } from "../legacy-import-preview.ts";
 import { _getAdapter, closeDatabase, insertDecision, openDatabase } from "../gsd-db.ts";
 import {
+  createLegacyImportCorpusSourceRoots,
+  fingerprintLegacyImportCorpusTree,
   loadLegacyImportCorpusCase,
   validateLegacyImportCorpusCase,
   type LegacyImportCorpusManifest,
@@ -101,52 +99,6 @@ const READ_ONLY_CANONICAL_TABLES = [
   "cancellation_requests",
   "turn_git_transactions",
 ] as const;
-
-function rootsFor(source: string): LegacyImportSourceRoot[] {
-  const candidates: Array<Pick<LegacyImportSourceRoot, "kind" | "physical_path" | "logical_path">> = [];
-  for (const name of readdirSync(source).sort()) {
-    const physical = join(source, name);
-    if (name === "$GSD_STATE_DIR" && lstatSync(physical).isDirectory()) {
-      const projects = join(physical, "projects");
-      for (const project of readdirSync(projects).sort()) {
-        candidates.push({
-          kind: "external",
-          physical_path: join(projects, project),
-          logical_path: `$GSD_STATE_DIR/projects/${project}`,
-        });
-      }
-      continue;
-    }
-    const nestedGsd = join(physical, ".gsd");
-    if (lstatSync(physical).isDirectory() && readdirSync(physical).includes(".gsd") && readdirSync(nestedGsd).includes("gsd.db")) {
-      candidates.push({ kind: "project", physical_path: nestedGsd, logical_path: `${name}/.gsd` });
-      continue;
-    }
-    candidates.push({
-      kind: name === ".gsd-worktrees" ? "worktree" : name.startsWith("gsd-home") ? "external" : "project",
-      physical_path: physical,
-      logical_path: name,
-    });
-  }
-  return candidates.map((root, index) => ({
-    id: `corpus-${String(index + 1).padStart(2, "0")}`,
-    presence: "required",
-    ...root,
-  }));
-}
-
-function fingerprint(path: string, relative = ""): string {
-  const rows: unknown[] = [];
-  for (const name of readdirSync(join(path, relative)).sort()) {
-    const child = relative ? `${relative}/${name}` : name;
-    const physical = join(path, child);
-    const stat = lstatSync(physical);
-    if (stat.isDirectory()) rows.push([child, "directory", fingerprint(path, child)]);
-    else if (stat.isSymbolicLink()) rows.push([child, "symlink", readlinkSync(physical)]);
-    else rows.push([child, "file", hashLegacyImportBytes(readFileSync(physical))]);
-  }
-  return hashLegacyImportValue(rows);
-}
 
 function sortCanonical<T>(values: readonly T[]): T[] {
   return [...values].sort((left, right) => canonicalLegacyImportJson(left).localeCompare(canonicalLegacyImportJson(right)));
@@ -240,14 +192,14 @@ test("public legacy Preview returns deterministic read-only artifacts for every 
       assert.ok(database);
       if (entry.name === "action-matrix") seedActionMatrixBase(source);
       const input: LegacyImportPreviewCreateInput = {
-        roots: rootsFor(source),
+        roots: createLegacyImportCorpusSourceRoots(source),
         ...(entry.name === "custom-workflow" ? { bundledDefinitionNames: ["bugfix"] } : {}),
       };
-      const sourceBefore = fingerprint(source);
+      const sourceBefore = fingerprintLegacyImportCorpusTree(source);
       const canonicalTablesBefore = canonicalTableSnapshots(database);
       const totalChangesBefore = database.prepare("SELECT total_changes() AS count").get()?.["count"];
       const databaseBefore = hashLegacyImportBytes(readFileSync(databasePath));
-      const caseRootBefore = fingerprint(caseRoot);
+      const caseRootBefore = fingerprintLegacyImportCorpusTree(caseRoot);
       const first = createLegacyImportPreview(input);
       const replay = createLegacyImportPreview(input);
 
@@ -266,9 +218,13 @@ test("public legacy Preview returns deterministic read-only artifacts for every 
       validateLegacyImportCorpusCase({ ...corpusCase, oracle: first.preview });
       assert.equal(first.preview.sources.length, corpusCase.files.length, `${entry.name}: exactly-once sources`);
       assert.equal(new Set(first.preview.sources.map((item) => item.path)).size, corpusCase.files.length, `${entry.name}: unique sources`);
-      assert.equal(fingerprint(source), sourceBefore, `${entry.name}: source read-only`);
+      assert.equal(fingerprintLegacyImportCorpusTree(source), sourceBefore, `${entry.name}: source read-only`);
       assert.equal(hashLegacyImportBytes(readFileSync(databasePath)), databaseBefore, `${entry.name}: database read-only`);
-      assert.equal(fingerprint(caseRoot), caseRootBefore, `${entry.name}: complete project inventory read-only`);
+      assert.equal(
+        fingerprintLegacyImportCorpusTree(caseRoot),
+        caseRootBefore,
+        `${entry.name}: complete project inventory read-only`,
+      );
       assert.deepEqual(canonicalTableSnapshots(database), canonicalTablesBefore, `${entry.name}: canonical tables read-only`);
       assert.equal(database.prepare("SELECT total_changes() AS count").get()?.["count"], totalChangesBefore, `${entry.name}: no writes`);
 

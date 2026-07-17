@@ -3,7 +3,8 @@
 
 import { isUtf8 } from "node:buffer";
 import { createHash } from "node:crypto";
-import { readdirSync, readFileSync, readlinkSync } from "node:fs";
+import { lstatSync, readdirSync, readFileSync, readlinkSync } from "node:fs";
+import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import AjvModule from "ajv/dist/2020.js";
@@ -24,6 +25,7 @@ import {
   type LegacyImportSourceOutcome,
   type LegacyImportValue,
 } from "../../legacy-import-contract.ts";
+import type { LegacyImportSourceRoot } from "../../legacy-import-preview-source.ts";
 import type { LegacyImportSurface } from "../../legacy-import-surfaces.ts";
 
 const Ajv = AjvModule.default ?? AjvModule;
@@ -128,6 +130,56 @@ function canonicalJson(value: unknown): string {
 
 export function legacyImportCorpusHash(value: unknown): LegacyImportSha256 {
   return sha256(canonicalJson(value));
+}
+
+export function createLegacyImportCorpusSourceRoots(source: string): LegacyImportSourceRoot[] {
+  const candidates: Array<Pick<LegacyImportSourceRoot, "kind" | "physical_path" | "logical_path">> = [];
+  for (const name of readdirSync(source).sort()) {
+    const physical = join(source, name);
+    if (name === "$GSD_STATE_DIR" && lstatSync(physical).isDirectory()) {
+      const projects = join(physical, "projects");
+      for (const project of readdirSync(projects).sort()) {
+        candidates.push({
+          kind: "external",
+          physical_path: join(projects, project),
+          logical_path: `$GSD_STATE_DIR/projects/${project}`,
+        });
+      }
+      continue;
+    }
+    const nestedGsd = join(physical, ".gsd");
+    if (
+      lstatSync(physical).isDirectory()
+      && readdirSync(physical).includes(".gsd")
+      && readdirSync(nestedGsd).includes("gsd.db")
+    ) {
+      candidates.push({ kind: "project", physical_path: nestedGsd, logical_path: `${name}/.gsd` });
+      continue;
+    }
+    candidates.push({
+      kind: name === ".gsd-worktrees" ? "worktree" : name.startsWith("gsd-home") ? "external" : "project",
+      physical_path: physical,
+      logical_path: name,
+    });
+  }
+  return candidates.map((root, index) => ({
+    id: `corpus-${String(index + 1).padStart(2, "0")}`,
+    presence: "required",
+    ...root,
+  }));
+}
+
+export function fingerprintLegacyImportCorpusTree(path: string, relative = ""): LegacyImportSha256 {
+  const rows: unknown[] = [];
+  for (const name of readdirSync(join(path, relative)).sort()) {
+    const child = relative ? `${relative}/${name}` : name;
+    const physical = join(path, child);
+    const stat = lstatSync(physical);
+    if (stat.isDirectory()) rows.push([child, "directory", fingerprintLegacyImportCorpusTree(path, child)]);
+    else if (stat.isSymbolicLink()) rows.push([child, "symlink", readlinkSync(physical)]);
+    else rows.push([child, "file", sha256(readFileSync(physical))]);
+  }
+  return legacyImportCorpusHash(rows);
 }
 
 function compareNames(left: { name: string }, right: { name: string }): number {

@@ -18,9 +18,9 @@
 // The dispatcher branch itself (one if-block in headless.ts) is verified
 // by `npm run build:core`; the behavior-level guarantees live here.
 
-import test from "node:test";
+import { after, test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
@@ -33,10 +33,20 @@ import {
   getAllMilestones,
   getMilestoneSlices,
   getSliceTasks,
+  getMilestone,
+  insertMilestone,
   insertGateRow,
 } from "../resources/extensions/gsd/gsd-db.ts";
 import { migrateHierarchyToDb } from "../resources/extensions/gsd/md-importer.ts";
 import { invalidateStateCache } from "../resources/extensions/gsd/state.ts";
+
+const previousAgentDir = process.env.GSD_AGENT_DIR;
+process.env.GSD_AGENT_DIR = join(tmpdir(), `gsd-headless-recover-missing-agent-${process.pid}`);
+const { handleRecover: handleHeadlessRecover } = await import("../headless-recover.ts");
+after(() => {
+  if (previousAgentDir === undefined) delete process.env.GSD_AGENT_DIR;
+  else process.env.GSD_AGENT_DIR = previousAgentDir;
+});
 
 function makeMarkdownFixture(): string {
   const base = mkdtempSync(join(tmpdir(), "gsd-headless-recover-"));
@@ -166,4 +176,94 @@ test("headless recover: clears gate rows before rebuilding hierarchy", async (t)
 
   assert.deepEqual(recovered, { milestones: 1, slices: 1, tasks: 1 });
   assert.equal(getSliceTasks("M001", "S01").length, 1, "DB has the imported task after gate-backed recovery");
+});
+
+test("headless recover: verified-backup failure aborts before destructive work", async (t) => {
+  const base = makeMarkdownFixture();
+  const previousAllowDataLoss = process.env.GSD_RECOVER_ALLOW_DATA_LOSS;
+  const previousWrite = process.stderr.write;
+  const stderr: string[] = [];
+  t.after(() => {
+    process.stderr.write = previousWrite;
+    if (previousAllowDataLoss === undefined) delete process.env.GSD_RECOVER_ALLOW_DATA_LOSS;
+    else process.env.GSD_RECOVER_ALLOW_DATA_LOSS = previousAllowDataLoss;
+    try { closeDatabase(); } catch { /* may not be open */ }
+    rmSync(base, { recursive: true, force: true });
+  });
+
+  await ensureDbOpen(base);
+  insertMilestone({ id: "M999", title: "Authoritative sentinel", status: "active" });
+  process.env.GSD_RECOVER_ALLOW_DATA_LOSS = "1";
+  process.stderr.write = ((chunk: string | Uint8Array) => {
+    stderr.push(String(chunk));
+    return true;
+  }) as typeof process.stderr.write;
+  writeFileSync(join(base, ".gsd", "backups"), "blocks backup directory creation");
+
+  const result = await handleHeadlessRecover(base);
+
+  assert.equal(result.exitCode, 1, "a gate failure is a recover failure");
+  assert.match(stderr.join(""), /backups|exist|directory/i);
+  assert.ok(getMilestone("M999"), "gate failure preserves authoritative DB rows");
+  assert.equal(getMilestone("M001"), null, "gate failure does not import markdown rows");
+});
+
+test("headless recover: reports the drilled content-addressed backup used before recovery", async (t) => {
+  const base = makeMarkdownFixture();
+  const previousAllowDataLoss = process.env.GSD_RECOVER_ALLOW_DATA_LOSS;
+  const previousWrite = process.stderr.write;
+  const stderr: string[] = [];
+  t.after(() => {
+    process.stderr.write = previousWrite;
+    if (previousAllowDataLoss === undefined) delete process.env.GSD_RECOVER_ALLOW_DATA_LOSS;
+    else process.env.GSD_RECOVER_ALLOW_DATA_LOSS = previousAllowDataLoss;
+    try { closeDatabase(); } catch { /* may not be open */ }
+    rmSync(base, { recursive: true, force: true });
+  });
+
+  await ensureDbOpen(base);
+  insertMilestone({ id: "M999", title: "Authoritative sentinel", status: "active" });
+  process.env.GSD_RECOVER_ALLOW_DATA_LOSS = "1";
+  process.stderr.write = ((chunk: string | Uint8Array) => {
+    stderr.push(String(chunk));
+    return true;
+  }) as typeof process.stderr.write;
+
+  const result = await handleHeadlessRecover(base);
+
+  assert.equal(result.exitCode, 0);
+  assert.equal(getMilestone("M999"), null, "recovery clears the old hierarchy only after the gate");
+  assert.ok(getMilestone("M001"), "recovery imports markdown after the gate");
+  const backupsDirectory = join(base, ".gsd", "backups");
+  const backupNames = readdirSync(backupsDirectory);
+  assert.equal(backupNames.length, 1, "successful recovery publishes one backup without sidecars");
+  assert.match(backupNames[0]!, /^pre-recover-[0-9a-f]{64}\.sqlite$/u);
+  const backupPath = join(backupsDirectory, backupNames[0]!);
+  assert.ok(stderr.join("").includes(backupPath), "success reports the drilled .sqlite backup path");
+});
+
+test("headless recover: data-loss refusal happens before the verified-backup gate", async (t) => {
+  const base = makeMarkdownFixture();
+  const previousAllowDataLoss = process.env.GSD_RECOVER_ALLOW_DATA_LOSS;
+  t.after(() => {
+    if (previousAllowDataLoss === undefined) delete process.env.GSD_RECOVER_ALLOW_DATA_LOSS;
+    else process.env.GSD_RECOVER_ALLOW_DATA_LOSS = previousAllowDataLoss;
+    try { closeDatabase(); } catch { /* may not be open */ }
+    rmSync(base, { recursive: true, force: true });
+  });
+
+  await ensureDbOpen(base);
+  insertMilestone({ id: "M999", title: "Authoritative sentinel", status: "active" });
+  delete process.env.GSD_RECOVER_ALLOW_DATA_LOSS;
+
+  const result = await handleHeadlessRecover(base);
+
+  assert.equal(result.exitCode, 1);
+  assert.equal(
+    existsSync(join(base, ".gsd", "backups")),
+    false,
+    "data-loss refusal short-circuits before backup preparation",
+  );
+  assert.ok(getMilestone("M999"), "refusal preserves authoritative DB rows");
+  assert.equal(getMilestone("M001"), null, "refusal does not import markdown rows");
 });

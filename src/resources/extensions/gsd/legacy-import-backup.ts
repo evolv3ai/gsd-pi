@@ -27,7 +27,12 @@ import {
   type LegacyImportValue,
 } from "./legacy-import-contract.js";
 import type { DbAdapter } from "./db-adapter.js";
-import { getDbOrNull, getDbPath, isInTransaction } from "./db/engine.js";
+import {
+  getDbOrNull,
+  getDbPath,
+  isInTransaction,
+  readIndependentDatabaseTransaction,
+} from "./db/engine.js";
 import {
   captureLegacyImportBaseSnapshot,
   captureCurrentLegacyImportBaseSnapshot,
@@ -2100,57 +2105,49 @@ function runIndependentVerification(
   expectedBase: LegacyImportBaseSnapshot,
 ): LegacyImportIndependentVerification {
   const db = connection.db;
-  let transactionActive = false;
   try {
-    db.exec("BEGIN DEFERRED");
-    transactionActive = true;
-    const openedPath = requireOnlyMainDatabase(db, expectedPath);
-    requireExactlyOk(db, "quick_check");
-    requireExactlyOk(db, "integrity_check");
-    if (db.prepare("PRAGMA foreign_key_check").all().length !== 0) {
-      verificationFail(
-        "LEGACY_IMPORT_BACKUP_FOREIGN_KEY_FAILED",
-        "legacy import backup contains foreign-key violations",
-      );
-    }
-    requireSchemaAnchors(db);
-    let independentBase: LegacyImportBaseSnapshot;
-    try {
-      independentBase = captureLegacyImportBaseSnapshot({
-        readTransaction: (fn) => fn(),
-        source: createLegacyImportBaseSnapshotSource(db),
-      });
-    } catch (error) {
-      verificationFail(
-        "LEGACY_IMPORT_BACKUP_SCHEMA_INVALID",
-        "legacy import backup base could not be captured independently",
-        error instanceof LegacyImportBaseSnapshotError ? { capture_error_code: error.code } : {},
-      );
-    }
-    if (hashLegacyImportValue(independentBase) !== hashLegacyImportValue(expectedBase)) {
-      verificationFail(
-        "LEGACY_IMPORT_BACKUP_VERIFIED_BASE_MISMATCH",
-        "independent backup base does not match the approved Preview base",
-        {
-          expected_relevant_rows_hash: expectedBase.relevant_rows_hash,
-          observed_relevant_rows_hash: independentBase.relevant_rows_hash,
-        },
-      );
-    }
-    db.exec("COMMIT");
-    transactionActive = false;
-    return { base: independentBase, openedPath };
-  } catch (error) {
-    if (transactionActive) {
-      try {
-        db.exec("ROLLBACK");
-      } catch {
+    return readIndependentDatabaseTransaction(db, () => {
+      const openedPath = requireOnlyMainDatabase(db, expectedPath);
+      requireExactlyOk(db, "quick_check");
+      requireExactlyOk(db, "integrity_check");
+      if (db.prepare("PRAGMA foreign_key_check").all().length !== 0) {
         verificationFail(
-          "LEGACY_IMPORT_BACKUP_TRANSACTION_FAILED",
-          "independent backup verification transaction could not be rolled back",
+          "LEGACY_IMPORT_BACKUP_FOREIGN_KEY_FAILED",
+          "legacy import backup contains foreign-key violations",
         );
       }
-    }
+      requireSchemaAnchors(db);
+      let independentBase: LegacyImportBaseSnapshot;
+      try {
+        independentBase = captureLegacyImportBaseSnapshot({
+          readTransaction: (fn) => fn(),
+          source: createLegacyImportBaseSnapshotSource(db),
+        });
+      } catch (error) {
+        verificationFail(
+          "LEGACY_IMPORT_BACKUP_SCHEMA_INVALID",
+          "legacy import backup base could not be captured independently",
+          error instanceof LegacyImportBaseSnapshotError ? { capture_error_code: error.code } : {},
+        );
+      }
+      if (hashLegacyImportValue(independentBase) !== hashLegacyImportValue(expectedBase)) {
+        verificationFail(
+          "LEGACY_IMPORT_BACKUP_VERIFIED_BASE_MISMATCH",
+          "independent backup base does not match the approved Preview base",
+          {
+            expected_relevant_rows_hash: expectedBase.relevant_rows_hash,
+            observed_relevant_rows_hash: independentBase.relevant_rows_hash,
+          },
+        );
+      }
+      return { base: independentBase, openedPath };
+    }, () => {
+      verificationFail(
+        "LEGACY_IMPORT_BACKUP_TRANSACTION_FAILED",
+        "independent backup verification transaction could not be rolled back",
+      );
+    });
+  } catch (error) {
     if (error instanceof LegacyImportBackupError) throw error;
     verificationFail(
       "LEGACY_IMPORT_BACKUP_TRANSACTION_FAILED",

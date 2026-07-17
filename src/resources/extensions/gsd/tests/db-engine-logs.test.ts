@@ -13,12 +13,12 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { chmodSync as fsChmodSync, mkdtempSync, mkdirSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
 import { checkpointDatabase, closeDatabase, openDatabase, vacuumDatabase, _getAdapter } from "../gsd-db.ts";
-import { backupDatabaseSnapshot, readTransaction } from "../db/engine.ts";
+import { readTransaction } from "../db/engine.ts";
 import {
   drainLogs,
   peekLogs,
@@ -179,29 +179,6 @@ test("readTransaction logs a db error when ROLLBACK fails after a read error (sp
     assert.equal(err!.message, "snapshotState ROLLBACK failed");
     assert.match(err!.context?.error ?? "", /forced failure for: ROLLBACK/u);
   } finally {
-    rmSync(base, { recursive: true, force: true });
-  }
-});
-
-test("backupDatabaseSnapshot logs a db warning when the snapshot copy fails", () => {
-  const base = makeBase();
-  const dbPath = join(base, ".gsd", "gsd.db");
-  assert.equal(openDatabase(dbPath), true);
-  // Make the snapshot destination's parent dir read-only so the copy step
-  // inside backupDatabaseSnapshot (mkdirSync(backups) + copyFileSync) fails —
-  // exercising the outer catch (engine.ts:726-728). The DB handle stays open,
-  // so currentPath is set and the read-only parent only blocks the new copy.
-  fsChmodSync(join(base, ".gsd"), 0o555);
-
-  const { result, logs } = captureLogs(() => backupDatabaseSnapshot("test-label"));
-  closeDatabase();
-  try {
-    assert.equal(result, null, "a failed snapshot must return null");
-    const warn = logs.find((e) => e.component === "db" && e.severity === "warn");
-    assert.ok(warn, "a db warning must be logged on snapshot failure");
-    assert.match(warn!.message, /database snapshot failed/u);
-  } finally {
-    fsChmodSync(join(base, ".gsd"), 0o755);
     rmSync(base, { recursive: true, force: true });
   }
 });

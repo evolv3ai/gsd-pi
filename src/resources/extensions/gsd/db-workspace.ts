@@ -1,13 +1,12 @@
 // Project/App: gsd-pi
 // File Purpose: Workspace-facing Interface for opening and maintaining the workflow database.
 
-import { existsSync } from "node:fs";
+import { existsSync, mkdirSync, realpathSync } from "node:fs";
 import { dirname, join } from "node:path";
 
 import type { GsdWorkspace, MilestoneScope } from "./workspace.js";
 import type { DbAdapter } from "./db-adapter.js";
 import {
-  backupDatabaseSnapshot,
   checkpointDatabase,
   closeAllDatabases,
   closeDatabase,
@@ -24,6 +23,13 @@ import {
   vacuumDatabase,
   wasDbOpenAttempted,
 } from "./gsd-db.js";
+import {
+  prepareLegacyImportBackup,
+  type LegacyImportVerifiedBackup,
+} from "./legacy-import-backup.js";
+import { captureCurrentLegacyImportBaseSnapshot } from "./legacy-import-preview-base.js";
+import { createLegacyImportPreview } from "./legacy-import-preview.js";
+import { drillLegacyImportBackupRestore } from "./legacy-import-restore-drill.js";
 import { resolveGsdPathContract, gsdRoot } from "./paths.js";
 import { logWarning, setLogBasePath } from "./workflow-logger.js";
 
@@ -238,6 +244,44 @@ export function vacuumWorkflowDatabase(): void {
   vacuumDatabase();
 }
 
-export function backupWorkflowDatabaseSnapshot(label: string): string | null {
-  return backupDatabaseSnapshot(label);
+export function prepareVerifiedRecoverBackup(basePath: string): LegacyImportVerifiedBackup {
+  const location = resolveWorkflowDatabaseLocation(basePath);
+  const databasePath = getWorkflowDatabasePath();
+  if (
+    !databasePath
+    || databasePath === ":memory:"
+    || realpathSync(databasePath) !== realpathSync(location.projectDb)
+  ) {
+    throw new Error("gsd recover requires the open, file-backed project database");
+  }
+
+  const roots = [
+    {
+      id: "project-phases",
+      kind: "project" as const,
+      physical_path: join(location.projectGsd, "phases"),
+      logical_path: ".gsd/phases",
+      presence: "optional" as const,
+    },
+    {
+      id: "project-milestones",
+      kind: "project" as const,
+      physical_path: join(location.projectGsd, "milestones"),
+      logical_path: ".gsd/milestones",
+      presence: "optional" as const,
+    },
+  ];
+  const preview = createLegacyImportPreview({ roots });
+  const base = captureCurrentLegacyImportBaseSnapshot();
+  const destinationDirectory = join(location.projectGsd, "backups");
+  mkdirSync(destinationDirectory, { recursive: true });
+  const backup = prepareLegacyImportBackup({
+    preview,
+    base,
+    roots,
+    destination_directory: destinationDirectory,
+    label: "pre-recover",
+  });
+  drillLegacyImportBackupRestore({ backup, preview, base });
+  return backup;
 }
