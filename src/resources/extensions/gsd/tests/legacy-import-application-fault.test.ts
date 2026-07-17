@@ -39,7 +39,7 @@ import {
   _setDomainOperationFaultForTest,
   type DomainOperationFaultPoint,
 } from "../db/domain-operation.ts";
-import type { DbAdapter } from "../db-adapter.ts";
+import type { DbAdapter, DbStatement } from "../db-adapter.ts";
 import {
   _getAdapter,
   closeDatabase,
@@ -47,8 +47,8 @@ import {
 } from "../gsd-db.ts";
 import { createLegacyImportCorpusSourceRoots } from "./helpers/legacy-import-corpus.ts";
 
-const CORPUS_SOURCE = fileURLToPath(new URL(
-  "./__fixtures__/legacy-import-corpus/v1/gsd-nested/source/",
+const CORPUS_ROOT = fileURLToPath(new URL(
+  "./__fixtures__/legacy-import-corpus/v1/",
   import.meta.url,
 ));
 const CHILD_PATH = fileURLToPath(new URL("./legacy-import-application-child.ts", import.meta.url));
@@ -97,6 +97,33 @@ interface ChildConfig {
   committedPath?: string;
 }
 
+type MutationFixture = "gsd-nested" | "planning-flat-complete" | "decision-create";
+
+interface MutationFaultCase {
+  family: string;
+  fixture: MutationFixture;
+  sqlPattern: string;
+  occurrence: number;
+}
+
+interface SqlFaultController {
+  hitCount(): number;
+  restore(): void;
+}
+
+const MUTATION_FAULT_CASES: readonly MutationFaultCase[] = [
+  { family: "operation insert", fixture: "gsd-nested", sqlPattern: "insert into workflow_operations", occurrence: 1 },
+  { family: "row create", fixture: "gsd-nested", sqlPattern: "insert into tasks", occurrence: 1 },
+  { family: "dependency replacement", fixture: "gsd-nested", sqlPattern: "insert into slice_dependencies", occurrence: 1 },
+  { family: "lifecycle adoption", fixture: "planning-flat-complete", sqlPattern: "insert into workflow_item_lifecycles", occurrence: 1 },
+  { family: "decision-memory write", fixture: "decision-create", sqlPattern: "insert into memories", occurrence: 1 },
+  { family: "receipt insert", fixture: "gsd-nested", sqlPattern: "insert into workflow_import_applications", occurrence: 1 },
+  { family: "event", fixture: "gsd-nested", sqlPattern: "insert into workflow_domain_events", occurrence: 1 },
+  { family: "outbox", fixture: "gsd-nested", sqlPattern: "insert into workflow_outbox", occurrence: 1 },
+  { family: "projection work", fixture: "gsd-nested", sqlPattern: "insert into workflow_projection_work", occurrence: 1 },
+  { family: "authority CAS", fixture: "gsd-nested", sqlPattern: "update project_authority", occurrence: 1 },
+];
+
 function db(): DbAdapter {
   const adapter = _getAdapter();
   assert.ok(adapter);
@@ -139,18 +166,28 @@ function durableSnapshot(): Record<string, unknown> {
   };
 }
 
-function prepareCase(): PreparedApplicationCase {
+function prepareCase(fixture: MutationFixture = "gsd-nested"): PreparedApplicationCase {
   applicationSequence += 1;
   const workspace = mkdtempSync(join(tmpdir(), "gsd-legacy-application-fault-"));
   tempDirectories.add(workspace);
   const source = join(workspace, "source");
   const backupDirectory = join(workspace, "backups");
   const databasePath = join(workspace, "canonical.sqlite");
-  cpSync(CORPUS_SOURCE, source, {
+  const corpusFixture = fixture === "decision-create" ? "registries" : fixture;
+  cpSync(join(CORPUS_ROOT, corpusFixture, "source"), source, {
     recursive: true,
     dereference: false,
     verbatimSymlinks: true,
   });
+  if (fixture === "decision-create") {
+    rmSync(join(source, ".gsd", "REQUIREMENTS.md"));
+    writeFileSync(join(source, ".gsd", "DECISIONS.md"), `# Decisions Register
+
+| # | When | Scope | Decision | Choice | Rationale | Revisable? | Made By |
+|---|------|-------|----------|--------|-----------|------------|---------|
+| D001 | M001 | storage | Choose persistence | SQLite | Local durable authority | No | agent |
+`, "utf8");
+  }
   mkdirSync(backupDirectory);
   assert.equal(openDatabase(databasePath), true);
   const previewInput = { roots: createLegacyImportCorpusSourceRoots(source) };
@@ -177,6 +214,41 @@ function prepareCase(): PreparedApplicationCase {
     backup,
   };
   return { workspace, databasePath, base, backup, input };
+}
+
+function normalizedSql(sql: string): string {
+  return sql.trim().replace(/\s+/g, " ").toLowerCase();
+}
+
+function installSqlException(
+  adapter: DbAdapter,
+  sqlPattern: string,
+  occurrence: number,
+): SqlFaultController {
+  const originalPrepare = adapter.prepare;
+  const pattern = normalizedSql(sqlPattern);
+  let hits = 0;
+  adapter.prepare = (sql: string): DbStatement => {
+    const statement = originalPrepare.call(adapter, sql);
+    if (!normalizedSql(sql).includes(pattern)) return statement;
+    return {
+      ...statement,
+      run(...params: unknown[]): unknown {
+        const result = statement.run(...params);
+        hits += 1;
+        if (hits === occurrence) {
+          throw new Error(`injected SQL fault after ${sqlPattern} occurrence ${occurrence}`);
+        }
+        return result;
+      },
+    };
+  };
+  return {
+    hitCount: () => hits,
+    restore: () => {
+      adapter.prepare = originalPrepare;
+    },
+  };
 }
 
 function boundarySetter(): ApplicationBoundarySetter {
@@ -332,6 +404,46 @@ for (const boundary of APPLICATION_BOUNDARIES) {
     closeDatabase();
 
     const child = runChild(prepared, { applicationBoundary: boundary });
+
+    assert.equal(child.status, null, child.stderr || child.stdout);
+    assert.equal(child.signal, "SIGKILL", child.stderr || child.stdout);
+    assert.deepEqual(reopenAndSnapshot(prepared), before);
+  });
+}
+
+for (const faultCase of MUTATION_FAULT_CASES) {
+  test(`public Application mutation SQL ${faultCase.family} exception rolls back exact pre-state`, () => {
+    const prepared = prepareCase(faultCase.fixture);
+    const before = durableSnapshot();
+    const controller = installSqlException(db(), faultCase.sqlPattern, faultCase.occurrence);
+    let observed: unknown;
+
+    try {
+      applyLegacyImport(prepared.input);
+    } catch (error) {
+      observed = error;
+    } finally {
+      controller.restore();
+    }
+
+    assert.equal(controller.hitCount(), faultCase.occurrence, `${faultCase.sqlPattern} was not reached`);
+    assert.ok(observed instanceof LegacyImportApplicationError);
+    assert.deepEqual(reopenAndSnapshot(prepared), before);
+  });
+
+  test(`public Application mutation SQL ${faultCase.family} SIGKILL rolls back exact pre-state`, {
+    concurrency: false,
+  }, () => {
+    const prepared = prepareCase(faultCase.fixture);
+    const before = durableSnapshot();
+    closeDatabase();
+
+    const child = runChild(prepared, {
+      crash: {
+        sqlPattern: faultCase.sqlPattern,
+        occurrence: faultCase.occurrence,
+      },
+    });
 
     assert.equal(child.status, null, child.stderr || child.stdout);
     assert.equal(child.signal, "SIGKILL", child.stderr || child.stdout);
