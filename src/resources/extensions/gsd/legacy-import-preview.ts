@@ -245,6 +245,49 @@ function deepFreeze<T>(value: T, seen = new Set<object>()): T {
   return Object.freeze(value);
 }
 
+export function isStrictLegacyImportData(
+  value: unknown,
+  ancestors = new Set<object>(),
+): boolean {
+  if (value === null || typeof value === "string" || typeof value === "boolean") return true;
+  if (typeof value === "number") return Number.isFinite(value);
+  if (typeof value !== "object" || ancestors.has(value)) return false;
+  if (Object.getOwnPropertySymbols(value).length > 0) return false;
+
+  ancestors.add(value);
+  try {
+    if (Array.isArray(value)) {
+      if (Object.getPrototypeOf(value) !== Array.prototype) return false;
+      const descriptors = Object.getOwnPropertyDescriptors(value);
+      if (Object.keys(descriptors).length !== value.length + 1) return false;
+      if (!Object.hasOwn(Object.getOwnPropertyDescriptor(value, "length") ?? {}, "value")) return false;
+      for (let index = 0; index < value.length; index += 1) {
+        const descriptor = Object.getOwnPropertyDescriptor(value, String(index));
+        if (
+          descriptor === undefined
+          || !Object.hasOwn(descriptor, "value")
+          || descriptor.enumerable !== true
+          || !isStrictLegacyImportData(descriptor.value, ancestors)
+        ) return false;
+      }
+      return true;
+    }
+
+    const prototype = Object.getPrototypeOf(value);
+    if (prototype !== Object.prototype && prototype !== null) return false;
+    for (const descriptor of Object.values(Object.getOwnPropertyDescriptors(value))) {
+      if (
+        !Object.hasOwn(descriptor, "value")
+        || descriptor.enumerable !== true
+        || !isStrictLegacyImportData(descriptor.value, ancestors)
+      ) return false;
+    }
+    return true;
+  } finally {
+    ancestors.delete(value);
+  }
+}
+
 /**
  * Derive a non-circular approval identity, then hash the complete exact v1
  * envelope. The base row hash catches relevant DB drift even if a broken

@@ -9,6 +9,7 @@ import {
 import type { LegacyImportSha256, LegacyImportValue } from "./legacy-import-contract.js";
 import {
   hashLegacyImportValue,
+  isStrictLegacyImportData,
   isValidLegacyImportPreviewArtifact,
   type LegacyImportPreviewArtifact,
   type LegacyImportPreviewCreateInput,
@@ -102,46 +103,6 @@ function deepFreeze<T>(value: T, seen = new Set<object>()): T {
   seen.add(value);
   for (const child of Object.values(value)) deepFreeze(child, seen);
   return Object.freeze(value);
-}
-
-function isStrictData(value: unknown, ancestors = new Set<object>()): boolean {
-  if (value === null || typeof value === "string" || typeof value === "boolean") return true;
-  if (typeof value === "number") return Number.isFinite(value);
-  if (typeof value !== "object" || ancestors.has(value)) return false;
-  if (Object.getOwnPropertySymbols(value).length > 0) return false;
-
-  ancestors.add(value);
-  try {
-    if (Array.isArray(value)) {
-      if (Object.getPrototypeOf(value) !== Array.prototype) return false;
-      const descriptors = Object.getOwnPropertyDescriptors(value);
-      if (Object.keys(descriptors).length !== value.length + 1) return false;
-      if (!Object.hasOwn(Object.getOwnPropertyDescriptor(value, "length") ?? {}, "value")) return false;
-      for (let index = 0; index < value.length; index += 1) {
-        const descriptor = Object.getOwnPropertyDescriptor(value, String(index));
-        if (
-          descriptor === undefined
-          || !Object.hasOwn(descriptor, "value")
-          || descriptor.enumerable !== true
-          || !isStrictData(descriptor.value, ancestors)
-        ) return false;
-      }
-      return true;
-    }
-
-    const prototype = Object.getPrototypeOf(value);
-    if (prototype !== Object.prototype && prototype !== null) return false;
-    for (const descriptor of Object.values(Object.getOwnPropertyDescriptors(value))) {
-      if (
-        !Object.hasOwn(descriptor, "value")
-        || descriptor.enumerable !== true
-        || !isStrictData(descriptor.value, ancestors)
-      ) return false;
-    }
-    return true;
-  } finally {
-    ancestors.delete(value);
-  }
 }
 
 export class LegacyImportApplicationError extends Error {
@@ -296,7 +257,7 @@ export function createLegacyImportApplicationIdentity(
   if (!hasExactKeys(value, ["invocation", "previewInput", "preview", "backup"])) {
     failContract("legacy import Application input does not satisfy the exact v1 contract");
   }
-  if (!isStrictData(value)) {
+  if (!isStrictLegacyImportData(value)) {
     failContract("legacy import Application input must contain acyclic strict data properties");
   }
   let input: Record<string, unknown>;

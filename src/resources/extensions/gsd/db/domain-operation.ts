@@ -8,6 +8,12 @@ import {
   GSD_REVISION_CONFLICT,
   GSDError,
 } from "../errors.js";
+import {
+  canonicalLegacyImportJson,
+  isStrictLegacyImportData,
+  isValidLegacyImportPreviewArtifact,
+  type LegacyImportPreviewArtifact,
+} from "../legacy-import-preview.js";
 import { getDb, immediateTransaction, isInTransaction } from "./engine.js";
 
 export type DomainJsonValue =
@@ -31,6 +37,17 @@ export interface DomainOperationRequest {
   payload: DomainJsonValue;
   advanceAuthorityEpoch?: boolean;
 }
+
+export type ImportDomainOperationRequest = Omit<
+  DomainOperationRequest,
+  "operationType" | "payload" | "advanceAuthorityEpoch"
+> & {
+  operationType: "import.apply";
+  payload: LegacyImportPreviewArtifact;
+  advanceAuthorityEpoch?: false;
+};
+
+type DomainOperationRequestIdentity = Omit<DomainOperationRequest, "payload">;
 
 export interface DomainOperationEventInput {
   eventType: string;
@@ -124,6 +141,47 @@ function requireNonNegativeSafeInteger(value: number, field: string): void {
   }
 }
 
+function requiredRequestDataProperty(request: object, field: string): unknown {
+  const descriptor = Object.getOwnPropertyDescriptor(request, field);
+  if (descriptor === undefined || !Object.hasOwn(descriptor, "value")) {
+    throw new Error(`${field} must be an own data property`);
+  }
+  return descriptor.value;
+}
+
+function optionalRequestDataProperty(request: object, field: string): unknown {
+  const descriptor = Object.getOwnPropertyDescriptor(request, field);
+  if (descriptor === undefined) return undefined;
+  if (!Object.hasOwn(descriptor, "value")) {
+    throw new Error(`${field} must be an own data property`);
+  }
+  return descriptor.value;
+}
+
+function snapshotDomainOperationRequest(request: object): {
+  identity: DomainOperationRequestIdentity;
+  payload: unknown;
+} {
+  return {
+    identity: {
+      operationType: requiredRequestDataProperty(request, "operationType") as string,
+      idempotencyKey: requiredRequestDataProperty(request, "idempotencyKey") as string,
+      expectedRevision: requiredRequestDataProperty(request, "expectedRevision") as number,
+      expectedAuthorityEpoch: requiredRequestDataProperty(request, "expectedAuthorityEpoch") as number,
+      actorType: requiredRequestDataProperty(request, "actorType") as string,
+      actorId: optionalRequestDataProperty(request, "actorId") as string | undefined,
+      sourceTransport: requiredRequestDataProperty(request, "sourceTransport") as string,
+      traceId: optionalRequestDataProperty(request, "traceId") as string | undefined,
+      turnId: optionalRequestDataProperty(request, "turnId") as string | undefined,
+      advanceAuthorityEpoch: optionalRequestDataProperty(
+        request,
+        "advanceAuthorityEpoch",
+      ) as boolean | undefined,
+    },
+    payload: requiredRequestDataProperty(request, "payload"),
+  };
+}
+
 export function canonicalDomainJson(value: DomainJsonValue): string {
   if (value === null || typeof value === "boolean" || typeof value === "string") {
     return JSON.stringify(value);
@@ -147,7 +205,7 @@ export function canonicalDomainJson(value: DomainJsonValue): string {
   return `{${entries.map(([key, entry]) => `${JSON.stringify(key)}:${canonicalDomainJson(entry)}`).join(",")}}`;
 }
 
-function validateRequestScalars(request: DomainOperationRequest): void {
+function validateRequestScalars(request: DomainOperationRequestIdentity): void {
   requireNonBlank(request.operationType, "operationType");
   requireNonBlank(request.idempotencyKey, "idempotencyKey");
   requireNonBlank(request.actorType, "actorType");
@@ -285,7 +343,7 @@ function loadReceipt(operation: OperationRow, status: DomainOperationResult["sta
 
 function operationMatchesRequest(
   operation: OperationRow,
-  request: DomainOperationRequest,
+  request: DomainOperationRequestIdentity,
   hash: string,
 ): boolean {
   return (
@@ -304,7 +362,7 @@ function operationMatchesRequest(
 
 function requireReplayMatch(
   operation: OperationRow,
-  request: DomainOperationRequest,
+  request: DomainOperationRequestIdentity,
   hash: string,
 ): void {
   if (!operationMatchesRequest(operation, request, hash)) {
@@ -328,7 +386,7 @@ function loadOperation(operationId: string): OperationRow | undefined {
 
 function requireCommittedProvenance(
   operation: OperationRow | undefined,
-  request: DomainOperationRequest,
+  request: DomainOperationRequestIdentity,
   hash: string,
   context: DomainOperationContext,
   createdAt: string,
@@ -345,7 +403,64 @@ function requireCommittedProvenance(
   return operation;
 }
 
-function staleAuthority(request: DomainOperationRequest, authority: AuthorityRow): never {
+function requireMatchingImportApplication(
+  operation: OperationRow,
+  artifact: LegacyImportPreviewArtifact,
+): void {
+  const preview = artifact.preview;
+  const row = getDb().prepare(`
+    SELECT COUNT(*) AS count
+    FROM workflow_import_applications
+    WHERE operation_id = :operation_id
+      AND project_id = :project_id
+      AND import_kind = :import_kind
+      AND importer_version = :importer_version
+      AND preview_schema_version = :preview_schema_version
+      AND preview_id = :preview_id
+      AND preview_hash = :preview_hash
+      AND base_project_revision = :base_project_revision
+      AND base_authority_epoch = :base_authority_epoch
+      AND base_database_schema_version = :base_database_schema_version
+      AND source_set_hash = :source_set_hash
+      AND change_set_hash = :change_set_hash
+      AND create_count = :create_count
+      AND update_count = :update_count
+      AND delete_count = :delete_count
+      AND preserve_count = :preserve_count
+      AND unparsed_count = :unparsed_count
+      AND unresolved_count = :unresolved_count
+      AND preview_json = :preview_json
+      AND resulting_project_revision = :resulting_project_revision
+      AND resulting_authority_epoch = :resulting_authority_epoch
+  `).get({
+    ":operation_id": operation.operation_id,
+    ":project_id": operation.project_id,
+    ":import_kind": preview.import_kind,
+    ":importer_version": preview.importer_version,
+    ":preview_schema_version": preview.preview_schema_version,
+    ":preview_id": preview.preview_id,
+    ":preview_hash": artifact.preview_hash,
+    ":base_project_revision": operation.expected_revision,
+    ":base_authority_epoch": operation.expected_authority_epoch,
+    ":base_database_schema_version": preview.base_database_schema_version,
+    ":source_set_hash": preview.source_set_hash,
+    ":change_set_hash": preview.change_set_hash,
+    ":create_count": preview.counts.create,
+    ":update_count": preview.counts.update,
+    ":delete_count": preview.counts.delete,
+    ":preserve_count": preview.counts.preserve,
+    ":unparsed_count": preview.counts.unparsed,
+    ":unresolved_count": preview.counts.unresolved,
+    ":preview_json": canonicalLegacyImportJson(preview),
+    ":resulting_project_revision": operation.resulting_revision,
+    ":resulting_authority_epoch": operation.resulting_authority_epoch,
+  });
+  if (row?.["count"] !== 1) {
+    throw new Error("import Domain Operation requires exactly one matching Application receipt");
+  }
+}
+
+function staleAuthority(request: DomainOperationRequestIdentity, authority: AuthorityRow): never {
   if (authority.revision !== request.expectedRevision) {
     throw new GSDError(
       GSD_REVISION_CONFLICT,
@@ -379,21 +494,12 @@ function runDomainOperationTransaction(fn: () => DomainOperationResult): DomainO
   }
 }
 
-export function executeDomainOperation(
-  request: DomainOperationRequest,
-  /**
-   * Compose deterministic typed writers only. Sibling tables must enforce the
-   * supplied operation/revision context through their foreign keys; filesystem,
-   * network, routing, retry, and error-swallowing behavior do not belong here.
-   */
+function executeDomainOperationCore(
+  request: DomainOperationRequestIdentity,
+  hash: string,
+  importPreview: LegacyImportPreviewArtifact | null,
   mutate: (context: Readonly<DomainOperationContext>) => DomainOperationMutation,
 ): DomainOperationResult {
-  validateRequestScalars(request);
-  if (isInTransaction()) {
-    throw new Error("Domain Operation must own the outer transaction");
-  }
-  const hash = requestHash(request);
-
   const result = runDomainOperationTransaction((): DomainOperationResult => {
     const db = getDb();
     const authority = db.prepare(`
@@ -418,6 +524,7 @@ export function executeDomainOperation(
     }) as unknown as OperationRow | undefined;
     if (existing) {
       requireReplayMatch(existing, request, hash);
+      if (importPreview) requireMatchingImportApplication(existing, importPreview);
       return loadReceipt(existing, "replayed");
     }
 
@@ -572,6 +679,7 @@ export function executeDomainOperation(
       });
     });
     hitFault("after-projections");
+    if (importPreview) requireMatchingImportApplication(storedOperation, importPreview);
     hitFault("before-cas");
 
     const update = db.prepare(`
@@ -604,4 +712,64 @@ export function executeDomainOperation(
 
   hitFault("after-commit");
   return result;
+}
+
+export function executeDomainOperation(
+  request: DomainOperationRequest,
+  /**
+   * Compose deterministic typed writers only. Sibling tables must enforce the
+   * supplied operation/revision context through their foreign keys; filesystem,
+   * network, routing, retry, and error-swallowing behavior do not belong here.
+  */
+  mutate: (context: Readonly<DomainOperationContext>) => DomainOperationMutation,
+): DomainOperationResult {
+  const snapshot = snapshotDomainOperationRequest(request);
+  validateRequestScalars(snapshot.identity);
+  if (snapshot.identity.operationType === "import.apply") {
+    throw new Error("import.apply requires executeImportDomainOperation");
+  }
+  if (isInTransaction()) {
+    throw new Error("Domain Operation must own the outer transaction");
+  }
+  const stableRequest = {
+    ...snapshot.identity,
+    payload: snapshot.payload as DomainJsonValue,
+  };
+  return executeDomainOperationCore(
+    snapshot.identity,
+    requestHash(stableRequest),
+    null,
+    mutate,
+  );
+}
+
+export function executeImportDomainOperation(
+  request: ImportDomainOperationRequest,
+  mutate: (context: Readonly<DomainOperationContext>) => DomainOperationMutation,
+): DomainOperationResult {
+  const snapshot = snapshotDomainOperationRequest(request);
+  validateRequestScalars(snapshot.identity);
+  if (snapshot.identity.operationType !== "import.apply") {
+    throw new Error("executeImportDomainOperation requires operationType import.apply");
+  }
+  if (snapshot.identity.advanceAuthorityEpoch === true) {
+    throw new Error("import.apply cannot advance the Authority Epoch");
+  }
+  if (!isStrictLegacyImportData(snapshot.payload)) {
+    throw new Error("import.apply Preview must contain strict data without accessors");
+  }
+  const preview = structuredClone(snapshot.payload);
+  if (!isValidLegacyImportPreviewArtifact(preview)) {
+    throw new Error("import.apply requires a valid sealed Preview artifact");
+  }
+  if (snapshot.identity.expectedRevision !== preview.preview.base_project_revision) {
+    throw new Error("import.apply expectedRevision must match the sealed Preview base revision");
+  }
+  if (snapshot.identity.expectedAuthorityEpoch !== preview.preview.base_authority_epoch) {
+    throw new Error("import.apply expectedAuthorityEpoch must match the sealed Preview base Authority Epoch");
+  }
+  if (isInTransaction()) {
+    throw new Error("Domain Operation must own the outer transaction");
+  }
+  return executeDomainOperationCore(snapshot.identity, preview.preview_hash, preview, mutate);
 }
