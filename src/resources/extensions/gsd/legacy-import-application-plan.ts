@@ -30,7 +30,7 @@ import {
   type CanonicalLifecycleStatus,
 } from "./db/lifecycle-shadow-comparison.js";
 
-export const LEGACY_IMPORT_APPLICATION_PLAN_SCHEMA_VERSION = 1 as const;
+export const LEGACY_IMPORT_APPLICATION_PLAN_SCHEMA_VERSION = 2 as const;
 
 type CanonicalTargetKind = keyof typeof LEGACY_IMPORT_TARGET_ADAPTERS;
 type HierarchyKind = "milestone" | "slice" | "task";
@@ -39,10 +39,22 @@ type SqlRecord = Readonly<Record<string, SqlValue>>;
 
 export interface LegacyImportApplicationRowInstruction {
   readonly action: "create" | "update" | "delete";
-  readonly targetKind: CanonicalTargetKind;
+  readonly targetKind: Exclude<CanonicalTargetKind, "decision">;
   readonly targetKey: string;
   readonly rowSet: LegacyImportBaseRowSet;
   readonly identity: SqlRecord;
+  readonly values: SqlRecord;
+  readonly changeIds: readonly string[];
+}
+
+export interface LegacyImportApplicationDecisionInstruction {
+  readonly action:
+    | "create-decision-memory"
+    | "update-decision-memory"
+    | "delete-decision-memory";
+  readonly targetKind: "decision";
+  readonly targetKey: string;
+  readonly decisionId: string;
   readonly values: SqlRecord;
   readonly changeIds: readonly string[];
 }
@@ -89,6 +101,7 @@ export interface LegacyImportApplicationPreserveInstruction {
 
 export type LegacyImportApplicationPlanInstruction =
   | LegacyImportApplicationRowInstruction
+  | LegacyImportApplicationDecisionInstruction
   | LegacyImportApplicationSliceDependenciesInstruction
   | LegacyImportApplicationDeleteSliceDependenciesInstruction
   | LegacyImportApplicationLifecycleInstruction
@@ -554,18 +567,58 @@ function lifecycleRank(kind: HierarchyKind): number {
   return kind === "milestone" ? 0 : kind === "slice" ? 1 : 2;
 }
 
-function rowInstruction(row: MutableRowClaim): LegacyImportApplicationRowInstruction {
+const DECISION_DEFAULTS: Readonly<Record<string, SqlValue>> = {
+  when_context: "",
+  scope: "",
+  decision: "",
+  choice: "",
+  rationale: "",
+  revisable: "",
+  made_by: "agent",
+  source: "discussion",
+  superseded_by: null,
+};
+
+function normalizedDecisionFields(
+  id: string,
+  value: Readonly<Record<string, LegacyImportValue>>,
+): Record<string, SqlValue> {
+  const adapter = LEGACY_IMPORT_TARGET_ADAPTERS.decision;
+  const result: Record<string, SqlValue> = { id, ...DECISION_DEFAULTS };
+  for (const field of adapter.fields) {
+    if (field === "id" || !Object.hasOwn(value, field)) continue;
+    result[field] = normalizeSqlValue("decisions", field, value[field]);
+  }
+  return result;
+}
+
+function rowInstruction(
+  row: MutableRowClaim,
+): LegacyImportApplicationRowInstruction | LegacyImportApplicationDecisionInstruction {
   const values = row.action === "create"
     ? { ...row.identity, ...row.values }
     : row.action === "delete" ? {} : row.values;
+  const changeIds = [...new Set(row.changeIds)].sort(compareText);
+  if (row.targetKind === "decision") {
+    return {
+      action: `${row.action}-decision-memory`,
+      targetKind: "decision",
+      targetKey: row.targetKey,
+      decisionId: row.targetKey,
+      values: row.action === "create"
+        ? normalizedDecisionFields(row.targetKey, values)
+        : values,
+      changeIds,
+    };
+  }
   return {
     action: row.action,
-    targetKind: row.targetKind,
+    targetKind: row.targetKind as Exclude<CanonicalTargetKind, "decision">,
     targetKey: row.targetKey,
     rowSet: row.rowSet,
     identity: row.identity,
     values,
-    changeIds: [...new Set(row.changeIds)].sort(compareText),
+    changeIds,
   };
 }
 

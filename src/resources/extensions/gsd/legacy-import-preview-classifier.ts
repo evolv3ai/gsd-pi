@@ -411,13 +411,18 @@ function buildBaseRows(base: LegacyImportBaseSnapshot): Map<string, JsonRecord> 
         { decision_id: id },
       );
     }
+    const decisionIdentity = canonicalLegacyImportJson({ id });
+    if (fields.deleted === true) {
+      decisionRows.delete(id);
+      rows.delete(rowAddress("decisions", decisionIdentity));
+      continue;
+    }
     const effective = { ...(decisionRows.get(id) ?? { id }) };
     for (const field of LEGACY_IMPORT_TARGET_ADAPTERS.decision.fields) {
-      if (field === "id" || field === "source") continue;
+      if (field === "id") continue;
       const memoryField = fields[field];
       if (memoryField !== undefined) effective[field] = memoryField;
     }
-    const decisionIdentity = canonicalLegacyImportJson({ id });
     rows.set(rowAddress("decisions", decisionIdentity), effective);
   }
   return rows;

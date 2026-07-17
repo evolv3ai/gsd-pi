@@ -914,6 +914,35 @@ describe("legacy preview change classification", () => {
     }
   });
 
+  test("uses canonical decision memory source and lets tombstones suppress legacy fallback", () => {
+    const d001 = { ...decision("D001", "SQLite"), source: "planning" };
+    const legacy = { ...d001, source: "discussion" };
+    const memory = (deleted: boolean) => row("decision_memories", { source_decision_id: "D001" }, {
+      source_decision_id: "D001",
+      structured_fields: JSON.stringify({
+        sourceDecisionId: "D001",
+        ...d001,
+        deleted,
+      }),
+    });
+
+    const preserved = classifyLegacyImportChanges(
+      base([row("decisions", { id: "D001" }, legacy), memory(false)]),
+      interpretation([candidate({ kind: "decision", key: "D001" }, d001)], {
+        completeRowSets: [completeDecisions([d001])],
+      }),
+    );
+    assert.deepEqual(preserved.changes, []);
+
+    const recreated = classifyLegacyImportChanges(
+      base([row("decisions", { id: "D001" }, legacy), memory(true)]),
+      interpretation([candidate({ kind: "decision", key: "D001" }, d001)], {
+        completeRowSets: [completeDecisions([d001])],
+      }),
+    );
+    assert.equal(recreated.changes[0]?.action, "create");
+  });
+
   test("only unresolved target resolutions block an otherwise classifiable candidate", () => {
     const diagnosis: LegacyImportPreviewDiagnosis = {
       diagnosis_id: "diagnosis-route",

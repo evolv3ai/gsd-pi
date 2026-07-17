@@ -547,13 +547,16 @@ describe("legacy import Application plan", () => {
       ],
     }));
 
+    assert.equal(planValue.planSchemaVersion, 2);
     assert.deepEqual(planValue.instructions.map((instruction) => instruction.action), [
-      "create", "update", "delete", "preserve",
+      "create-decision-memory", "update-decision-memory", "delete-decision-memory", "preserve",
     ]);
     const update = planValue.instructions[1];
-    assert.ok(update?.action === "update");
-    assert.deepEqual(update.identity, { id: "D002" });
+    assert.ok(update?.action === "update-decision-memory");
+    assert.equal(update.decisionId, "D002");
     assert.deepEqual(update.values, { choice: "PostgreSQL" });
+    const deletion = planValue.instructions[2];
+    assert.ok(deletion?.action === "delete-decision-memory");
     assert.deepEqual(planValue.receiptCounts, {
       create: 1, update: 1, delete: 1, preserve: 1, unparsed: 0, unresolved: 0,
     });

@@ -11,7 +11,10 @@ import type { SliceRow, TaskRow } from "./db-task-slice-rows.js";
 import type { VerificationEvidenceRow } from "./db-verification-evidence-rows.js";
 import type { Decision, GateRow, Requirement } from "./types.js";
 import { atomicWriteAsync, atomicWriteSync } from "./atomic-write.js";
-import { getAllDecisionsFromMemories } from "./context-store.js";
+import {
+  getAllDecisionsFromMemories,
+  getDeletedDecisionIdsFromMemories,
+} from "./context-store.js";
 import { backfillDecisionsToMemories } from "./memory-backfill.js";
 import { invalidateAllCaches } from "./cache.js";
 import { logWarning } from "./workflow-logger.js";
@@ -98,10 +101,14 @@ export function toNumeric(value: unknown, fallback: number | null = null): numbe
   return fallback;
 }
 
-function mergeDecisionSurfaces(legacyDecisions: Decision[], memoryDecisions: Decision[]): Decision[] {
+function mergeDecisionSurfaces(
+  legacyDecisions: Decision[],
+  memoryDecisions: Decision[],
+  deletedDecisionIds: ReadonlySet<string>,
+): Decision[] {
   const byId = new Map<string, Decision>();
   for (const decision of legacyDecisions) {
-    byId.set(decision.id, decision);
+    if (!deletedDecisionIds.has(decision.id)) byId.set(decision.id, decision);
   }
   for (const decision of memoryDecisions) {
     byId.set(decision.id, decision);
@@ -255,7 +262,11 @@ export function snapshotState(): StateManifest {
     source: (r["source"] as string) ?? "discussion",
     superseded_by: (r["superseded_by"] as string) ?? null,
   }));
-  const decisions = mergeDecisionSurfaces(legacyDecisions, getAllDecisionsFromMemories());
+  const decisions = mergeDecisionSurfaces(
+    legacyDecisions,
+    getAllDecisionsFromMemories(),
+    getDeletedDecisionIdsFromMemories(),
+  );
 
   const rawReplanHistory = db.prepare("SELECT * FROM replan_history ORDER BY id").all() as Record<string, unknown>[];
   const replan_history: ReplanHistoryManifestRow[] = rawReplanHistory.map((r) => ({

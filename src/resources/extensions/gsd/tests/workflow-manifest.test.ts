@@ -15,6 +15,7 @@ import {
   insertSlice,
   insertTask,
   insertMemoryRow,
+  insertDecision,
   insertAssessment,
   insertGateRow,
   insertReplanHistory,
@@ -48,7 +49,10 @@ async function writeManifestAndFlush(base: string): Promise<void> {
   await flushManifest(base);
 }
 
-function insertMemoryBackedDecision(id: string): void {
+function insertMemoryBackedDecision(
+  id: string,
+  structuredOverrides: Readonly<Record<string, unknown>> = {},
+): void {
   const now = '2026-01-01T00:00:00.000Z';
   insertMemoryRow({
     id: `MEM-${id}`,
@@ -71,6 +75,7 @@ function insertMemoryBackedDecision(id: string): void {
       made_by: 'agent',
       revisable: 'Yes',
       superseded_by: null,
+      ...structuredOverrides,
     },
   });
 }
@@ -202,6 +207,50 @@ test('workflow-manifest: snapshotState captures memory-backed decisions', () => 
     assert.strictEqual(decision!.decision, 'Decision D900');
     assert.strictEqual(decision!.choice, 'Choice D900');
     assert.strictEqual(decision!.rationale, 'Rationale D900');
+  } finally {
+    closeDatabase();
+    cleanupDir(base);
+  }
+});
+
+test('workflow-manifest: a canonical tombstone suppresses its legacy decision', () => {
+  const base = tempDir();
+  openDatabase(tempDbPath(base));
+  try {
+    insertDecision({
+      id: 'D902',
+      when_context: 'During import',
+      scope: 'project',
+      decision: 'Retire compatibility decision',
+      choice: 'Legacy',
+      rationale: 'Stale compatibility row',
+      revisable: 'yes',
+      made_by: 'agent',
+      source: 'discussion',
+      superseded_by: null,
+    });
+    insertMemoryBackedDecision('D902', { deleted: true });
+
+    assert.equal(snapshotState().decisions.some((decision) => decision.id === 'D902'), false);
+  } finally {
+    closeDatabase();
+    cleanupDir(base);
+  }
+});
+
+test('workflow-manifest: malformed decision tombstone authority fails loud', () => {
+  const base = tempDir();
+  openDatabase(tempDbPath(base));
+  try {
+    _getAdapter()!.prepare(`INSERT INTO memories (
+      id, category, content, confidence, created_at, updated_at, scope, tags, structured_fields
+    ) VALUES (
+      'memory-malformed', 'architecture', 'malformed', 0.85,
+      '2026-07-17T00:00:00.000Z', '2026-07-17T00:00:00.000Z',
+      'project', '[]', '{"sourceDecisionId":"D903"'
+    )`).run();
+
+    assert.throws(() => snapshotState(), /JSON|decision memory/i);
   } finally {
     closeDatabase();
     cleanupDir(base);
