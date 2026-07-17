@@ -342,6 +342,7 @@ function runChild(
 function prepareSiblingCase(
   prepared: PreparedApplicationCase,
   fixture: Exclude<MutationFixture, "decision-create">,
+  expectedBase: LegacyImportBaseSnapshot = prepared.base,
 ): PreparedApplicationCase {
   applicationSequence += 1;
   const source = join(prepared.workspace, `source-${fixture}-${applicationSequence}`);
@@ -354,7 +355,7 @@ function prepareSiblingCase(
   mkdirSync(backupDirectory);
   const previewInput = { roots: createLegacyImportCorpusSourceRoots(source) };
   const base = captureCurrentLegacyImportBaseSnapshot();
-  assert.deepEqual(base, prepared.base);
+  assert.deepEqual(base, expectedBase);
   const preview = createLegacyImportPreview(previewInput);
   const backup = prepareLegacyImportBackup({
     preview,
@@ -506,6 +507,20 @@ function assertSingleImportLineage(prepared: PreparedApplicationCase): void {
   assert.equal(applications[0]?.["operation_id"], operationId);
   assert.equal(events[0]?.["operation_id"], operationId);
   assert.ok(projections.every((row) => row["enqueue_operation_id"] === operationId));
+}
+
+function expectReplayConflict(input: LegacyImportApplicationInput): LegacyImportApplicationError {
+  let observed: unknown;
+  try {
+    applyLegacyImport(input);
+  } catch (error) {
+    observed = error;
+  }
+  assert.ok(observed instanceof LegacyImportApplicationError);
+  assert.equal(observed.stage, "replay");
+  assert.equal(observed.code, "LEGACY_IMPORT_APPLICATION_REPLAY_CONFLICT");
+  assert.equal(observed.retryable, false);
+  return observed;
 }
 
 function assertReceiptMatchesDurable(
@@ -745,4 +760,37 @@ test("two distinct valid corpus requests from one base commit once and return ty
   reopenAndSnapshot(prepared);
   assertSingleImportLineage(prepared);
   assert.equal(tableRows("workflow_operations")[0]?.["operation_id"], receipts[0]?.operationId);
+});
+
+test("same committed key rejects a different valid Preview and matching original-base backup", () => {
+  const prepared = prepareCase("gsd-nested");
+  const different = prepareSiblingCase(prepared, "planning-flat-complete");
+  const conflictInput: LegacyImportApplicationInput = {
+    ...different.input,
+    invocation: structuredClone(prepared.input.invocation),
+  };
+  applyLegacyImport(prepared.input);
+  const committed = JSON.stringify(durableSnapshot());
+
+  expectReplayConflict(conflictInput);
+
+  assert.equal(JSON.stringify(durableSnapshot()), committed);
+});
+
+test("same committed key rejects a valid new-base Preview and matching revision-plus-one backup", () => {
+  const prepared = prepareCase("gsd-nested");
+  applyLegacyImport(prepared.input);
+  const committed = JSON.stringify(durableSnapshot());
+  const newBase = captureCurrentLegacyImportBaseSnapshot();
+  assert.equal(newBase.authority.revision, prepared.base.authority.revision + 1);
+  assert.equal(newBase.authority.authority_epoch, prepared.base.authority.authority_epoch);
+  const rebased = prepareSiblingCase(prepared, "gsd-nested", newBase);
+  const conflictInput: LegacyImportApplicationInput = {
+    ...rebased.input,
+    invocation: structuredClone(prepared.input.invocation),
+  };
+
+  expectReplayConflict(conflictInput);
+
+  assert.equal(JSON.stringify(durableSnapshot()), committed);
 });
