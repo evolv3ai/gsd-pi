@@ -12,7 +12,7 @@ import { gsdProjectionRoot, gsdRoot } from "./paths.js";
 import { nativeBranchList, nativeDetectMainBranch, nativeBranchListMerged, nativeBranchDelete, nativeForEachRef, nativeUpdateRef } from "./native-git-bridge.js";
 import { logWarning } from "./workflow-logger.js";
 import {
-  prepareVerifiedRecoverBackup,
+  applyVerifiedRecoverApplication,
   refreshWorkflowDatabaseFromDisk,
 } from "./db-workspace.js";
 
@@ -494,52 +494,24 @@ function recoverConfirmed(args: string): boolean {
     .some((part) => part === "--confirm" || part === "--yes" || part === "confirm");
 }
 
-function recoverAllowsDataLoss(args: string): boolean {
-  return args
-    .split(/\s+/)
-    .map((part) => part.trim().toLowerCase())
-    .some((part) => part === "--allow-data-loss" || part === "--force");
-}
-
 async function confirmRecover(
   ctx: ExtensionCommandContext,
   args: string,
   markdown: HierarchyCounts,
   beforeDb: HierarchyCounts,
-  dataLoss: boolean,
 ): Promise<boolean> {
   const warning = [
     "gsd recover imports markdown into the database.",
-    "It clears and reconstructs milestone, slice, and task hierarchy rows from rendered markdown.",
+    "It applies modeled changes through one verified Import Application.",
+    "Existing database rows absent from markdown are not cleared.",
     "Use /gsd rebuild markdown for normal DB-to-markdown realignment.",
     "",
     `  Markdown on disk: ${markdown.milestones}M/${markdown.slices}S/${markdown.tasks}T`,
     `  Current DB:       ${beforeDb.milestones}M/${beforeDb.slices}S/${beforeDb.tasks}T`,
   ];
-  if (dataLoss) {
-    warning.push(
-      "",
-      "⚠ The DB holds rows the markdown lacks. Recover will permanently DELETE",
-      "  those rows. Before deletion, a verified backup must pass an isolated restore",
-      "  rehearsal. If the DB is the source of truth, use /gsd rebuild markdown instead.",
-    );
-  }
   const warningText = warning.join("\n");
 
-  if (recoverConfirmed(args)) {
-    // Non-interactive --confirm still refuses a data-loss recover unless the
-    // caller explicitly opts in with --allow-data-loss / --force.
-    if (dataLoss && !recoverAllowsDataLoss(args)) {
-      ctx.ui.notify(
-        `${warningText}\n\nRefusing: this would delete authoritative DB rows. Re-run with ` +
-          `/gsd recover --confirm --allow-data-loss to proceed, or use /gsd rebuild markdown ` +
-          `to re-project markdown from the DB instead.`,
-        "error",
-      );
-      return false;
-    }
-    return true;
-  }
+  if (recoverConfirmed(args)) return true;
 
   if (typeof ctx.ui.confirm === "function") {
     const confirmed = await ctx.ui.confirm(
@@ -549,21 +521,6 @@ async function confirmRecover(
     if (!confirmed) {
       ctx.ui.notify("gsd recover cancelled. No database changes made.", "info");
       return false;
-    }
-    // Data loss requires a second, explicit acknowledgement — the interactive
-    // equivalent of the --allow-data-loss opt-in the non-interactive paths
-    // demand. A single generic "yes" must not silently delete DB rows.
-    if (dataLoss) {
-      const acknowledged = await ctx.ui.confirm(
-        "Permanently delete DB rows the markdown lacks?",
-        "This recover will DELETE authoritative DB rows the markdown does not contain. " +
-          "A verified backup must pass an isolated restore rehearsal first, but /gsd rebuild " +
-          "markdown is usually what you want. Proceed with the deletion?",
-      );
-      if (!acknowledged) {
-        ctx.ui.notify("gsd recover cancelled. No database changes made.", "info");
-        return false;
-      }
     }
     return true;
   }
@@ -578,9 +535,8 @@ async function confirmRecover(
 /**
  * `gsd recover` — Reconstruct DB hierarchy state from rendered markdown on disk.
  *
- * Deletes milestones, slices, and tasks table rows (preserves decisions,
- * requirements, artifacts, memories), re-runs `migrateHierarchyToDb()` to
- * repopulate from markdown, then calls `deriveState()` to verify sanity.
+ * Applies one sealed Preview through the verified Import Application boundary,
+ * then calls `deriveState()` to verify sanity.
  *
  * Prints counts of recovered items and the resulting project phase.
  */
@@ -589,56 +545,30 @@ export async function handleRecover(
   basePath: string,
   args = "",
 ): Promise<void> {
-  const { isDbAvailable: dbAvailable, clearEngineHierarchy, transaction: dbTransaction } = await import("./gsd-db.js");
-  const { migrateHierarchyToDb } = await import("./md-importer.js");
+  const { isDbAvailable: dbAvailable } = await import("./gsd-db.js");
   const { invalidateStateCache } = await import("./state.js");
-  const { countDbHierarchy, countMarkdownHierarchy, recoverWouldDeleteDbRows } = await import("./migration-auto-check.js");
-  const { renderAllFromDb } = await import("./markdown-renderer.js");
+  const { countDbHierarchy, countMarkdownHierarchy } = await import("./migration-auto-check.js");
 
   if (!dbAvailable()) {
     ctx.ui.notify("gsd recover: No database open. Run a GSD command first to initialize the DB.", "error");
     return;
   }
 
-  // Compare markdown-on-disk against the live DB so the confirmation prompt can
-  // surface exactly what recover will overwrite (and refuse silent data loss).
-  // The data-loss check is identity-based, not count-based: it flags any DB row
-  // markdown lacks, including equal-count divergence (DB S99 vs markdown S01).
+  // Show both sides before the user approves the explicit import. Application
+  // updates only modeled Preview targets and never clears absent DB rows.
   const markdown = countMarkdownHierarchy(basePath);
   const beforeDb = countDbHierarchy();
-  const dataLoss = recoverWouldDeleteDbRows(basePath);
 
-  if (!(await confirmRecover(ctx, args, markdown, beforeDb, dataLoss))) return;
+  if (!(await confirmRecover(ctx, args, markdown, beforeDb))) return;
 
   try {
-    // 0. Refuse destructive work until a verified backup survives an isolated restore rehearsal.
-    const backup = prepareVerifiedRecoverBackup(basePath);
+    const application = applyVerifiedRecoverApplication(basePath);
+    const { backup, counts } = application;
 
-    // 1. Delete + re-populate inside a single transaction for atomicity.
-    //    clearEngineHierarchy() uses transaction() internally but transaction()
-    //    is re-entrant, so wrapping in dbTransaction() keeps the whole
-    //    clear+repopulate atomic.
-    const counts = dbTransaction(() => {
-      clearEngineHierarchy();
-      return migrateHierarchyToDb(basePath);
-    });
-
-    // 2. Invalidate state cache so deriveState() picks up fresh DB data
     invalidateStateCache();
-
-    // 3. Re-project markdown from the freshly imported DB so disk and DB agree
-    //    immediately (otherwise the markdown still reflects the pre-import state
-    //    and the next startup check would flag fresh drift). renderAllFromDb
-    //    swallows per-artifact failures into its result, so inspect them — a
-    //    silent projection failure must not be reported as a clean success.
-    const renderResult = await renderAllFromDb(basePath);
-
-    // 4. Derive state to verify sanity
     const state = await deriveState(basePath);
-
-    // 5. Report
     const lines = [
-      `gsd recover: reconstructed hierarchy from markdown`,
+      `gsd recover: applied verified markdown Preview`,
       `  Milestones: ${counts.milestones}`,
       `  Slices:     ${counts.slices}`,
       `  Tasks:      ${counts.tasks}`,
@@ -670,27 +600,10 @@ export async function handleRecover(
       lines.push(`  Task:       ${state.activeTask.id}: ${state.activeTask.title}`);
     }
 
-    // Surface markdown projection failures: renderAllFromDb resolves even when
-    // individual artifacts fail to render, so a clean exit here would otherwise
-    // hide a stale/partial projection.
-    const renderFailed = renderResult.errors.length > 0;
-    if (renderFailed) {
-      lines.push(
-        ``,
-        `  ⚠ ${renderResult.errors.length} markdown projection(s) failed to render — ` +
-          `markdown may be stale. Re-run /gsd rebuild markdown.`,
-      );
-      for (const e of renderResult.errors.slice(0, 5)) lines.push(`    - ${e}`);
-      if (renderResult.errors.length > 5) {
-        lines.push(`    …and ${renderResult.errors.length - 5} more`);
-      }
-    }
-
     process.stderr.write(
-      `gsd-recover: recovered ${counts.milestones}M/${counts.slices}S/${counts.tasks}T hierarchy` +
-        `${renderFailed ? ` (${renderResult.errors.length} projection errors)` : ""}\n`,
+      `gsd-recover: recovered ${counts.milestones}M/${counts.slices}S/${counts.tasks}T hierarchy\n`,
     );
-    ctx.ui.notify(lines.join("\n"), renderFailed ? "warning" : "success");
+    ctx.ui.notify(lines.join("\n"), "success");
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     logWarning("command", `recover failed: ${msg}`);

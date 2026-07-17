@@ -2,13 +2,8 @@
 /**
  * Headless Recover — `gsd headless recover`
  *
- * Non-interactive parallel of the `/gsd recover` slash command. Clears the
- * milestones / slices / tasks tables and re-imports them from the on-disk
- * markdown projections (ROADMAP.md, PLAN.md, SUMMARY.md, …) via
- * migrateHierarchyToDb. Mutating: this is the one headless subcommand that
- * writes to the DB. Required for CI / automation flows that need to
- * reconcile DB state from markdown without launching an LLM session or a
- * TTY-bound interactive runtime.
+ * Non-interactive parallel of the `/gsd recover` slash command. Applies one
+ * sealed markdown Preview through the verified Import Application boundary.
  *
  * Output: `gsd-recover: recovered <N>M/<N>S/<N>T hierarchy\n` to stderr on
  * success — same marker emitted by handleRecover (commands-maintenance.ts)
@@ -46,31 +41,17 @@ function resolveAgentExtensionModule(agentDir: string, segments: string[]): stri
 }
 
 async function loadExtensionModules() {
-  const stateModule = await jiti.import(gsdExtensionPath('state.ts'), {}) as any
   const dbModule = await jiti.import(gsdExtensionPath('gsd-db.ts'), {}) as any
-  const importerModule = await jiti.import(gsdExtensionPath('md-importer.ts'), {}) as any
   const dynamicToolsModule = await jiti.import(gsdExtensionPath('bootstrap/dynamic-tools.ts'), {}) as any
-  const migrationCheckModule = await jiti.import(gsdExtensionPath('migration-auto-check.ts'), {}) as any
-  const rendererModule = await jiti.import(gsdExtensionPath('markdown-renderer.ts'), {}) as any
   const workspaceModule = await jiti.import(gsdExtensionPath('db-workspace.ts'), {}) as any
-  const prepareVerifiedRecoverBackup = workspaceModule.prepareVerifiedRecoverBackup
-  if (typeof prepareVerifiedRecoverBackup !== 'function') {
-    throw new Error('selected GSD extensions do not support verified recovery backups; synchronize the extension bundle')
+  const applyVerifiedRecoverApplication = workspaceModule.applyVerifiedRecoverApplication
+  if (typeof applyVerifiedRecoverApplication !== 'function') {
+    throw new Error('selected GSD extensions do not support verified Import Application recovery; synchronize the extension bundle')
   }
-  type Counts = { milestones: number; slices: number; tasks: number }
   return {
     ensureDbOpen: dynamicToolsModule.ensureDbOpen as (basePath: string) => Promise<boolean>,
     isDbAvailable: dbModule.isDbAvailable as () => boolean,
-    clearEngineHierarchy: dbModule.clearEngineHierarchy as () => void,
-    transaction: dbModule.transaction as <T>(fn: () => T) => T,
-    prepareVerifiedRecoverBackup: prepareVerifiedRecoverBackup as PrepareVerifiedRecoverBackup,
-    migrateHierarchyToDb: importerModule.migrateHierarchyToDb as (basePath: string) => Counts,
-    invalidateStateCache: stateModule.invalidateStateCache as () => void,
-    countDbHierarchy: migrationCheckModule.countDbHierarchy as () => Counts,
-    countMarkdownHierarchy: migrationCheckModule.countMarkdownHierarchy as (basePath: string) => Counts,
-    recoverWouldDeleteDbRows: migrationCheckModule.recoverWouldDeleteDbRows as (basePath: string) => boolean,
-    renderAllFromDb: rendererModule.renderAllFromDb as (basePath: string) =>
-      Promise<{ rendered: number; skipped: number; errors: string[] }>,
+    applyVerifiedRecoverApplication: applyVerifiedRecoverApplication as ApplyVerifiedRecoverApplication,
   }
 }
 
@@ -78,13 +59,14 @@ export interface RecoverResult {
   exitCode: number
 }
 
-interface VerifiedRecoverBackup {
-  backup_ref: string
+interface VerifiedRecoverApplicationResult {
+  backup: { backup_ref: string }
+  counts: { milestones: number; slices: number; tasks: number }
 }
 
-type PrepareVerifiedRecoverBackup = (
+type ApplyVerifiedRecoverApplication = (
   basePath: string,
-) => VerifiedRecoverBackup | Promise<VerifiedRecoverBackup>
+) => VerifiedRecoverApplicationResult | Promise<VerifiedRecoverApplicationResult>
 
 export async function handleRecover(
   basePath: string,
@@ -110,80 +92,22 @@ export async function handleRecover(
     return { exitCode: 1 }
   }
 
-  // Refuse a destructive recover that would delete authoritative DB rows the
-  // markdown lacks, unless explicitly allowed. The DB is the source of truth;
-  // re-projecting via rebuild is almost always what's wanted instead. The
-  // check is identity-based, so it also catches equal-count divergence (DB S99
-  // vs markdown S01) that a cardinality-only comparison would miss.
-  const markdown = modules.countMarkdownHierarchy(basePath)
-  const beforeDb = modules.countDbHierarchy()
-  const dataLoss = modules.recoverWouldDeleteDbRows(basePath)
-  const allowDataLoss = process.env.GSD_RECOVER_ALLOW_DATA_LOSS === '1'
-  if (dataLoss && !allowDataLoss) {
-    process.stderr.write(
-      `[headless] recover refused: the DB (${beforeDb.milestones}M/${beforeDb.slices}S/${beforeDb.tasks}T) ` +
-        `holds rows the markdown (${markdown.milestones}M/${markdown.slices}S/${markdown.tasks}T) lacks; ` +
-        `recover would delete them. Set GSD_RECOVER_ALLOW_DATA_LOSS=1 to override, ` +
-        `or run a DB-to-markdown rebuild instead.\n`,
-    )
-    return { exitCode: 1 }
-  }
-
-  let counts: { milestones: number; slices: number; tasks: number }
-  let backup: VerifiedRecoverBackup
+  let application: VerifiedRecoverApplicationResult
   try {
-    backup = await modules.prepareVerifiedRecoverBackup(basePath)
-    counts = modules.transaction(() => {
-      modules.clearEngineHierarchy()
-      return modules.migrateHierarchyToDb(basePath)
-    })
+    application = await modules.applyVerifiedRecoverApplication(basePath)
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err)
     process.stderr.write(`[headless] recover failed: ${msg}\n`)
     return { exitCode: 1 }
   }
 
-  modules.invalidateStateCache()
-
-  // Re-project markdown from the freshly imported DB so disk and DB agree.
-  // renderAllFromDb resolves even when individual artifacts fail, so inspect
-  // its error list — a silent projection failure must surface, not pass as a
-  // clean recover.
-  let projectionErrors = 0
-  try {
-    const renderResult = await modules.renderAllFromDb(basePath)
-    projectionErrors = renderResult.errors.length
-    if (projectionErrors > 0) {
-      process.stderr.write(
-        `[headless] recover: ${projectionErrors} markdown projection(s) failed to render — markdown may be stale:\n`,
-      )
-      for (const e of renderResult.errors.slice(0, 10)) {
-        process.stderr.write(`  - ${e}\n`)
-      }
-    }
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err)
-    process.stderr.write(`[headless] recover: re-render after import failed: ${msg}\n`)
-    projectionErrors = 1
-  }
-
-  if (
-    counts.milestones < markdown.milestones ||
-    counts.slices < markdown.slices ||
-    counts.tasks < markdown.tasks
-  ) {
-    process.stderr.write(
-      `[headless] recover: imported fewer rows than markdown contained ` +
-        `(${markdown.milestones}M/${markdown.slices}S/${markdown.tasks}T on disk); some markdown may have failed to parse\n`,
-    )
-  }
   process.stderr.write(
-    `[headless] recover: verified backup and restore rehearsal completed at ${backup.backup_ref}\n`,
+    `[headless] recover: verified backup and restore rehearsal completed at ${application.backup.backup_ref}\n`,
   )
 
+  const { counts } = application
   process.stderr.write(
-    `gsd-recover: recovered ${counts.milestones}M/${counts.slices}S/${counts.tasks}T hierarchy` +
-      `${projectionErrors > 0 ? ` (${projectionErrors} projection error(s) — run rebuild markdown)` : ''}\n`,
+    `gsd-recover: recovered ${counts.milestones}M/${counts.slices}S/${counts.tasks}T hierarchy\n`,
   )
   return { exitCode: 0 }
 }

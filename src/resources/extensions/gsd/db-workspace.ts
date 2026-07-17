@@ -15,6 +15,7 @@ import {
   getDbStatus,
   getDbProvider,
   isDbAvailable,
+  _getAdapter,
   openDatabase,
   openDatabaseByScope,
   openDatabaseByWorkspace,
@@ -24,11 +25,19 @@ import {
   wasDbOpenAttempted,
 } from "./gsd-db.js";
 import {
+  applyLegacyImport,
+  type LegacyImportApplicationReceipt,
+} from "./legacy-import-application.js";
+import {
   prepareLegacyImportBackup,
   type LegacyImportVerifiedBackup,
 } from "./legacy-import-backup.js";
 import { captureCurrentLegacyImportBaseSnapshot } from "./legacy-import-preview-base.js";
-import { createLegacyImportPreview } from "./legacy-import-preview.js";
+import {
+  createLegacyImportPreview,
+  type LegacyImportPreviewArtifact,
+  type LegacyImportPreviewCreateInput,
+} from "./legacy-import-preview.js";
 import { drillLegacyImportBackupRestore } from "./legacy-import-restore-drill.js";
 import { resolveGsdPathContract, gsdRoot } from "./paths.js";
 import { logWarning, setLogBasePath } from "./workflow-logger.js";
@@ -244,7 +253,28 @@ export function vacuumWorkflowDatabase(): void {
   vacuumDatabase();
 }
 
-export function prepareVerifiedRecoverBackup(basePath: string): LegacyImportVerifiedBackup {
+interface VerifiedRecoverEvidence {
+  previewInput: LegacyImportPreviewCreateInput;
+  preview: LegacyImportPreviewArtifact;
+  backup: LegacyImportVerifiedBackup;
+}
+
+export interface VerifiedRecoverApplicationResult {
+  receipt: LegacyImportApplicationReceipt;
+  preview: LegacyImportPreviewArtifact;
+  backup: LegacyImportVerifiedBackup;
+  counts: {
+    milestones: number;
+    slices: number;
+    tasks: number;
+  };
+}
+
+function countRecoverRows(database: DbAdapter, table: "milestones" | "slices" | "tasks"): number {
+  return Number(database.prepare(`SELECT COUNT(*) AS count FROM ${table}`).get()?.["count"] ?? 0);
+}
+
+function prepareVerifiedRecoverEvidence(basePath: string): VerifiedRecoverEvidence {
   const location = resolveWorkflowDatabaseLocation(basePath);
   const databasePath = getWorkflowDatabasePath();
   if (
@@ -255,33 +285,66 @@ export function prepareVerifiedRecoverBackup(basePath: string): LegacyImportVeri
     throw new Error("gsd recover requires the open, file-backed project database");
   }
 
-  const roots = [
-    {
-      id: "project-phases",
-      kind: "project" as const,
-      physical_path: join(location.projectGsd, "phases"),
-      logical_path: ".gsd/phases",
-      presence: "optional" as const,
-    },
-    {
-      id: "project-milestones",
-      kind: "project" as const,
-      physical_path: join(location.projectGsd, "milestones"),
-      logical_path: ".gsd/milestones",
-      presence: "optional" as const,
-    },
-  ];
-  const preview = createLegacyImportPreview({ roots });
+  const previewInput: LegacyImportPreviewCreateInput = {
+    roots: [
+      {
+        id: "project-phases",
+        kind: "project" as const,
+        physical_path: join(location.projectGsd, "phases"),
+        logical_path: ".gsd/phases",
+        presence: "optional" as const,
+      },
+      {
+        id: "project-milestones",
+        kind: "project" as const,
+        physical_path: join(location.projectGsd, "milestones"),
+        logical_path: ".gsd/milestones",
+        presence: "optional" as const,
+      },
+    ],
+  };
+  const preview = createLegacyImportPreview(previewInput);
   const base = captureCurrentLegacyImportBaseSnapshot();
   const destinationDirectory = join(location.projectGsd, "backups");
   mkdirSync(destinationDirectory, { recursive: true });
   const backup = prepareLegacyImportBackup({
     preview,
     base,
-    roots,
+    roots: previewInput.roots,
     destination_directory: destinationDirectory,
     label: "pre-recover",
   });
   drillLegacyImportBackupRestore({ backup, preview, base });
-  return backup;
+  return { previewInput, preview, backup };
+}
+
+export function prepareVerifiedRecoverBackup(basePath: string): LegacyImportVerifiedBackup {
+  return prepareVerifiedRecoverEvidence(basePath).backup;
+}
+
+export function applyVerifiedRecoverApplication(basePath: string): VerifiedRecoverApplicationResult {
+  const evidence = prepareVerifiedRecoverEvidence(basePath);
+  const receipt = applyLegacyImport({
+    invocation: {
+      idempotencyKey: `legacy-import/recover/${evidence.preview.preview.preview_id}`,
+      sourceTransport: "internal",
+      actorType: "system",
+      actorId: "gsd-recover",
+    },
+    previewInput: evidence.previewInput,
+    preview: evidence.preview,
+    backup: evidence.backup,
+  });
+  const database = _getAdapter();
+  if (!database) throw new Error("gsd recover lost its open project database");
+  return {
+    receipt,
+    preview: evidence.preview,
+    backup: evidence.backup,
+    counts: {
+      milestones: countRecoverRows(database, "milestones"),
+      slices: countRecoverRows(database, "slices"),
+      tasks: countRecoverRows(database, "tasks"),
+    },
+  };
 }
