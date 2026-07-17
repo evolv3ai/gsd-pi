@@ -155,6 +155,22 @@ Setup is complete.
 `;
 
 const CORPUS_ROOT = join(import.meta.dirname, '__fixtures__', 'legacy-import-corpus', 'v1');
+const RECOVER_DURABLE_TABLES = [
+  'project_authority', 'milestones', 'slices', 'tasks', 'slice_dependencies',
+  'requirements', 'decisions', 'memories', 'artifacts', 'assessments',
+  'workflow_acceptance_criteria', 'workflow_answers', 'workflow_attempt_results',
+  'workflow_blockers', 'workflow_closeout_effects', 'workflow_closeout_plans',
+  'workflow_conversation_decisions', 'workflow_decision_impacts', 'workflow_domain_events',
+  'workflow_execution_attempts', 'workflow_failure_observations', 'workflow_human_acceptances',
+  'workflow_import_applications', 'workflow_interaction_options', 'workflow_interactions',
+  'workflow_item_lifecycles', 'workflow_kernel_checkpoints', 'workflow_milestone_contexts',
+  'workflow_open_questions', 'workflow_operations', 'workflow_outbox', 'workflow_projection_work',
+  'workflow_question_dependencies', 'workflow_recovery_actions', 'workflow_recovery_budgets',
+  'workflow_remediation_links', 'workflow_requirement_dispositions', 'workflow_settlement_receipts',
+  'workflow_technical_verdicts', 'workflow_verification_evidence', 'workflow_waivers',
+  'workflow_work_checkpoints',
+] as const;
+const RECOVER_SOURCE_ROOTS = ['phases', 'milestones'] as const;
 
 function installCorpusCase(base: string, name: 'gsd-nested' | 'assessment-matrix'): void {
   rmSync(join(base, '.gsd'), { recursive: true, force: true });
@@ -186,27 +202,22 @@ function recoverPreview(base: string) {
   });
 }
 
-function canonicalRecoverSnapshot(): Record<string, unknown[]> {
+function canonicalRecoverSnapshot(): Record<string, unknown> {
   const db = _getAdapter()!;
-  return Object.fromEntries([
-    'project_authority',
-    'milestones',
-    'slices',
-    'tasks',
-    'slice_dependencies',
-    'requirements',
-    'decisions',
-    'artifacts',
-    'assessments',
-    'workflow_item_lifecycles',
-    'workflow_operations',
-    'workflow_import_applications',
-    'workflow_domain_events',
-    'workflow_outbox',
-    'workflow_projection_work',
-    'workflow_recovery_actions',
-    'workflow_recovery_budgets',
-  ].map((table) => [table, db.prepare(`SELECT * FROM ${table} ORDER BY rowid`).all()]));
+  return {
+    tables: Object.fromEntries(RECOVER_DURABLE_TABLES.map((table) => [
+      table,
+      db.prepare(`SELECT * FROM ${table} ORDER BY rowid`).all(),
+    ])),
+    totalChanges: Number(db.prepare('SELECT total_changes() AS count').get()?.count),
+  };
+}
+
+function recoverSourceSnapshot(base: string): Record<string, string | null> {
+  return Object.fromEntries(RECOVER_SOURCE_ROOTS.map((root) => {
+    const path = join(base, '.gsd', root);
+    return [root, existsSync(path) ? fingerprintLegacyImportCorpusTree(path) : null];
+  }));
 }
 
 function sha256(path: string): string {
@@ -695,7 +706,7 @@ describe('gsd-recover', async () => {
       const approvedBase = captureCurrentLegacyImportBaseSnapshot();
       const approvedPreview = recoverPreview(base);
       assert.equal(approvedPreview.preview.counts.unresolved, 0);
-      const sourceBefore = fingerprintLegacyImportCorpusTree(join(base, '.gsd', 'milestones'));
+      const sourceBefore = recoverSourceSnapshot(base);
       const { ctx, notes } = makeCtx();
 
       await handleRecover(ctx, base, '--confirm');
@@ -733,7 +744,7 @@ describe('gsd-recover', async () => {
       assert.ok(Number(db.prepare('SELECT COUNT(*) AS count FROM workflow_projection_work').get()?.count) > 0);
       assert.equal(db.prepare('SELECT COUNT(*) AS count FROM workflow_recovery_actions').get()?.count, 0);
       assert.equal(db.prepare('SELECT COUNT(*) AS count FROM workflow_recovery_budgets').get()?.count, 0);
-      assert.equal(fingerprintLegacyImportCorpusTree(join(base, '.gsd', 'milestones')), sourceBefore);
+      assert.deepEqual(recoverSourceSnapshot(base), sourceBefore);
       assert.equal(notes.at(-1)?.kind, 'success');
     } finally {
       closeDatabase();
@@ -749,13 +760,13 @@ describe('gsd-recover', async () => {
       const preview = recoverPreview(base);
       assert.equal(preview.preview.counts.unresolved, 4);
       const before = canonicalRecoverSnapshot();
-      const sourceBefore = fingerprintLegacyImportCorpusTree(join(base, '.gsd', 'milestones'));
+      const sourceBefore = recoverSourceSnapshot(base);
       const { ctx, notes } = makeCtx();
 
       await handleRecover(ctx, base, '--confirm');
 
       assert.deepEqual(canonicalRecoverSnapshot(), before);
-      assert.equal(fingerprintLegacyImportCorpusTree(join(base, '.gsd', 'milestones')), sourceBefore);
+      assert.deepEqual(recoverSourceSnapshot(base), sourceBefore);
       assert.equal(notes.at(-1)?.kind, 'error');
       assert.match(notes.at(-1)?.message ?? '', /unresolved|requires.*user/i);
     } finally {

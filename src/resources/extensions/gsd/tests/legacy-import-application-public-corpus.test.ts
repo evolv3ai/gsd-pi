@@ -91,8 +91,17 @@ const PRESERVE_ONLY_CASES = new Set([
 const DURABLE_TABLES = [
   "project_authority", "milestones", "slices", "tasks", "slice_dependencies",
   "requirements", "decisions", "memories", "artifacts", "assessments",
-  "workflow_item_lifecycles", "workflow_operations", "workflow_import_applications",
-  "workflow_domain_events", "workflow_outbox", "workflow_projection_work",
+  "workflow_acceptance_criteria", "workflow_answers", "workflow_attempt_results",
+  "workflow_blockers", "workflow_closeout_effects", "workflow_closeout_plans",
+  "workflow_conversation_decisions", "workflow_decision_impacts", "workflow_domain_events",
+  "workflow_execution_attempts", "workflow_failure_observations", "workflow_human_acceptances",
+  "workflow_import_applications", "workflow_interaction_options", "workflow_interactions",
+  "workflow_item_lifecycles", "workflow_kernel_checkpoints", "workflow_milestone_contexts",
+  "workflow_open_questions", "workflow_operations", "workflow_outbox", "workflow_projection_work",
+  "workflow_question_dependencies", "workflow_recovery_actions", "workflow_recovery_budgets",
+  "workflow_remediation_links", "workflow_requirement_dispositions", "workflow_settlement_receipts",
+  "workflow_technical_verdicts", "workflow_verification_evidence", "workflow_waivers",
+  "workflow_work_checkpoints",
 ] as const;
 
 const LOGICAL_TABLES = [
@@ -128,6 +137,10 @@ function tableSnapshot(tables: readonly string[]): Record<string, unknown> {
     table,
     rows(`SELECT * FROM ${table} ORDER BY rowid`),
   ]));
+}
+
+function totalChanges(): number {
+  return Number(db().prepare("SELECT total_changes() AS count").get()?.["count"]);
 }
 
 function treeInventory(root: string, relative = ""): string[] {
@@ -455,9 +468,11 @@ test("public Application commits and exactly replays all 12 eligible fresh corpu
       const durable = tableSnapshot(DURABLE_TABLES);
       closeDatabase();
       assert.equal(openDatabase(prepared.databasePath), true, entry.name);
+      const changesBeforeReplay = totalChanges();
       const replayed = applyLegacyImport(structuredClone(prepared.input));
       assert.deepEqual(replayed, { ...committed, status: "replayed" }, entry.name);
       assert.deepEqual(tableSnapshot(DURABLE_TABLES), durable, `${entry.name}: replay read-only`);
+      assert.equal(totalChanges(), changesBeforeReplay, `${entry.name}: replay performs no writes`);
       assert.equal(fingerprintLegacyImportCorpusTree(prepared.source), sourceBefore, `${entry.name}: source immutable`);
       assert.equal(fingerprintLegacyImportCorpusTree(prepared.backupDirectory), backupBefore, `${entry.name}: backup immutable`);
       assert.deepEqual(treeInventory(prepared.caseRoot), inventoryBefore, `${entry.name}: inventory immutable`);
@@ -484,6 +499,7 @@ test("public Application refuses all 14 unresolved fresh corpus cases with zero 
     try {
       assert.ok(prepared.preview.preview.counts.unresolved > 0, entry.name);
       const before = tableSnapshot(DURABLE_TABLES);
+      const changesBeforeRefusal = totalChanges();
       const sourceBefore = fingerprintLegacyImportCorpusTree(prepared.source);
       const backupBefore = hashLegacyImportBytes(readFileSync(prepared.backup.backup_ref));
       const inventoryBefore = treeInventory(prepared.caseRoot);
@@ -492,6 +508,7 @@ test("public Application refuses all 14 unresolved fresh corpus cases with zero 
       expectUnresolved(() => applyLegacyImport(prepared.input), entry.name);
 
       assert.deepEqual(tableSnapshot(DURABLE_TABLES), before, `${entry.name}: zero residue`);
+      assert.equal(totalChanges(), changesBeforeRefusal, `${entry.name}: refusal performs no writes`);
       assert.equal(fingerprintLegacyImportCorpusTree(prepared.source), sourceBefore, `${entry.name}: source immutable`);
       assert.equal(hashLegacyImportBytes(readFileSync(prepared.backup.backup_ref)), backupBefore, `${entry.name}: backup immutable`);
       assert.deepEqual(treeInventory(prepared.caseRoot), inventoryBefore, `${entry.name}: inventory immutable`);

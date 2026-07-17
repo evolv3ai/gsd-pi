@@ -2,7 +2,16 @@
 // File Purpose: Proves startup and layout compatibility paths never import Markdown into canonical authority.
 
 import assert from "node:assert/strict";
-import { cpSync, existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import {
+  cpSync,
+  existsSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  readlinkSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, test } from "node:test";
@@ -83,6 +92,25 @@ function totalChanges(): number {
   return Number(db().prepare("SELECT total_changes() AS count").get()?.["count"]);
 }
 
+function nonDatabaseTreeSnapshot(root: string, relative = ""): string[] {
+  const rows: string[] = [];
+  const entries = readdirSync(join(root, relative), { withFileTypes: true })
+    .sort((left, right) => left.name.localeCompare(right.name));
+  for (const entry of entries) {
+    const child = relative ? `${relative}/${entry.name}` : entry.name;
+    if (/^gsd\.db(?:-(?:wal|shm|journal))?$/.test(entry.name)) continue;
+    if (entry.isDirectory()) {
+      rows.push(`${child}/`);
+      rows.push(...nonDatabaseTreeSnapshot(root, child));
+    } else if (entry.isSymbolicLink()) {
+      rows.push(`${child}->${readlinkSync(join(root, child))}`);
+    } else {
+      rows.push(`${child}:${readFileSync(join(root, child)).toString("base64")}`);
+    }
+  }
+  return rows;
+}
+
 afterEach(() => {
   if (isDbAvailable()) closeDatabase();
   for (const directory of temporaryDirectories) {
@@ -97,11 +125,13 @@ test("startup database open and derive ignore markdown-only hierarchy without ch
   assert.equal(openDatabase(databasePath), true);
   const beforeOpen = durableSnapshot();
   closeDatabase();
+  const sourceTreeBefore = nonDatabaseTreeSnapshot(join(base, ".gsd"));
 
   await openProjectDbIfPresent(base);
 
   assert.equal(isDbAvailable(), true);
   assert.deepEqual(durableSnapshot(), beforeOpen);
+  assert.deepEqual(nonDatabaseTreeSnapshot(join(base, ".gsd")), sourceTreeBefore);
   assert.equal(totalChanges(), 0, "opening an existing database performs no authority write");
   const beforeDerive = durableSnapshot();
   const changesBeforeDerive = totalChanges();
@@ -114,6 +144,11 @@ test("startup database open and derive ignore markdown-only hierarchy without ch
   assert.equal(state.phase, "pre-planning");
   assert.deepEqual(durableSnapshot(), beforeDerive);
   assert.equal(totalChanges(), changesBeforeDerive);
+  assert.deepEqual(
+    nonDatabaseTreeSnapshot(join(base, ".gsd")),
+    sourceTreeBefore,
+    "open and derive leave every non-database source byte exact",
+  );
 });
 
 test("PROJECT.md startup reconciliation cannot create canonical milestone rows", () => {
@@ -126,12 +161,18 @@ test("PROJECT.md startup reconciliation cannot create canonical milestone rows",
   assert.equal(openDatabase(join(base, ".gsd", "gsd.db")), true);
   const before = durableSnapshot();
   const changesBefore = totalChanges();
+  const sourceTreeBefore = nonDatabaseTreeSnapshot(join(base, ".gsd"));
 
   const inserted = reconcileProjectMilestonesFromDisk(base);
 
   assert.equal(inserted, 0);
   assert.deepEqual(durableSnapshot(), before);
   assert.equal(totalChanges(), changesBefore);
+  assert.deepEqual(
+    nonDatabaseTreeSnapshot(join(base, ".gsd")),
+    sourceTreeBefore,
+    "PROJECT refusal leaves the complete non-database source tree exact",
+  );
 });
 
 test("flat-phase layout migration cannot ingest markdown-only hierarchy into an empty database", async () => {
@@ -141,6 +182,7 @@ test("flat-phase layout migration cannot ingest markdown-only hierarchy into an 
   assert.equal(openDatabase(join(base, ".gsd", "gsd.db")), true);
   const before = durableSnapshot();
   const changesBefore = totalChanges();
+  const sourceTreeBefore = nonDatabaseTreeSnapshot(join(base, ".gsd"));
 
   await assert.rejects(
     () => migrateToFlatPhase(base),
@@ -151,6 +193,11 @@ test("flat-phase layout migration cannot ingest markdown-only hierarchy into an 
   assert.equal(totalChanges(), changesBefore);
   assert.equal(existsSync(milestonesPath), true, "projection remains available for explicit import");
   assert.equal(fingerprintLegacyImportCorpusTree(milestonesPath), sourceBefore);
+  assert.deepEqual(
+    nonDatabaseTreeSnapshot(join(base, ".gsd")),
+    sourceTreeBefore,
+    "refused flat migration leaves the complete non-database source tree exact",
+  );
   assert.equal(existsSync(join(base, ".gsd", "phases")), false);
   assert.equal(existsSync(join(base, ".gsd-backups")), false);
 });

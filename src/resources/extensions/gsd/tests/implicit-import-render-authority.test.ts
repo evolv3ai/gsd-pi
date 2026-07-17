@@ -73,6 +73,7 @@ function treeSnapshot(root: string, relative = ""): string[] {
     .sort((left, right) => left.name.localeCompare(right.name));
   for (const entry of directoryEntries) {
     const child = relative ? `${relative}/${entry.name}` : entry.name;
+    if (/^gsd\.db(?:-(?:wal|shm|journal))?$/.test(entry.name)) continue;
     if (entry.isDirectory()) {
       entries.push(`${child}/`);
       entries.push(...treeSnapshot(root, child));
@@ -83,11 +84,20 @@ function treeSnapshot(root: string, relative = ""): string[] {
   return entries;
 }
 
+function markerBytes(base: string): Buffer | null {
+  const path = join(base, ".gsd", ".compat.json");
+  return existsSync(path) ? readFileSync(path) : null;
+}
+
 test("renderAllFromDb does not adopt an inactive planning-only tree", async (t) => {
   const base = makeWorkspace(t);
+  const seedResult = await renderAllFromDb(base);
+  assert.deepEqual(seedResult.errors, [], "empty DB projection seed succeeds");
   cpSync(PLANNING_FIXTURE, join(base, ".planning"), { recursive: true });
 
   const planningBefore = treeSnapshot(join(base, ".planning"));
+  const projectionBefore = treeSnapshot(join(base, ".gsd"));
+  const markerBefore = markerBytes(base);
   const canonicalBefore = canonicalSnapshot();
 
   const result = await renderAllFromDb(base);
@@ -98,6 +108,12 @@ test("renderAllFromDb does not adopt an inactive planning-only tree", async (t) 
   assert.equal(existsSync(join(base, ".gsd", "milestones")), false, "render must not materialize legacy hierarchy");
   assert.deepEqual(canonicalSnapshot(), canonicalBefore, "render must leave canonical authority and lineage exact");
   assert.deepEqual(treeSnapshot(join(base, ".planning")), planningBefore, "render must leave planning bytes exact");
+  assert.deepEqual(
+    treeSnapshot(join(base, ".gsd")),
+    projectionBefore,
+    "empty-DB render leaves the complete non-database .gsd tree exact, including DECISIONS",
+  );
+  assert.deepEqual(markerBytes(base), markerBefore, "inactive render leaves marker bytes exact");
   assert.deepEqual(result.errors, []);
 });
 

@@ -191,6 +191,8 @@ test("/gsd sync blocks modeled .gsd drift without importing or rendering over it
       "",
     ].join("\n"),
   );
+  const siblingPath = join(base, ".gsd", "phases", "01-canonical", "01-CONTEXT.md");
+  writeFileSync(siblingPath, "# Unrelated sibling projection\n");
   writeCompatMarker(base, {
     schema: 2,
     lastWriter: "gsd-pi",
@@ -203,14 +205,18 @@ test("/gsd sync blocks modeled .gsd drift without importing or rendering over it
   });
   const databaseBefore = durableSnapshot();
   const markerBefore = markerBytes(base);
-  const sourceBefore = readFileSync(sourcePath);
+  const projectionBefore = projectionTreeSnapshot(join(base, ".gsd"));
   const { ctx, notifications } = makeContext();
 
   await handleSync(ctx, base);
 
   assertFailClosedGuidance(notifications, /\/gsd recover --confirm/);
-  assert.deepEqual(readFileSync(sourcePath), sourceBefore, "renderer does not overwrite the edited source");
   assert.deepEqual(markerBytes(base), markerBefore, "sync does not advance the stale marker baseline");
+  assert.deepEqual(
+    projectionTreeSnapshot(join(base, ".gsd")),
+    projectionBefore,
+    "blocked sync leaves the whole modeled .gsd projection tree exact",
+  );
   assert.deepEqual(durableSnapshot(), databaseBefore, "DB authority, lineage, and total_changes remain exact");
 });
 
@@ -266,6 +272,7 @@ test("/gsd sync still accepts active .planning passthrough drift", async () => {
   const sourcePath = join(base, ".planning", relativePath);
   mkdirSync(join(base, ".planning", "codebase"), { recursive: true });
   writeFileSync(sourcePath, "# Updated stack notes\n");
+  writeFileSync(join(base, ".planning", "codebase", "ARCHITECTURE.md"), "# User-owned sibling notes\n");
   writeCompatMarker(base, {
     schema: 2,
     lastWriter: "gsd-pi",
@@ -282,11 +289,17 @@ test("/gsd sync still accepts active .planning passthrough drift", async () => {
     piVersion: "test",
   });
   const sourceBefore = readFileSync(sourcePath);
+  const passthroughTreeBefore = fingerprintLegacyImportCorpusTree(join(base, ".planning", "codebase"));
   const { ctx, notifications } = makeContext();
 
   await handleSync(ctx, base);
 
   assert.deepEqual(readFileSync(sourcePath), sourceBefore, "passthrough content remains user-owned");
+  assert.equal(
+    fingerprintLegacyImportCorpusTree(join(base, ".planning", "codebase")),
+    passthroughTreeBefore,
+    "safe checksum refresh leaves the complete passthrough subtree exact",
+  );
   assert.equal(
     readCompatMarker(base).planning?.passthrough[relativePath]?.sha,
     computeProjectionSha(sourceBefore.toString("utf8")),

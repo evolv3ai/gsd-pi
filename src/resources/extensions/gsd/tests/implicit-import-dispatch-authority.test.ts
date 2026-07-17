@@ -233,6 +233,9 @@ test("changed modeled .gsd projection blocks without importing or advancing its 
       "",
     ].join("\n"),
   );
+  const siblingPath = join(base, ".gsd", "phases", "01-canonical", "01-CONTEXT.md");
+  const siblingBefore = Buffer.from("# Unrelated sibling projection\n");
+  writeFileSync(siblingPath, siblingBefore);
   writeCompatMarker(base, {
     schema: 2,
     lastWriter: "gsd-pi",
@@ -245,7 +248,7 @@ test("changed modeled .gsd projection blocks without importing or advancing its 
   });
   const databaseBefore = durableSnapshot();
   const markerBefore = markerBytes(base);
-  const sourceBefore = readFileSync(projectionPath);
+  const projectionBefore = projectionTreeSnapshot(join(base, ".gsd"));
 
   const result = await reconcileBeforeDispatch(base, {
     registry: [externalMarkdownEditHandler],
@@ -257,7 +260,26 @@ test("changed modeled .gsd projection blocks without importing or advancing its 
   assertNoExternalImportRepair(result);
   assert.deepEqual(durableSnapshot(), databaseBefore, "canonical authority and lineage remain exact");
   assert.deepEqual(markerBytes(base), markerBefore, "stale marker baseline remains exact");
-  assert.deepEqual(readFileSync(projectionPath), sourceBefore, "modeled .gsd source bytes remain exact");
+  assert.deepEqual(
+    projectionTreeSnapshot(join(base, ".gsd")),
+    projectionBefore,
+    "dispatch leaves the whole modeled .gsd projection tree exact",
+  );
+
+  writeFileSync(siblingPath, "# Sabotaged sibling projection\n");
+  assert.notDeepEqual(
+    projectionTreeSnapshot(join(base, ".gsd")),
+    projectionBefore,
+    "whole-tree proof detects an unrelated sibling projection write",
+  );
+  writeFileSync(siblingPath, siblingBefore);
+  assert.deepEqual(projectionTreeSnapshot(join(base, ".gsd")), projectionBefore, "sibling sabotage restored");
+
+  assert.ok(markerBefore);
+  writeFileSync(join(base, ".gsd", ".compat.json"), Buffer.concat([markerBefore, Buffer.from("\n")]));
+  assert.notDeepEqual(markerBytes(base), markerBefore, "marker proof detects an unrelated marker write");
+  writeFileSync(join(base, ".gsd", ".compat.json"), markerBefore);
+  assert.deepEqual(markerBytes(base), markerBefore, "marker sabotage restored");
 });
 
 test("changed modeled .planning projection blocks without transform, import, or marker advance", async () => {
