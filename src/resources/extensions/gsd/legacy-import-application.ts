@@ -65,6 +65,28 @@ export const LEGACY_IMPORT_APPLICATION_OPERATION_TYPE = "import.apply" as const;
 export const LEGACY_IMPORT_APPLICATION_EVENT_TYPE = "legacy-import.applied" as const;
 export const LEGACY_IMPORT_APPLICATION_REPLAY_IDENTITY_SCHEMA_VERSION = 1 as const;
 
+export type LegacyImportApplicationBoundaryPoint =
+  | "after-coordination"
+  | "after-final-validation"
+  | "after-plan"
+  | "after-receipt";
+
+type LegacyImportApplicationBoundaryHook = (
+  point: LegacyImportApplicationBoundaryPoint,
+) => void;
+
+let applicationBoundaryHookForTest: LegacyImportApplicationBoundaryHook | null = null;
+
+export function _setLegacyImportApplicationBoundaryForTest(
+  hook: LegacyImportApplicationBoundaryHook | null,
+): void {
+  applicationBoundaryHookForTest = hook;
+}
+
+function reachApplicationBoundary(point: LegacyImportApplicationBoundaryPoint): void {
+  applicationBoundaryHookForTest?.(point);
+}
+
 export interface LegacyImportApplicationInput {
   readonly invocation: Readonly<ExecutionInvocation>;
   readonly previewInput: Readonly<LegacyImportPreviewCreateInput>;
@@ -797,13 +819,16 @@ export function applyLegacyImport(input: unknown): LegacyImportApplicationReceip
       const transactionalBase = captureApplicationBase();
       requireSameBase(base, transactionalBase);
       requireCoordinationIdle(base.authority.project_root_realpath);
+      reachApplicationBoundary("after-coordination");
       try {
         validateLegacyImportVerifiedBackup(snapshot.input.backup, { preview, base: transactionalBase });
       } catch (error) {
         if (error instanceof LegacyImportBackupError) throw mapBackupFailure(error);
         throw error;
       }
+      reachApplicationBoundary("after-final-validation");
       applyLegacyImportApplicationPlan(context, plan);
+      reachApplicationBoundary("after-plan");
       try {
         insertLegacyImportApplicationReceipt(context, plan, preview, snapshot.input.backup);
       } catch (error) {
@@ -815,6 +840,7 @@ export function applyLegacyImport(input: unknown): LegacyImportApplicationReceip
           error instanceof LegacyImportApplicationError ? { cause_code: error.code } : {},
         );
       }
+      reachApplicationBoundary("after-receipt");
       return {
         events: [{
           eventType: LEGACY_IMPORT_APPLICATION_EVENT_TYPE,
