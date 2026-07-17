@@ -13,6 +13,9 @@ import {
   createLegacyImportApplicationIdentity,
 } from "../legacy-import-application.ts";
 import {
+  LegacyImportApplicationError as InternalLegacyImportApplicationError,
+} from "../legacy-import-application-error.ts";
+import {
   hashLegacyImportValue,
   isValidLegacyImportPreviewArtifact,
   sealLegacyImportPreview,
@@ -124,6 +127,17 @@ test("import application contract: errors carry immutable safe failure facts", (
   assert.deepEqual(error.context.counts, { create: 1, unresolved: 0 });
   assert.equal(Object.isFrozen(error.context), true);
   assert.equal(Object.isFrozen(error.context.counts), true);
+});
+
+test("import application contract: public and internal errors share one runtime identity", () => {
+  assert.equal(LegacyImportApplicationError, InternalLegacyImportApplicationError);
+  const error = new InternalLegacyImportApplicationError(
+    "compile",
+    "LEGACY_IMPORT_APPLICATION_MAPPING_UNSUPPORTED",
+    "legacy import Preview contains an unsupported target",
+    false,
+  );
+  assert.ok(error instanceof LegacyImportApplicationError);
 });
 
 test("import application contract: structural Preview accepts unsupported semantic targets", () => {

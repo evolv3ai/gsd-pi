@@ -3,21 +3,63 @@
 
 import type { ExecutionInvocation } from "./execution-invocation.js";
 import {
+  LegacyImportBackupError,
   isValidLegacyImportVerifiedBackup,
+  validateLegacyImportVerifiedBackup,
+  verifyLegacyImportBackupArtifact,
   type LegacyImportVerifiedBackup,
 } from "./legacy-import-backup.js";
-import type { LegacyImportSha256, LegacyImportValue } from "./legacy-import-contract.js";
 import {
+  LegacyImportApplicationError,
+} from "./legacy-import-application-error.js";
+import type { LegacyImportSha256 } from "./legacy-import-contract.js";
+import {
+  LegacyImportPreviewError,
+  canonicalLegacyImportJson,
   hashLegacyImportValue,
   isStrictLegacyImportData,
   isValidLegacyImportPreviewArtifact,
+  revalidateLegacyImportPreview,
   type LegacyImportPreviewArtifact,
   type LegacyImportPreviewCreateInput,
 } from "./legacy-import-preview.js";
 import {
+  LegacyImportBaseSnapshotError,
+  captureCurrentLegacyImportBaseSnapshot,
+  type LegacyImportBaseSnapshot,
+} from "./legacy-import-preview-base.js";
+import {
+  LegacyImportSourceError,
   validateLegacyImportSourceRoots,
   type LegacyImportSourceRoot,
 } from "./legacy-import-preview-source.js";
+import {
+  compileLegacyImportApplicationPlan,
+  type LegacyImportApplicationPlan,
+} from "./legacy-import-application-plan.js";
+import {
+  canonicalDomainJson,
+  executeImportDomainOperation,
+  type DomainJsonValue,
+  type DomainOperationResult,
+  type ImportDomainOperationRequest,
+} from "./db/domain-operation.js";
+import { getDb, readTransaction } from "./db/engine.js";
+import {
+  applyLegacyImportApplicationPlan,
+  insertLegacyImportApplicationReceipt,
+} from "./db/writers/legacy-import-application.js";
+import {
+  GSD_IDEMPOTENCY_CONFLICT,
+  GSD_REVISION_CONFLICT,
+  GSDError,
+} from "./errors.js";
+
+export {
+  LegacyImportApplicationError,
+  type LegacyImportApplicationErrorCode,
+  type LegacyImportApplicationErrorStage,
+} from "./legacy-import-application-error.js";
 
 export const LEGACY_IMPORT_APPLICATION_OPERATION_TYPE = "import.apply" as const;
 export const LEGACY_IMPORT_APPLICATION_EVENT_TYPE = "legacy-import.applied" as const;
@@ -72,59 +114,11 @@ export interface LegacyImportApplicationReceipt {
   readonly projectionWorkIds: readonly string[];
 }
 
-export type LegacyImportApplicationErrorStage =
-  | "contract"
-  | "replay"
-  | "preview"
-  | "backup"
-  | "compile"
-  | "coordination"
-  | "transaction"
-  | "receipt";
-
-export type LegacyImportApplicationErrorCode =
-  | "LEGACY_IMPORT_APPLICATION_CONTRACT_INVALID"
-  | "LEGACY_IMPORT_APPLICATION_REPLAY_CONFLICT"
-  | "LEGACY_IMPORT_APPLICATION_PREVIEW_INVALID"
-  | "LEGACY_IMPORT_APPLICATION_PREVIEW_UNRESOLVED"
-  | "LEGACY_IMPORT_APPLICATION_PREVIEW_CHANGED"
-  | "LEGACY_IMPORT_APPLICATION_BACKUP_INVALID"
-  | "LEGACY_IMPORT_APPLICATION_BACKUP_CHANGED"
-  | "LEGACY_IMPORT_APPLICATION_MAPPING_UNSUPPORTED"
-  | "LEGACY_IMPORT_APPLICATION_MAPPING_INCONSISTENT"
-  | "LEGACY_IMPORT_APPLICATION_COORDINATION_ACTIVE"
-  | "LEGACY_IMPORT_APPLICATION_AUTHORITY_STALE"
-  | "LEGACY_IMPORT_APPLICATION_WRITER_CONTENTION"
-  | "LEGACY_IMPORT_APPLICATION_MUTATION_FAILED"
-  | "LEGACY_IMPORT_APPLICATION_RECEIPT_INCONSISTENT";
-
 function deepFreeze<T>(value: T, seen = new Set<object>()): T {
   if (value === null || typeof value !== "object" || seen.has(value)) return value;
   seen.add(value);
   for (const child of Object.values(value)) deepFreeze(child, seen);
   return Object.freeze(value);
-}
-
-export class LegacyImportApplicationError extends Error {
-  readonly stage: LegacyImportApplicationErrorStage;
-  readonly code: LegacyImportApplicationErrorCode;
-  readonly retryable: boolean;
-  readonly context: Readonly<Record<string, LegacyImportValue>>;
-
-  constructor(
-    stage: LegacyImportApplicationErrorStage,
-    code: LegacyImportApplicationErrorCode,
-    message: string,
-    retryable: boolean,
-    context: Readonly<Record<string, LegacyImportValue>> = {},
-  ) {
-    super(message);
-    this.name = "LegacyImportApplicationError";
-    this.stage = stage;
-    this.code = code;
-    this.retryable = retryable;
-    this.context = deepFreeze(structuredClone(context));
-  }
 }
 
 function isPlainRecord(value: unknown): value is Record<string, unknown> {
@@ -251,37 +245,598 @@ function requireBackupLinkage(
   }
 }
 
-export function createLegacyImportApplicationIdentity(
-  value: unknown,
-): LegacyImportApplicationIdentity {
+interface LegacyImportApplicationSnapshot {
+  readonly input: LegacyImportApplicationInput;
+  readonly identity: LegacyImportApplicationIdentity;
+}
+
+function snapshotLegacyImportApplication(value: unknown): LegacyImportApplicationSnapshot {
   if (!hasExactKeys(value, ["invocation", "previewInput", "preview", "backup"])) {
     failContract("legacy import Application input does not satisfy the exact v1 contract");
   }
   if (!isStrictLegacyImportData(value)) {
     failContract("legacy import Application input must contain acyclic strict data properties");
   }
-  let input: Record<string, unknown>;
+  let detached: Record<string, unknown>;
   try {
-    input = structuredClone(value);
+    detached = structuredClone(value);
   } catch {
     failContract("legacy import Application input must be detached strict data");
   }
-  if (!isValidLegacyImportPreviewArtifact(input["preview"])) {
+  if (!isValidLegacyImportPreviewArtifact(detached["preview"])) {
     failContract("legacy import Application Preview does not satisfy the sealed v1 contract");
   }
-  const preview = input["preview"];
-  const normalizedPreviewInput = normalizePreviewInput(input["previewInput"]);
-  requireBackupLinkage(input["backup"], preview);
+  const preview = detached["preview"];
+  const normalizedPreviewInput = normalizePreviewInput(detached["previewInput"]);
+  requireBackupLinkage(detached["backup"], preview);
+  const invocation = normalizeInvocation(detached["invocation"]);
   const replayIdentity: LegacyImportApplicationReplayIdentity = {
     replayIdentitySchemaVersion: LEGACY_IMPORT_APPLICATION_REPLAY_IDENTITY_SCHEMA_VERSION,
-    invocation: normalizeInvocation(input["invocation"]),
+    invocation,
     previewInputHash: hashLegacyImportValue(normalizedPreviewInput),
     previewId: preview.preview.preview_id,
     previewHash: preview.preview_hash,
-    backup: input["backup"],
+    backup: detached["backup"],
+  };
+  const input: LegacyImportApplicationInput = {
+    invocation: {
+      idempotencyKey: invocation.idempotencyKey,
+      sourceTransport: invocation.sourceTransport,
+      actorType: invocation.actorType,
+      ...(invocation.actorId === null ? {} : { actorId: invocation.actorId }),
+      ...(invocation.traceId === null ? {} : { traceId: invocation.traceId }),
+      ...(invocation.turnId === null ? {} : { turnId: invocation.turnId }),
+    },
+    previewInput: normalizedPreviewInput,
+    preview,
+    backup: detached["backup"],
   };
   return deepFreeze({
-    replayIdentity,
-    applicationIdentityHash: hashLegacyImportValue(replayIdentity),
+    input,
+    identity: {
+      replayIdentity,
+      applicationIdentityHash: hashLegacyImportValue(replayIdentity),
+    },
   });
+}
+
+export function createLegacyImportApplicationIdentity(
+  value: unknown,
+): LegacyImportApplicationIdentity {
+  return snapshotLegacyImportApplication(value).identity;
+}
+
+type DbRow = Record<string, unknown>;
+
+interface ReplayAggregate {
+  readonly operation: DbRow;
+  readonly application: DbRow;
+  readonly events: readonly DbRow[];
+  readonly outbox: readonly DbRow[];
+  readonly projections: readonly DbRow[];
+}
+
+function replayConflict(message: string): never {
+  throw new LegacyImportApplicationError(
+    "replay",
+    "LEGACY_IMPORT_APPLICATION_REPLAY_CONFLICT",
+    message,
+    false,
+  );
+}
+
+function receiptInconsistent(message: string): never {
+  throw new LegacyImportApplicationError(
+    "receipt",
+    "LEGACY_IMPORT_APPLICATION_RECEIPT_INCONSISTENT",
+    message,
+    false,
+  );
+}
+
+function loadReplayAggregate(
+  snapshot: LegacyImportApplicationSnapshot,
+): ReplayAggregate | null {
+  return readTransaction(() => {
+    const db = getDb();
+    const project = db.prepare(
+      "SELECT project_id FROM project_authority WHERE singleton = 1",
+    ).get() as DbRow | undefined;
+    if (!project || typeof project["project_id"] !== "string") {
+      throw mapBaseFailure(new LegacyImportBaseSnapshotError(
+        "LEGACY_IMPORT_BASE_AUTHORITY_MISSING",
+        "legacy import project authority is missing",
+      ));
+    }
+    const projectId = project["project_id"];
+    const byKey = db.prepare(`SELECT operation_id FROM workflow_operations
+      WHERE project_id = :project_id AND idempotency_key = :idempotency_key`).get({
+      ":project_id": projectId,
+      ":idempotency_key": snapshot.identity.replayIdentity.invocation.idempotencyKey,
+    }) as DbRow | undefined;
+    const byPreview = db.prepare(`SELECT operation_id FROM workflow_import_applications
+      WHERE project_id = :project_id AND (preview_id = :preview_id OR preview_hash = :preview_hash)
+      ORDER BY operation_id`).all({
+      ":project_id": projectId,
+      ":preview_id": snapshot.identity.replayIdentity.previewId,
+      ":preview_hash": snapshot.identity.replayIdentity.previewHash,
+    }) as DbRow[];
+    const operationIds = new Set<string>();
+    if (typeof byKey?.["operation_id"] === "string") operationIds.add(byKey["operation_id"]);
+    for (const row of byPreview) {
+      if (typeof row["operation_id"] !== "string") receiptInconsistent("legacy import receipt identity is invalid");
+      operationIds.add(row["operation_id"]);
+    }
+    if (operationIds.size === 0) return null;
+    if (operationIds.size !== 1) replayConflict("legacy import key and Preview identities resolve to different Applications");
+    const operationId = [...operationIds][0]!;
+    if (byKey === undefined) {
+      replayConflict("legacy import durable identity does not match the requested key and Preview");
+    }
+    const operation = db.prepare(
+      "SELECT * FROM workflow_operations WHERE operation_id = :operation_id",
+    ).get({ ":operation_id": operationId }) as DbRow | undefined;
+    if (!operation) receiptInconsistent("legacy import durable operation is missing");
+    const events = db.prepare(`SELECT * FROM workflow_domain_events
+      WHERE operation_id = :operation_id ORDER BY event_index`).all({ ":operation_id": operationId }) as DbRow[];
+    if (byPreview.length !== 1 || byPreview[0]?.["operation_id"] !== operationId) {
+      if (operation["operation_type"] !== LEGACY_IMPORT_APPLICATION_OPERATION_TYPE) {
+        replayConflict("legacy import key belongs to different committed work");
+      }
+      const payloadJson = events[0]?.["payload_json"];
+      let storedIdentity: unknown;
+      try {
+        storedIdentity = (JSON.parse(String(payloadJson)) as DbRow)["applicationIdentityHash"];
+      } catch {
+        receiptInconsistent("legacy import durable Application event is invalid");
+      }
+      if (storedIdentity !== snapshot.identity.applicationIdentityHash) {
+        replayConflict("legacy import replay identity differs from the committed Application");
+      }
+      receiptInconsistent("legacy import durable Application receipt is missing");
+    }
+    const application = db.prepare(
+      "SELECT * FROM workflow_import_applications WHERE operation_id = :operation_id",
+    ).get({ ":operation_id": operationId }) as DbRow | undefined;
+    if (!application) receiptInconsistent("legacy import durable Application receipt is missing");
+    const outbox = db.prepare(`SELECT outbox.outbox_id, outbox.event_id, outbox.destination
+      FROM workflow_outbox outbox
+      JOIN workflow_domain_events event ON event.event_id = outbox.event_id
+      WHERE event.operation_id = :operation_id
+      ORDER BY outbox.outbox_id`).all({ ":operation_id": operationId }) as DbRow[];
+    const projections = db.prepare(`SELECT
+        current.projection_work_id, current.project_id, current.projection_key,
+        current.projection_kind, current.supersedes_projection_work_id,
+        current.renderer_version, current.source_project_revision,
+        current.source_authority_epoch, current.enqueue_operation_id, current.created_at,
+        previous.projection_work_id AS predecessor_id,
+        previous.project_id AS predecessor_project_id,
+        previous.projection_key AS predecessor_key,
+        previous.projection_kind AS predecessor_kind,
+        previous.source_project_revision AS predecessor_revision,
+        previous.source_authority_epoch AS predecessor_epoch
+      FROM workflow_projection_work current
+      LEFT JOIN workflow_projection_work previous
+        ON previous.projection_work_id = current.supersedes_projection_work_id
+      WHERE current.enqueue_operation_id = :operation_id
+      ORDER BY current.projection_work_id`).all({ ":operation_id": operationId }) as DbRow[];
+    return { operation, application, events, outbox, projections };
+  });
+}
+
+function applicationEventPayload(
+  snapshot: LegacyImportApplicationSnapshot,
+  plan: LegacyImportApplicationPlan,
+): DomainJsonValue {
+  return {
+    replayIdentitySchemaVersion: LEGACY_IMPORT_APPLICATION_REPLAY_IDENTITY_SCHEMA_VERSION,
+    applicationIdentityHash: snapshot.identity.applicationIdentityHash,
+    previewInputHash: snapshot.identity.replayIdentity.previewInputHash,
+    backupArtifactHash: hashLegacyImportValue(snapshot.input.backup),
+    backupId: snapshot.input.backup.backup_id,
+    planSchemaVersion: plan.planSchemaVersion,
+    eventFacts: plan.eventFacts as unknown as DomainJsonValue,
+    projectionKeys: [...plan.projectionKeys],
+  };
+}
+
+function storedValueMatches(row: DbRow, field: string, expected: unknown): boolean {
+  return Object.hasOwn(row, field) && row[field] === expected;
+}
+
+function requireReplayInputMatch(
+  aggregate: ReplayAggregate,
+  snapshot: LegacyImportApplicationSnapshot,
+): void {
+  const invocation = snapshot.identity.replayIdentity.invocation;
+  const preview = snapshot.input.preview.preview;
+  const backup = snapshot.input.backup;
+  const payloadJson = aggregate.events[0]?.["payload_json"];
+  let storedIdentity: unknown;
+  try {
+    const payload = JSON.parse(String(payloadJson)) as Record<string, unknown>;
+    storedIdentity = payload["applicationIdentityHash"];
+  } catch {
+    receiptInconsistent("legacy import Application event payload is invalid");
+  }
+  if (storedIdentity !== snapshot.identity.applicationIdentityHash) {
+    replayConflict("legacy import replay identity differs from the committed Application");
+  }
+  const operationMatches = [
+    ["operation_type", LEGACY_IMPORT_APPLICATION_OPERATION_TYPE],
+    ["idempotency_key", invocation.idempotencyKey],
+    ["expected_revision", preview.base_project_revision],
+    ["resulting_revision", preview.base_project_revision + 1],
+    ["expected_authority_epoch", preview.base_authority_epoch],
+    ["resulting_authority_epoch", preview.base_authority_epoch],
+    ["actor_type", invocation.actorType],
+    ["actor_id", invocation.actorId],
+    ["source_transport", invocation.sourceTransport],
+    ["trace_id", invocation.traceId],
+    ["turn_id", invocation.turnId],
+    ["request_hash", snapshot.input.preview.preview_hash],
+  ].every(([field, expected]) => storedValueMatches(aggregate.operation, String(field), expected));
+  const applicationMatches = [
+    ["operation_id", aggregate.operation["operation_id"]],
+    ["project_id", aggregate.operation["project_id"]],
+    ["import_kind", preview.import_kind],
+    ["importer_version", preview.importer_version],
+    ["preview_schema_version", preview.preview_schema_version],
+    ["preview_id", preview.preview_id],
+    ["preview_hash", snapshot.input.preview.preview_hash],
+    ["base_project_revision", preview.base_project_revision],
+    ["base_authority_epoch", preview.base_authority_epoch],
+    ["base_database_schema_version", preview.base_database_schema_version],
+    ["source_set_hash", preview.source_set_hash],
+    ["change_set_hash", preview.change_set_hash],
+    ["create_count", preview.counts.create],
+    ["update_count", preview.counts.update],
+    ["delete_count", preview.counts.delete],
+    ["preserve_count", preview.counts.preserve],
+    ["unparsed_count", preview.counts.unparsed],
+    ["unresolved_count", preview.counts.unresolved],
+    ["preview_json", canonicalLegacyImportJson(preview)],
+    ["backup_ref", backup.backup_ref],
+    ["backup_sha256", backup.backup_sha256],
+    ["backup_byte_size", backup.backup_byte_size],
+    ["backup_schema_version", backup.backup_database_schema_version],
+    ["backup_project_revision", backup.base_project_revision],
+    ["backup_authority_epoch", backup.base_authority_epoch],
+    ["backup_quick_check", backup.quick_check],
+    ["backup_verified_at", backup.verified_at],
+    ["resulting_project_revision", preview.base_project_revision + 1],
+    ["resulting_authority_epoch", preview.base_authority_epoch],
+  ].every(([field, expected]) => storedValueMatches(aggregate.application, String(field), expected));
+  if (!operationMatches || !applicationMatches) {
+    receiptInconsistent("legacy import committed Application facts are inconsistent");
+  }
+  if (
+    aggregate.operation["created_at"] !== aggregate.application["applied_at"]
+    || aggregate.operation["created_at"] !== aggregate.events[0]?.["created_at"]
+    || typeof aggregate.application["applied_at"] !== "string"
+  ) receiptInconsistent("legacy import Application timestamps are inconsistent");
+}
+
+function requireReplayAggregate(
+  aggregate: ReplayAggregate,
+  snapshot: LegacyImportApplicationSnapshot,
+  plan: LegacyImportApplicationPlan,
+): void {
+  requireReplayInputMatch(aggregate, snapshot);
+  const operationId = String(aggregate.operation["operation_id"]);
+  const projectId = String(aggregate.operation["project_id"]);
+  const resultingRevision = Number(aggregate.operation["resulting_revision"]);
+  const resultingEpoch = Number(aggregate.operation["resulting_authority_epoch"]);
+  const previewId = snapshot.input.preview.preview.preview_id;
+  const expectedPayload = canonicalDomainJson(applicationEventPayload(snapshot, plan));
+  const event = aggregate.events[0];
+  if (
+    aggregate.events.length !== 1
+    || !event
+    || event["operation_id"] !== operationId
+    || event["event_index"] !== 0
+    || event["project_id"] !== projectId
+    || event["project_revision"] !== resultingRevision
+    || event["authority_epoch"] !== resultingEpoch
+    || event["event_type"] !== LEGACY_IMPORT_APPLICATION_EVENT_TYPE
+    || event["entity_type"] !== "legacy-import"
+    || event["entity_id"] !== previewId
+    || event["caused_by_event_id"] !== null
+    || event["payload_json"] !== expectedPayload
+  ) receiptInconsistent("legacy import Application event is inconsistent");
+  if (
+    aggregate.outbox.length !== 1
+    || aggregate.outbox[0]?.["event_id"] !== event["event_id"]
+    || aggregate.outbox[0]?.["destination"] !== "projection"
+  ) receiptInconsistent("legacy import Application outbox identity is inconsistent");
+  if (aggregate.projections.length !== plan.projectionKeys.length) {
+    receiptInconsistent("legacy import Application projection count is inconsistent");
+  }
+  plan.projectionKeys.forEach((projectionKey, index) => {
+    const projection = aggregate.projections[index];
+    const predecessorId = projection?.["supersedes_projection_work_id"];
+    let predecessorMatches = predecessorId === null && projection?.["predecessor_id"] === null;
+    if (typeof predecessorId === "string") {
+      predecessorMatches = projection?.["predecessor_id"] === predecessorId
+        && projection?.["predecessor_project_id"] === projectId
+        && projection?.["predecessor_key"] === projectionKey
+        && projection?.["predecessor_kind"] === "markdown"
+        && Number(projection?.["predecessor_revision"]) < resultingRevision
+        && Number(projection?.["predecessor_epoch"]) <= resultingEpoch;
+    }
+    if (
+      !projection
+      || projection["projection_work_id"] !== `${operationId}:${String(index).padStart(4, "0")}`
+      || projection["project_id"] !== projectId
+      || projection["projection_key"] !== projectionKey
+      || projection["projection_kind"] !== "markdown"
+      || projection["renderer_version"] !== "v1"
+      || projection["source_project_revision"] !== resultingRevision
+      || projection["source_authority_epoch"] !== resultingEpoch
+      || projection["enqueue_operation_id"] !== operationId
+      || projection["created_at"] !== aggregate.operation["created_at"]
+      || !predecessorMatches
+    ) receiptInconsistent("legacy import Application projection identity is inconsistent");
+  });
+}
+
+function receiptFromAggregate(
+  aggregate: ReplayAggregate,
+  snapshot: LegacyImportApplicationSnapshot,
+  status: LegacyImportApplicationReceipt["status"],
+): LegacyImportApplicationReceipt {
+  const outboxIds = aggregate.outbox.map((row) => Number(row["outbox_id"]));
+  if (outboxIds.some((value) => !Number.isSafeInteger(value) || value < 1)) {
+    receiptInconsistent("legacy import Application outbox identity is invalid");
+  }
+  return deepFreeze({
+    status,
+    operationId: String(aggregate.operation["operation_id"]),
+    projectId: String(aggregate.operation["project_id"]),
+    applicationIdentityHash: snapshot.identity.applicationIdentityHash,
+    previewId: snapshot.input.preview.preview.preview_id,
+    previewHash: snapshot.input.preview.preview_hash,
+    backupId: snapshot.input.backup.backup_id,
+    baseProjectRevision: Number(aggregate.operation["expected_revision"]),
+    baseAuthorityEpoch: Number(aggregate.operation["expected_authority_epoch"]),
+    resultingRevision: Number(aggregate.operation["resulting_revision"]),
+    resultingAuthorityEpoch: Number(aggregate.operation["resulting_authority_epoch"]),
+    appliedAt: String(aggregate.application["applied_at"]),
+    eventIds: aggregate.events.map((row) => String(row["event_id"])),
+    outboxIds,
+    projectionWorkIds: aggregate.projections.map((row) => String(row["projection_work_id"])),
+  });
+}
+
+function replayReceipt(
+  snapshot: LegacyImportApplicationSnapshot,
+  status: LegacyImportApplicationReceipt["status"] = "replayed",
+): LegacyImportApplicationReceipt | null {
+  const aggregate = loadReplayAggregate(snapshot);
+  if (!aggregate) return null;
+  const plan = compileLegacyImportApplicationPlan(snapshot.input.preview);
+  requireReplayAggregate(aggregate, snapshot, plan);
+  return receiptFromAggregate(aggregate, snapshot, status);
+}
+
+function mapPreviewFailure(
+  error: LegacyImportPreviewError | LegacyImportSourceError,
+): LegacyImportApplicationError {
+  const changed = !(error instanceof LegacyImportPreviewError)
+    || error.code !== "LEGACY_IMPORT_PREVIEW_EXPECTED_INVALID";
+  return new LegacyImportApplicationError(
+    "preview",
+    changed
+      ? "LEGACY_IMPORT_APPLICATION_PREVIEW_CHANGED"
+      : "LEGACY_IMPORT_APPLICATION_PREVIEW_INVALID",
+    changed
+      ? "legacy import Preview changed after approval"
+      : "legacy import Preview is invalid",
+    error.retryable,
+    { cause_code: error.code },
+  );
+}
+
+function mapBackupFailure(error: LegacyImportBackupError): LegacyImportApplicationError {
+  const changed = error.code !== "LEGACY_IMPORT_BACKUP_CONTRACT_INVALID";
+  return new LegacyImportApplicationError(
+    "backup",
+    changed
+      ? "LEGACY_IMPORT_APPLICATION_BACKUP_CHANGED"
+      : "LEGACY_IMPORT_APPLICATION_BACKUP_INVALID",
+    changed
+      ? "legacy import backup changed after verification"
+      : "legacy import backup is invalid",
+    error.retryable,
+    { cause_code: error.code },
+  );
+}
+
+function mapBaseFailure(error: LegacyImportBaseSnapshotError): LegacyImportApplicationError {
+  return new LegacyImportApplicationError(
+    "transaction",
+    "LEGACY_IMPORT_APPLICATION_AUTHORITY_STALE",
+    "legacy import canonical base is unavailable or changed",
+    false,
+    { cause_code: error.code },
+  );
+}
+
+function captureApplicationBase(): LegacyImportBaseSnapshot {
+  try {
+    return captureCurrentLegacyImportBaseSnapshot();
+  } catch (error) {
+    if (error instanceof LegacyImportBaseSnapshotError) throw mapBaseFailure(error);
+    throw error;
+  }
+}
+
+function requireSameBase(
+  expected: LegacyImportBaseSnapshot,
+  observed: LegacyImportBaseSnapshot,
+): void {
+  if (hashLegacyImportValue(expected) === hashLegacyImportValue(observed)) return;
+  throw new LegacyImportApplicationError(
+    "transaction",
+    "LEGACY_IMPORT_APPLICATION_AUTHORITY_STALE",
+    "legacy import canonical base changed after verification",
+    false,
+    {
+      expected_relevant_rows_hash: expected.relevant_rows_hash,
+      observed_relevant_rows_hash: observed.relevant_rows_hash,
+      expected_revision: expected.authority.revision,
+      observed_revision: observed.authority.revision,
+      expected_authority_epoch: expected.authority.authority_epoch,
+      observed_authority_epoch: observed.authority.authority_epoch,
+    },
+  );
+}
+
+function requireCoordinationIdle(projectRootRealpath: string): void {
+  const db = getDb();
+  const counts = {
+    active_workers: Number(db.prepare(`SELECT COUNT(*) AS count FROM workers
+      WHERE project_root_realpath = :project_root_realpath AND status = 'active'`)
+      .get({ ":project_root_realpath": projectRootRealpath })?.["count"] ?? 0),
+    held_leases: Number(db.prepare(
+      "SELECT COUNT(*) AS count FROM milestone_leases WHERE status = 'held'",
+    ).get()?.["count"] ?? 0),
+    active_dispatches: Number(db.prepare(`SELECT COUNT(*) AS count FROM unit_dispatches
+      WHERE status IN ('claimed', 'running')`).get()?.["count"] ?? 0),
+    active_attempts: Number(db.prepare(`SELECT COUNT(*) AS count FROM workflow_execution_attempts
+      WHERE attempt_state IN ('claimed', 'running')`).get()?.["count"] ?? 0),
+  };
+  if (Object.values(counts).some((count) => count !== 0)) {
+    throw new LegacyImportApplicationError(
+      "coordination",
+      "LEGACY_IMPORT_APPLICATION_COORDINATION_ACTIVE",
+      "legacy import cannot apply while workflow coordination is active",
+      true,
+      counts,
+    );
+  }
+}
+
+function importRequest(snapshot: LegacyImportApplicationSnapshot): ImportDomainOperationRequest {
+  const invocation = snapshot.identity.replayIdentity.invocation;
+  const preview = snapshot.input.preview.preview;
+  return {
+    operationType: LEGACY_IMPORT_APPLICATION_OPERATION_TYPE,
+    idempotencyKey: invocation.idempotencyKey,
+    expectedRevision: preview.base_project_revision,
+    expectedAuthorityEpoch: preview.base_authority_epoch,
+    actorType: invocation.actorType,
+    ...(invocation.actorId === null ? {} : { actorId: invocation.actorId }),
+    sourceTransport: invocation.sourceTransport,
+    ...(invocation.traceId === null ? {} : { traceId: invocation.traceId }),
+    ...(invocation.turnId === null ? {} : { turnId: invocation.turnId }),
+    payload: snapshot.input.preview,
+    advanceAuthorityEpoch: false as const,
+  };
+}
+
+function mapTransactionFailure(error: unknown): LegacyImportApplicationError {
+  if (error instanceof LegacyImportApplicationError) return error;
+  if (error instanceof GSDError && error.code === GSD_IDEMPOTENCY_CONFLICT) {
+    return new LegacyImportApplicationError(
+      "replay",
+      "LEGACY_IMPORT_APPLICATION_REPLAY_CONFLICT",
+      "legacy import idempotency identity conflicts with committed work",
+      false,
+    );
+  }
+  if (error instanceof GSDError && error.code === GSD_REVISION_CONFLICT) {
+    const contention = /writer contention|database is locked/i.test(error.message);
+    return new LegacyImportApplicationError(
+      "transaction",
+      contention
+        ? "LEGACY_IMPORT_APPLICATION_WRITER_CONTENTION"
+        : "LEGACY_IMPORT_APPLICATION_AUTHORITY_STALE",
+      contention
+        ? "legacy import writer is busy; retry the request"
+        : "legacy import authority changed after approval",
+      contention,
+    );
+  }
+  return new LegacyImportApplicationError(
+    "transaction",
+    "LEGACY_IMPORT_APPLICATION_MUTATION_FAILED",
+    "legacy import Application transaction failed",
+    false,
+  );
+}
+
+/** Apply one approved legacy Preview as a single immutable Domain Operation. */
+export function applyLegacyImport(input: unknown): LegacyImportApplicationReceipt {
+  const snapshot = snapshotLegacyImportApplication(input);
+  const existing = replayReceipt(snapshot);
+  if (existing) return existing;
+
+  const plan = compileLegacyImportApplicationPlan(snapshot.input.preview);
+  let preview: LegacyImportPreviewArtifact;
+  try {
+    preview = revalidateLegacyImportPreview(snapshot.input.previewInput, snapshot.input.preview);
+  } catch (error) {
+    if (error instanceof LegacyImportBaseSnapshotError) throw mapBaseFailure(error);
+    if (error instanceof LegacyImportPreviewError || error instanceof LegacyImportSourceError) {
+      throw mapPreviewFailure(error);
+    }
+    throw error;
+  }
+  const base = captureApplicationBase();
+  try {
+    verifyLegacyImportBackupArtifact({ backup: snapshot.input.backup, preview, base });
+  } catch (error) {
+    if (error instanceof LegacyImportBackupError) throw mapBackupFailure(error);
+    throw error;
+  }
+
+  let operation: DomainOperationResult;
+  try {
+    operation = executeImportDomainOperation(importRequest(snapshot), (context) => {
+      const transactionalBase = captureApplicationBase();
+      requireSameBase(base, transactionalBase);
+      requireCoordinationIdle(base.authority.project_root_realpath);
+      try {
+        validateLegacyImportVerifiedBackup(snapshot.input.backup, { preview, base: transactionalBase });
+      } catch (error) {
+        if (error instanceof LegacyImportBackupError) throw mapBackupFailure(error);
+        throw error;
+      }
+      applyLegacyImportApplicationPlan(context, plan);
+      try {
+        insertLegacyImportApplicationReceipt(context, plan, preview, snapshot.input.backup);
+      } catch (error) {
+        throw new LegacyImportApplicationError(
+          "receipt",
+          "LEGACY_IMPORT_APPLICATION_RECEIPT_INCONSISTENT",
+          "legacy import Application receipt could not be inserted",
+          false,
+          error instanceof LegacyImportApplicationError ? { cause_code: error.code } : {},
+        );
+      }
+      return {
+        events: [{
+          eventType: LEGACY_IMPORT_APPLICATION_EVENT_TYPE,
+          entityType: "legacy-import",
+          entityId: preview.preview.preview_id,
+          payload: applicationEventPayload(snapshot, plan),
+          destinations: ["projection"],
+        }],
+        projections: plan.projectionKeys.map((projectionKey) => ({
+          projectionKey,
+          projectionKind: "markdown",
+          rendererVersion: "v1",
+        })),
+      };
+    });
+  } catch (error) {
+    const raced = replayReceipt(snapshot);
+    if (raced) return raced;
+    throw mapTransactionFailure(error);
+  }
+
+  const committed = replayReceipt(snapshot, operation.status);
+  if (!committed) receiptInconsistent("legacy import committed without a durable Application receipt");
+  return committed;
 }

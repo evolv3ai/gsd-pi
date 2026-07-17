@@ -9,7 +9,11 @@ import {
 } from "./lifecycle-commands.js";
 import {
   LegacyImportApplicationError,
-} from "../../legacy-import-application.js";
+} from "../../legacy-import-application-error.js";
+import {
+  isValidLegacyImportVerifiedBackup,
+  type LegacyImportVerifiedBackup,
+} from "../../legacy-import-backup.js";
 import {
   LEGACY_IMPORT_APPLICATION_PLAN_SCHEMA_VERSION,
   type LegacyImportApplicationDecisionInstruction,
@@ -22,6 +26,8 @@ import {
   canonicalLegacyImportJson,
   hashLegacyImportValue,
   isStrictLegacyImportData,
+  isValidLegacyImportPreviewArtifact,
+  type LegacyImportPreviewArtifact,
 } from "../../legacy-import-preview.js";
 import { synthesizeDecisionMemoryContent } from "../../memory-backfill.js";
 
@@ -255,8 +261,71 @@ function requireApplicationContext(
     || row["expected_authority_epoch"] !== plan.baseAuthorityEpoch
     || row["resulting_authority_epoch"] !== context.resultingAuthorityEpoch
     || row["request_hash"] !== plan.previewHash
+    || typeof row["created_at"] !== "string"
+    || row["created_at"].trim().length === 0
   ) fail("legacy import Application preview or authority fence does not match the active context");
-  return String(row["created_at"]);
+  return row["created_at"];
+}
+
+function detachReceiptEvidence(
+  preview: LegacyImportPreviewArtifact,
+  backup: LegacyImportVerifiedBackup,
+): { preview: LegacyImportPreviewArtifact; backup: LegacyImportVerifiedBackup } {
+  const evidence = { preview, backup };
+  if (!isStrictLegacyImportData(evidence)) {
+    fail("legacy import Application receipt evidence must be strict data");
+  }
+  let snapshot: typeof evidence;
+  try {
+    snapshot = structuredClone(evidence);
+  } catch {
+    fail("legacy import Application receipt evidence could not be detached");
+  }
+  if (
+    !isValidLegacyImportPreviewArtifact(snapshot.preview)
+    || !isValidLegacyImportVerifiedBackup(snapshot.backup)
+  ) {
+    fail("legacy import Application receipt evidence is invalid");
+  }
+  return snapshot;
+}
+
+function requireReceiptEvidenceMatches(
+  context: Readonly<DomainOperationContext>,
+  plan: LegacyImportApplicationPlan,
+  preview: LegacyImportPreviewArtifact,
+  backup: LegacyImportVerifiedBackup,
+): void {
+  const envelope = preview.preview;
+  const expectedSourceFingerprints = envelope.sources.map((source) => ({
+    source_id: source.source_id,
+    path: source.path,
+    kind: source.kind,
+    byte_size: source.byte_size,
+    sha256: source.sha256,
+  }));
+  if (
+    envelope.preview_id !== plan.previewId
+    || preview.preview_hash !== plan.previewHash
+    || envelope.base_project_revision !== plan.baseProjectRevision
+    || envelope.base_authority_epoch !== plan.baseAuthorityEpoch
+    || envelope.counts.unresolved !== 0
+    || backup.preview_id !== envelope.preview_id
+    || backup.preview_hash !== preview.preview_hash
+    || backup.preview_schema_version !== envelope.preview_schema_version
+    || backup.import_kind !== envelope.import_kind
+    || backup.importer_version !== envelope.importer_version
+    || backup.source_set_hash !== envelope.source_set_hash
+    || backup.source_count !== envelope.sources.length
+    || canonicalLegacyImportJson(backup.source_fingerprints)
+      !== canonicalLegacyImportJson(expectedSourceFingerprints)
+    || backup.project_id !== context.projectId
+    || backup.backup_database_schema_version !== envelope.base_database_schema_version
+    || backup.base_project_revision !== envelope.base_project_revision
+    || backup.base_authority_epoch !== envelope.base_authority_epoch
+  ) {
+    fail("legacy import Application receipt evidence does not match the active plan");
+  }
 }
 
 function sortedEntries(record: SqlRecord): Array<[string, SqlValue]> {
@@ -714,4 +783,73 @@ export function applyLegacyImportApplicationPlan(
     }
   }
   return Object.freeze({ instructionResults: Object.freeze(instructionResults) });
+}
+
+export function insertLegacyImportApplicationReceipt(
+  context: Readonly<DomainOperationContext>,
+  plan: LegacyImportApplicationPlan,
+  preview: LegacyImportPreviewArtifact,
+  backup: LegacyImportVerifiedBackup,
+): void {
+  const planSnapshot = preflight(plan);
+  const evidence = detachReceiptEvidence(preview, backup);
+  const appliedAt = requireApplicationContext(context, planSnapshot);
+  requireReceiptEvidenceMatches(context, planSnapshot, evidence.preview, evidence.backup);
+
+  const envelope = evidence.preview.preview;
+  const result = getDb().prepare(`INSERT INTO workflow_import_applications (
+      operation_id, project_id, import_kind, importer_version,
+      preview_schema_version, preview_id, preview_hash,
+      base_project_revision, base_authority_epoch, base_database_schema_version,
+      source_set_hash, change_set_hash,
+      create_count, update_count, delete_count, preserve_count, unparsed_count, unresolved_count,
+      preview_json,
+      backup_ref, backup_sha256, backup_byte_size, backup_schema_version,
+      backup_project_revision, backup_authority_epoch, backup_quick_check, backup_verified_at,
+      applied_at, resulting_project_revision, resulting_authority_epoch
+    ) VALUES (
+      :operation_id, :project_id, :import_kind, :importer_version,
+      :preview_schema_version, :preview_id, :preview_hash,
+      :base_project_revision, :base_authority_epoch, :base_database_schema_version,
+      :source_set_hash, :change_set_hash,
+      :create_count, :update_count, :delete_count, :preserve_count, :unparsed_count, :unresolved_count,
+      :preview_json,
+      :backup_ref, :backup_sha256, :backup_byte_size, :backup_schema_version,
+      :backup_project_revision, :backup_authority_epoch, :backup_quick_check, :backup_verified_at,
+      :applied_at, :resulting_project_revision, :resulting_authority_epoch
+    )`).run({
+    ":operation_id": context.operationId,
+    ":project_id": context.projectId,
+    ":import_kind": envelope.import_kind,
+    ":importer_version": envelope.importer_version,
+    ":preview_schema_version": envelope.preview_schema_version,
+    ":preview_id": envelope.preview_id,
+    ":preview_hash": evidence.preview.preview_hash,
+    ":base_project_revision": envelope.base_project_revision,
+    ":base_authority_epoch": envelope.base_authority_epoch,
+    ":base_database_schema_version": envelope.base_database_schema_version,
+    ":source_set_hash": envelope.source_set_hash,
+    ":change_set_hash": envelope.change_set_hash,
+    ":create_count": envelope.counts.create,
+    ":update_count": envelope.counts.update,
+    ":delete_count": envelope.counts.delete,
+    ":preserve_count": envelope.counts.preserve,
+    ":unparsed_count": envelope.counts.unparsed,
+    ":unresolved_count": envelope.counts.unresolved,
+    ":preview_json": canonicalLegacyImportJson(envelope),
+    ":backup_ref": evidence.backup.backup_ref,
+    ":backup_sha256": evidence.backup.backup_sha256,
+    ":backup_byte_size": evidence.backup.backup_byte_size,
+    ":backup_schema_version": evidence.backup.backup_database_schema_version,
+    ":backup_project_revision": evidence.backup.base_project_revision,
+    ":backup_authority_epoch": evidence.backup.base_authority_epoch,
+    ":backup_quick_check": evidence.backup.quick_check,
+    ":backup_verified_at": evidence.backup.verified_at,
+    ":applied_at": appliedAt,
+    ":resulting_project_revision": context.resultingRevision,
+    ":resulting_authority_epoch": context.resultingAuthorityEpoch,
+  });
+  if (changes(result) !== 1) {
+    fail("legacy import Application receipt insertion must affect exactly one row");
+  }
 }

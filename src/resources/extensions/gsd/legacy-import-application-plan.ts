@@ -8,7 +8,7 @@ import type {
   LegacyImportTarget,
   LegacyImportValue,
 } from "./legacy-import-contract.js";
-import { LegacyImportApplicationError } from "./legacy-import-application.js";
+import { LegacyImportApplicationError } from "./legacy-import-application-error.js";
 import type { LegacyImportBaseRowSet } from "./legacy-import-preview-base.js";
 import {
   LEGACY_IMPORT_BOOLEAN_COLUMNS,
