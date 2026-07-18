@@ -64,7 +64,7 @@ export interface DaemonConfig {
 // Session Status
 // ---------------------------------------------------------------------------
 
-export type SessionStatus = 'starting' | 'running' | 'blocked' | 'completed' | 'error' | 'cancelled';
+export type SessionStatus = 'starting' | 'running' | 'blocked' | 'paused' | 'completed' | 'error' | 'cancelled';
 
 // ---------------------------------------------------------------------------
 // Managed Session

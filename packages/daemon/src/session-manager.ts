@@ -34,6 +34,11 @@ const FIRE_AND_FORGET_METHODS = new Set([
   'notify', 'setStatus', 'setWidget', 'setTitle', 'set_editor_text',
 ]);
 
+const PAUSED_PREFIXES = [
+  'auto-mode paused',
+  'step-mode paused',
+];
+
 const TERMINAL_PREFIXES = [
   'auto-mode stopped',
   'step-mode stopped',
@@ -46,6 +51,12 @@ function isTerminalNotification(event: Record<string, unknown>): boolean {
   if (event.type !== 'extension_ui_request' || event.method !== 'notify') return false;
   const message = String(event.message ?? '').toLowerCase();
   return TERMINAL_PREFIXES.some((prefix) => message.startsWith(prefix));
+}
+
+function isPausedNotification(event: Record<string, unknown>): boolean {
+  if (event.type !== 'extension_ui_request' || event.method !== 'notify') return false;
+  const message = String(event.message ?? '').toLowerCase();
+  return PAUSED_PREFIXES.some((prefix) => message.startsWith(prefix));
 }
 
 function isBlockedNotification(event: Record<string, unknown>): boolean {
@@ -64,11 +75,11 @@ function isBlockingUIRequest(event: Record<string, unknown>): boolean {
 // SessionManager
 // ---------------------------------------------------------------------------
 
-/** Terminal lifecycle states — work is finished, process may be reclaimed. */
-const TERMINAL_STATUSES: ReadonlySet<string> = new Set(['completed', 'error', 'cancelled']);
+/** Terminal lifecycle states — work is finished or paused, process may be reclaimed. */
+const TERMINAL_STATUSES: ReadonlySet<string> = new Set(['paused', 'completed', 'error', 'cancelled']);
 
 /**
- * How many terminal (completed/cancelled/errored) sessions to retain for
+ * How many terminal (paused/completed/cancelled/errored) sessions to retain for
  * inspection before evicting the oldest. Bounds heap growth on a daemon that
  * services many distinct project dirs over its lifetime — without this, every
  * session ever run stays resident forever (events buffer + RpcClient ref).
@@ -105,7 +116,7 @@ export class SessionManager extends EventEmitter {
 
     const existing = this.sessions.get(resolvedDir);
     if (existing) {
-      // A terminal session (completed/cancelled/error) is retained only for
+      // A terminal session (paused/completed/cancelled/error) is retained only for
       // inspection — it must not block a fresh start for the same dir. Evict it
       // and reclaim its process before starting anew.
       if (TERMINAL_STATUSES.has(existing.status)) {
@@ -410,6 +421,18 @@ export class SessionManager extends EventEmitter {
         session.cost.tokens.cacheRead = Math.max(session.cost.tokens.cacheRead, costEvent.tokens.cacheRead ?? 0);
         session.cost.tokens.cacheWrite = Math.max(session.cost.tokens.cacheWrite, costEvent.tokens.cacheWrite ?? 0);
       }
+    }
+
+    // Paused detection — pauseAuto() is resumable and must not leave the
+    // session looking active, or duplicate-start prevention will deadlock.
+    if (isPausedNotification(event as Record<string, unknown>)) {
+      session.status = 'paused';
+      session.pendingBlocker = null;
+      session.unsubscribe?.();
+      session.unsubscribe = undefined;
+      this.logger.info('session paused', { sessionId: session.sessionId, projectDir: session.projectDir });
+      this.markTerminal(session.projectDir);
+      return;
     }
 
     // Terminal detection — auto-mode/step-mode stopped

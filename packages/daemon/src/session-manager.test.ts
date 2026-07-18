@@ -108,12 +108,19 @@ class TestableSessionManager extends SessionManager {
     const resolvedDir = resolve(projectDir);
     const projectName = basename(resolvedDir);
 
-    // Check duplicate via getSessionByDir
+    // Mirror production duplicate handling: active sessions block, terminal
+    // sessions are evicted so a paused auto-mode run can be resumed.
     const existing = this.getSessionByDir(resolvedDir);
     if (existing) {
-      throw new Error(
-        `Session already active for ${resolvedDir} (sessionId: ${existing.sessionId}, status: ${existing.status})`
-      );
+      if (existing.status === 'paused' || existing.status === 'completed' || existing.status === 'error' || existing.status === 'cancelled') {
+        existing.unsubscribe?.();
+        await existing.client.stop().catch(() => { /* swallow */ });
+        (this as any).sessions.delete(resolvedDir);
+      } else {
+        throw new Error(
+          `Session already active for ${resolvedDir} (sessionId: ${existing.sessionId}, status: ${existing.status})`
+        );
+      }
     }
 
     const client = new MockRpcClient({ cwd: resolvedDir, args: [] });
@@ -537,6 +544,32 @@ describe('SessionManager', () => {
     });
 
     assert.equal(session.status, 'completed');
+  });
+
+  it('detects paused from auto-mode paused notification and permits restart', async () => {
+    const { manager, spy } = createManager();
+    const dir = '/tmp/paused-terminal-test';
+
+    const sessionId = await manager.startSession({ projectDir: dir });
+    const session = manager.getSession(sessionId)!;
+    const firstClient = manager.lastClient!;
+
+    manager.lastClient!.emitEvent({
+      type: 'extension_ui_request',
+      id: 'p1',
+      method: 'notify',
+      message: 'Auto-mode paused (Escape). Type to interact, or /gsd auto to resume.',
+    });
+
+    assert.equal(session.status, 'paused');
+    assert.equal(session.pendingBlocker, null);
+    assert.equal(spy.findCalls('info', 'session paused').length, 1);
+
+    const nextSessionId = await manager.startSession({ projectDir: dir });
+    assert.notEqual(nextSessionId, sessionId);
+    assert.ok(firstClient.stopped);
+    assert.equal(manager.getSession(nextSessionId)!.status, 'running');
+    assert.equal(manager.getSessionByDir(dir)!.sessionId, nextSessionId);
   });
 
   // ---- getAllSessions returns all tracked sessions ----

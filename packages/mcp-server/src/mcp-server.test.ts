@@ -368,10 +368,10 @@ describe('SessionManager', () => {
     );
   });
 
-  // #4476: terminal-state sessions (completed/error/cancelled) are evicted so
+  // #4476: terminal-state sessions (paused/completed/error/cancelled) are evicted so
   // the same projectDir can host a fresh session — only starting/running/blocked
   // sessions block re-entry.
-  for (const terminalStatus of ['completed', 'error', 'cancelled'] as const) {
+  for (const terminalStatus of ['paused', 'completed', 'error', 'cancelled'] as const) {
     it(`startSession evicts a prior '${terminalStatus}' session for the same projectDir`, async () => {
       const dir = `/tmp/evict-${terminalStatus}`;
       const firstSessionId = await sm.startSession(dir, { cliPath: '/usr/bin/gsd' });
@@ -592,6 +592,28 @@ describe('SessionManager', () => {
 
     const session = sm.getSession(sessionId)!;
     assert.equal(session.status, 'completed');
+  });
+
+  it('pause detection: auto-mode paused sets status to paused and allows restart', async () => {
+    const dir = '/tmp/terminal-paused';
+    const sessionId = await sm.startSession(dir, { cliPath: '/usr/bin/gsd' });
+    const client = sm.lastClient!;
+
+    client.emitEvent({
+      type: 'extension_ui_request',
+      method: 'notify',
+      message: 'Auto-mode paused (Escape). Type to interact, or /gsd auto to resume.',
+      id: 'pause-1',
+    });
+
+    const session = sm.getSession(sessionId)!;
+    assert.equal(session.status, 'paused');
+    assert.equal(session.pendingBlocker, null);
+
+    const nextSessionId = await sm.startSession(dir, { cliPath: '/usr/bin/gsd' });
+    assert.notEqual(nextSessionId, sessionId);
+    assert.equal(sm.getSessionByDir(dir)!.sessionId, nextSessionId);
+    assert.equal(sm.getSession(nextSessionId)!.status, 'running');
   });
 
   it('terminal detection with blocked: message sets status to blocked', async () => {

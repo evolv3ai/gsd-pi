@@ -27,6 +27,11 @@ const FIRE_AND_FORGET_METHODS = new Set([
   'notify', 'setStatus', 'setWidget', 'setTitle', 'set_editor_text',
 ]);
 
+const PAUSED_PREFIXES = [
+  'auto-mode paused',
+  'step-mode paused',
+];
+
 const TERMINAL_PREFIXES = [
   'auto-mode stopped',
   'step-mode stopped',
@@ -61,6 +66,12 @@ function isTerminalNotification(event: Record<string, unknown>): boolean {
   if (event.type !== 'extension_ui_request' || event.method !== 'notify') return false;
   const message = String(event.message ?? '').toLowerCase();
   return TERMINAL_PREFIXES.some((prefix) => message.startsWith(prefix));
+}
+
+function isPausedNotification(event: Record<string, unknown>): boolean {
+  if (event.type !== 'extension_ui_request' || event.method !== 'notify') return false;
+  const message = String(event.message ?? '').toLowerCase();
+  return PAUSED_PREFIXES.some((prefix) => message.startsWith(prefix));
 }
 
 function isBlockedNotification(event: Record<string, unknown>): boolean {
@@ -100,7 +111,7 @@ export class SessionManager {
     const existing = this.sessions.get(resolvedDir);
     if (existing) {
       // Only block when a genuinely active session is running. Terminal
-      // states (error, completed, cancelled) are evicted so the caller can
+      // states (paused, error, completed, cancelled) are evicted so the caller can
       // start a fresh session for the same projectDir.
       if (existing.status === 'starting' || existing.status === 'running' || existing.status === 'blocked') {
         throw new Error(
@@ -383,6 +394,15 @@ export class SessionManager {
         session.cost.tokens.cacheRead = Math.max(session.cost.tokens.cacheRead, costEvent.tokens.cacheRead ?? 0);
         session.cost.tokens.cacheWrite = Math.max(session.cost.tokens.cacheWrite, costEvent.tokens.cacheWrite ?? 0);
       }
+    }
+
+    // Paused detection — pauseAuto() is resumable and must not leave the
+    // session looking active, or duplicate-start prevention will deadlock.
+    if (isPausedNotification(event as Record<string, unknown>)) {
+      session.status = 'paused';
+      session.pendingBlocker = null;
+      session.unsubscribe?.();
+      return;
     }
 
     // Terminal detection — auto-mode/step-mode stopped
