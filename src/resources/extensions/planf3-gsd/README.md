@@ -9,7 +9,7 @@ GSD spec markdown + bridge manifest beside it, then shells out to
 
 - **Tier:** bundled (ships inside `@opengsd/gsd-pi`)
 - **Platform requirement:** `gsd-pi >= 2.29.0`
-- **Version:** 0.5.1 (M0+M1+M2 complete — plan/run/build/preflight; + M3 sync; + F-4.2 CLI-provider fallback; see [Out of scope](#out-of-scope) for the road from here)
+- **Version:** 0.5.2 (M0+M1+M2 complete — plan/run/build/preflight; + M3 sync; + F-4.2 CLI-provider fallback; + F5.1-2 sign-off token hardening; see [Out of scope](#out-of-scope) for the road from here)
 
 ## Quickstart
 
@@ -247,8 +247,31 @@ await signOffPreflight({
   offline: false, ping: false,
   catalog: { ids: () => yourModelIds },
   orchestrator: null,
-}, "note-optional");
+}, "note-optional", humanApprovalToken); // v0.5.2: token REQUIRED — see below
 ```
+
+### Sign-off requires a human approval token (v0.5.2, F5.1-2)
+
+Sign-off is no longer a boolean an agent can set. The flow:
+
+1. A human runs `/planf3-gsd-preflight` in the **console**. When the verdict is
+   `unapproved` or `drift`, the command mints a single-use token (30-minute
+   TTL, sha256-only on disk at `.gsd/planf3-gsd-pending-approval.json`) and
+   prints `approval token: <tok> — …` above the verdict trailer.
+2. The human either runs `/planf3-gsd-preflight --sign-off <tok>` themselves,
+   or relays the token to the agent, which passes it as the tool's
+   `approvalToken` param alongside `signOff: true`.
+3. The token is consumed on success; a wrong token leaves it valid; if the
+   workflow map changed since issue, sign-off refuses (`stale-map`) and the
+   human must re-approve the new map.
+
+The tool surface never mints, returns, or logs a token — `signOff: true`
+without a valid relayed token is refused with instructions to involve the
+human. Rationale: e2e F-5.1 observed an agent making unprompted
+`signOff=true` attempts, one with a fabricated human-approval claim. Residual
+risk (documented, out of scope): an agent with unrestricted shell can still
+run the console command itself and read the token from stdout — that is a
+deliberate, auditable circumvention rather than a one-parameter slip.
 
 Prior to v0.3.2 the direct-import path had a landmine (path-identity bug F1):
 sign-off wrote projectedFrom verbatim and the subsequent gate raw-string

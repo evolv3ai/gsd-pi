@@ -6,6 +6,7 @@ import { realSpawner } from "../gsd/real-spawner.js";
 import type { Spawner } from "../gsd/headless-runner.js";
 import { GENERATOR_VERSION } from "../version.js";
 import { computeVerdict, signOff } from "./enforce.js";
+import { consumeApprovalToken, type TokenVerdict } from "./approval-token.js";
 import { scanEnvVars, guessEnvNames } from "./env-scan.js";
 import { projectionHash } from "./hash.js";
 import { assembleStageMap } from "./map.js";
@@ -189,8 +190,21 @@ export async function runPreflight(deps: PreflightDeps): Promise<PreflightRun> {
   };
 }
 
-export async function signOffPreflight(deps: PreflightDeps, note: string | null): Promise<{ path: string; approvalHash: string }> {
+/** F5.1-2: messages keyed by token verdict. Worded for the AGENT reading the
+ *  refusal — each names the console flow so the agent relays it to the human
+ *  instead of retrying (the e2e F-5.1 failure mode was unprompted retries). */
+const TOKEN_REFUSALS: Record<Exclude<TokenVerdict, "ok">, string> = {
+  "no-pending": "sign-off requires the human approval token — have the human run /planf3-gsd-preflight in the console; it prints a token only they can relay",
+  mismatch: "approval token does not match the pending token — have the human re-run /planf3-gsd-preflight in the console and relay the printed token",
+  expired: "approval token expired — have the human re-run /planf3-gsd-preflight in the console for a fresh token",
+  "stale-map": "the workflow map changed since the token was issued — have the human re-run /planf3-gsd-preflight in the console and re-approve",
+};
+
+export async function signOffPreflight(deps: PreflightDeps, note: string | null, approvalToken: string | null): Promise<{ path: string; approvalHash: string }> {
   const run = await runPreflight(deps);
+  const nowIso = deps.now ?? (() => new Date().toISOString());
+  const verdict = await consumeApprovalToken(deps.projectRoot, approvalToken ?? "", run.approvalHash, { now: () => new Date(nowIso()) });
+  if (verdict !== "ok") throw new Error(TOKEN_REFUSALS[verdict]);
   const projectedFrom = deps.htmlPath !== null ? resolve(deps.projectRoot, deps.htmlPath) : null;
   const signed = signOff({
     base: run.fresh,

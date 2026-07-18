@@ -4,6 +4,7 @@ import { mkdtemp, mkdir, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { runPreflight, signOffPreflight, type PreflightDeps } from "./run.js";
+import { issueApprovalToken } from "./approval-token.js";
 import type { Spawner } from "../gsd/headless-runner.js";
 
 const PLAN_HTML = `<html><body><header><h1>P</h1></header>
@@ -68,10 +69,39 @@ describe("runPreflight", () => {
     assert.deepEqual(run.map.probes, []);
   });
 
+  test("sign-off WITHOUT a human approval token is refused and writes nothing (F5.1-2)", async () => {
+    const { tmp, html } = await scaffold();
+    const d = deps(tmp, html);
+    await assert.rejects(signOffPreflight(d, "agent says trust me", null), /approval token/);
+    await assert.rejects(readFile(join(tmp, "specs", "PRESETS.md"), "utf8"), "no PRESETS record may exist");
+  });
+
+  test("sign-off with a WRONG token is refused, pending stays valid for the human (F5.1-2)", async () => {
+    const { tmp, html } = await scaffold();
+    const d = deps(tmp, html);
+    const probe = await runPreflight(d);
+    await issueApprovalToken(tmp, probe.approvalHash, { now: () => new Date("2026-07-06T07:00:00Z") });
+    await assert.rejects(signOffPreflight(d, null, "0000000000"), /does not match/);
+    await assert.rejects(readFile(join(tmp, "specs", "PRESETS.md"), "utf8"));
+    // the real token still works afterwards
+    const token2 = await issueApprovalToken(tmp, probe.approvalHash, { now: () => new Date("2026-07-06T07:00:00Z") });
+    const { path } = await signOffPreflight(d, null, token2);
+    assert.equal(path, join(tmp, "specs", "PRESETS.md"));
+  });
+
+  test("sign-off with a STALE-MAP token (map changed since issue) is refused (F5.1-2)", async () => {
+    const { tmp, html } = await scaffold();
+    const d = deps(tmp, html);
+    await issueApprovalToken(tmp, "0".repeat(64), { now: () => new Date("2026-07-06T07:00:00Z") });
+    await assert.rejects(signOffPreflight(d, null, "anytoken00"), /does not match|changed since/);
+  });
+
   test("sign-off writes PRESETS.md; a re-run is then ok; an out-of-band edit drifts", async () => {
     const { tmp, html } = await scaffold();
     const d = deps(tmp, html);
-    const { path, approvalHash } = await signOffPreflight(d, "first approval");
+    const probe = await runPreflight(d);
+    const token = await issueApprovalToken(tmp, probe.approvalHash, { now: () => new Date("2026-07-06T07:00:00Z") });
+    const { path, approvalHash } = await signOffPreflight(d, "first approval", token);
     assert.equal(path, join(tmp, "specs", "PRESETS.md"));
     assert.match(await readFile(path, "utf8"), /first approval/);
 
@@ -96,7 +126,9 @@ describe("runPreflight", () => {
     const { tmp, html } = await scaffold();
     // Sign with the ABSOLUTE path (this is what the tool caller in the e2e did).
     const dAbs = deps(tmp, html);
-    await signOffPreflight(dAbs, "signed with abs");
+    const probeAbs = await runPreflight(dAbs);
+    const tokenAbs = await issueApprovalToken(tmp, probeAbs.approvalHash, { now: () => new Date("2026-07-06T07:00:00Z") });
+    await signOffPreflight(dAbs, "signed with abs", tokenAbs);
 
     // Re-run with the EQUIVALENT RELATIVE path (the argv shape of a slash command).
     const relative = join("specs", "p.html");
