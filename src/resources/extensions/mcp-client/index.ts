@@ -59,6 +59,7 @@ const MCP_TRUST_CONFIRM_TIMEOUT_MS = 120_000;
 const emptyStdioTrustPromptQueue = Promise.resolve();
 let stdioTrustPromptQueue: Promise<void> = emptyStdioTrustPromptQueue;
 const activeStdioTrustApprovalAborts = new Set<(err: Error) => void>();
+const queuedStdioTrustApprovalAborts = new Set<(err: Error) => void>();
 
 function stdioTrustKey(config: McpServerConfig): string {
 	return JSON.stringify({
@@ -144,6 +145,11 @@ function abortActiveStdioTrustApprovals(err: Error): void {
 	activeStdioTrustApprovalAborts.clear();
 }
 
+function abortQueuedStdioTrustApprovals(err: Error): void {
+	for (const abort of Array.from(queuedStdioTrustApprovalAborts)) abort(err);
+	queuedStdioTrustApprovalAborts.clear();
+}
+
 async function runWithSerializedStdioTrustPrompt<T>(
 	serverName: string,
 	signal: AbortSignal | undefined,
@@ -158,28 +164,39 @@ async function runWithSerializedStdioTrustPrompt<T>(
 	const queued = previous.catch(() => {}).then(() => current);
 	stdioTrustPromptQueue = queued;
 
+	let rejectQueued: (err: Error) => void = () => {};
+	const queuedAborted = new Promise<never>((_resolve, reject) => {
+		rejectQueued = reject;
+	});
+	queuedAborted.catch(() => {});
+	const abortQueued = (err: Error) => rejectQueued(err);
+	queuedStdioTrustApprovalAborts.add(abortQueued);
+
 	try {
 		if (signal?.aborted) {
 			throw trustApprovalAbortError(serverName, signal.reason);
 		}
 		if (signal) {
-			await new Promise<void>((resolve, reject) => {
-				const onAbort = () => {
-					cleanup();
-					reject(trustApprovalAbortError(serverName, signal.reason));
-				};
-				const onPrevious = () => {
-					cleanup();
-					resolve();
-				};
-				const cleanup = () => {
-					signal.removeEventListener("abort", onAbort);
-				};
-				signal.addEventListener("abort", onAbort, { once: true });
-				previous.catch(() => {}).then(onPrevious, onPrevious);
-			});
+			await Promise.race([
+				new Promise<void>((resolve, reject) => {
+					const onAbort = () => {
+						cleanup();
+						reject(trustApprovalAbortError(serverName, signal.reason));
+					};
+					const onPrevious = () => {
+						cleanup();
+						resolve();
+					};
+					const cleanup = () => {
+						signal.removeEventListener("abort", onAbort);
+					};
+					signal.addEventListener("abort", onAbort, { once: true });
+					previous.catch(() => {}).then(onPrevious, onPrevious);
+				}),
+				queuedAborted,
+			]);
 		} else {
-			await previous.catch(() => {});
+			await Promise.race([previous.catch(() => {}), queuedAborted]);
 		}
 
 		const approvalAbort = createTrustApprovalAbort(serverName, signal, timeout);
@@ -189,6 +206,7 @@ async function runWithSerializedStdioTrustPrompt<T>(
 			approvalAbort.cleanup();
 		}
 	} finally {
+		queuedStdioTrustApprovalAborts.delete(abortQueued);
 		releasePrompt();
 	}
 }
@@ -325,7 +343,9 @@ async function connectServer(config: McpServerConfig, signal?: AbortSignal, ctx?
 }
 
 async function closeAll(): Promise<void> {
-	abortActiveStdioTrustApprovals(new Error("MCP session closed while waiting for stdio MCP trust approval."));
+	const sessionClosedError = new Error("MCP session closed while waiting for stdio MCP trust approval.");
+	abortActiveStdioTrustApprovals(sessionClosedError);
+	abortQueuedStdioTrustApprovals(sessionClosedError);
 	stdioTrustPromptQueue = emptyStdioTrustPromptQueue;
 	const closing = Array.from(connections.entries()).map(async ([name, conn]) => {
 		try {
