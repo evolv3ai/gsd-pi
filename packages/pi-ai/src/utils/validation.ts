@@ -268,6 +268,39 @@ function formatValidationPath(error: TLocalizedValidationError): string {
 	return path || "root";
 }
 
+function quotedEnumValues(values: readonly unknown[]): string {
+	return values
+		.map((value) => typeof value === "string" ? `"${value}"` : JSON.stringify(value))
+		.join(", ");
+}
+
+function enumValuesFromValidationError(error: TLocalizedValidationError): readonly unknown[] {
+	const schemaEnum = (error as { schema?: { enum?: unknown } }).schema?.enum;
+	if (Array.isArray(schemaEnum)) {
+		return schemaEnum;
+	}
+	const params = error.params as { allowedValues?: unknown; allowedValue?: unknown };
+	if (Array.isArray(params.allowedValues)) {
+		return params.allowedValues;
+	}
+	if (params.allowedValue !== undefined) {
+		return [params.allowedValue];
+	}
+	return [];
+}
+
+function formatValidationMessage(error: TLocalizedValidationError): string {
+	const enumValues = enumValuesFromValidationError(error);
+	if (enumValues.length === 0) {
+		return error.message;
+	}
+	const allowedValues = quotedEnumValues(enumValues);
+	if (error.message.includes(allowedValues)) {
+		return error.message;
+	}
+	return `${error.message}; allowed values: ${allowedValues}`;
+}
+
 /**
  * Finds a tool by name and validates the tool call arguments against its TypeBox schema
  * @param tools Array of tool definitions
@@ -319,7 +352,7 @@ export function validateToolArguments(tool: Tool, toolCall: ToolCall): any {
 	const errors =
 		validator
 			.Errors(args)
-			.map((error) => `  - ${formatValidationPath(error)}: ${error.message}`)
+			.map((error) => `  - ${formatValidationPath(error)}: ${formatValidationMessage(error)}`)
 			.join("\n") || "Unknown validation error";
 
 	const errorMessage = `Validation failed for tool "${toolCall.name}":\n${errors}\n\nReceived arguments:\n${JSON.stringify(toolCall.arguments, null, 2)}`;
