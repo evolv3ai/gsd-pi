@@ -701,14 +701,18 @@ describe("runBuild", () => {
   // Enforced-lite gate (spec §7). writeRecord() signs off the fixture plan's
   // projection so the gate passes; tests that want refusal skip it.
   async function writeRecordFor(tmp: string, htmlPath: string, globalPrefsPath: string): Promise<string> {
-    const { signOffPreflight } = await import("../preflight/run.js");
-    const { approvalHash } = await signOffPreflight({
+    const { runPreflight, signOffPreflight } = await import("../preflight/run.js");
+    const { issueApprovalToken } = await import("../preflight/approval-token.js");
+    const deps = {
       projectRoot: tmp, htmlPath, offline: true, ping: false,
       catalog: { ids: () => [] },
       orchestrator: { host: "test", model: "t/m", authMode: "none", skills: [] },
       env: {}, now: () => "2026-07-06T08:00:00Z", globalPrefsPath,
-      spawn: async () => ({ exitCode: 1, stdout: "", stderr: "" }),
-    }, null);
+      spawn: (async () => ({ exitCode: 1, stdout: "", stderr: "" })) as Spawner,
+    };
+    const probe = await runPreflight(deps);
+    const token = await issueApprovalToken(tmp, probe.approvalHash, { now: () => new Date("2026-07-06T08:00:00Z") });
+    const { approvalHash } = await signOffPreflight(deps, null, token);
     return approvalHash;
   }
 
@@ -761,11 +765,15 @@ describe("runBuild", () => {
     await copyFile(join(here, "..", "fixtures", "minimal-plan.html"), htmlPath);
     await copyFile(join(here, "..", "fixtures", "minimal-plan.html"), otherPath);
     // Sign the record for `htmlPath` (absolute path lands in projectedFrom).
-    const { signOffPreflight } = await import("../preflight/run.js");
-    await signOffPreflight({
+    const { runPreflight, signOffPreflight } = await import("../preflight/run.js");
+    const { issueApprovalToken } = await import("../preflight/approval-token.js");
+    const signDeps = {
       projectRoot: tmp, htmlPath, offline: true, ping: false,
       catalog: { ids: () => [] }, orchestrator: null,
-    }, null);
+    };
+    const signProbe = await runPreflight(signDeps);
+    const signToken = await issueApprovalToken(tmp, signProbe.approvalHash);
+    await signOffPreflight(signDeps, null, signToken);
 
     const spawn: Spawner = async () => ({ exitCode: 0, stdout: "{}", stderr: "" });
     await assert.rejects(
