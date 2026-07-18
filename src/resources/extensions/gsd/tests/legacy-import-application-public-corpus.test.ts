@@ -66,6 +66,7 @@ const MANIFEST = JSON.parse(
 ) as LegacyImportCorpusManifest;
 
 const ELIGIBLE_CASES = new Set([
+  "action-matrix",
   "custom-workflow",
   "gsd-nested",
   "jsonl-history",
@@ -412,7 +413,7 @@ function expectUnresolved(run: () => unknown, name: string): LegacyImportApplica
   return observed;
 }
 
-test("public Application commits and exactly replays all 12 eligible fresh corpus cases", (t) => {
+test("public Application commits and exactly replays all 13 eligible fresh corpus cases", (t) => {
   assert.equal(MANIFEST.cases.length, 26);
   const root = mkdtempSync(join(tmpdir(), "gsd-application-public-eligible-"));
   t.after(() => {
@@ -486,7 +487,7 @@ test("public Application commits and exactly replays all 12 eligible fresh corpu
   assert.deepEqual(preserveNames.sort(), [...PRESERVE_ONLY_CASES].sort());
 });
 
-test("public Application refuses all 14 unresolved fresh corpus cases with zero residue", (t) => {
+test("public Application refuses all 13 unresolved fresh corpus cases with zero residue", (t) => {
   const root = mkdtempSync(join(tmpdir(), "gsd-application-public-refused-"));
   t.after(() => {
     closeDatabase();
@@ -518,7 +519,7 @@ test("public Application refuses all 14 unresolved fresh corpus cases with zero 
     }
   }
 
-  assert.equal(refusedNames.length, 14);
+  assert.equal(refusedNames.length, 13);
   assert.deepEqual(refusedNames.sort(), MANIFEST.cases
     .filter((candidate) => !ELIGIBLE_CASES.has(candidate.name))
     .map((candidate) => candidate.name)

@@ -1080,8 +1080,8 @@ test("a restored v30 backup upgrades without inventing canonical history before 
 
   assert.equal(openDatabase(restoredPath), true);
   t.after(closeDatabase);
-  assert.equal(SCHEMA_VERSION, 44);
-  assert.deepEqual(row("SELECT MAX(version) AS version FROM schema_version"), { version: 44 });
+  assert.equal(SCHEMA_VERSION, 45);
+  assert.deepEqual(row("SELECT MAX(version) AS version FROM schema_version"), { version: 45 });
   assert.deepEqual(row("SELECT title, status FROM milestones WHERE id = 'M-LEGACY'"), {
     title: "Preserved from v30",
     status: "active",

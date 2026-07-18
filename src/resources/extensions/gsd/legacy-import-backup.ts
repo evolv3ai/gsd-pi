@@ -2097,12 +2097,17 @@ function requireSchemaAnchors(db: DbAdapter): void {
   const rows = db.prepare(`
     SELECT type, name FROM sqlite_schema
     WHERE name IN ('project_authority', 'workflow_import_applications',
+                   'workflow_authority_cutovers', 'workflow_import_restores',
+                   'workflow_import_forward_repairs',
                    'trg_workflow_lifecycle_reopen_authorization')
     ORDER BY type, name
   `).all();
   const observed = rows.map((row) => `${String(row["type"])}:${String(row["name"])}`);
   const expected = [
     "table:project_authority",
+    "table:workflow_authority_cutovers",
+    "table:workflow_import_forward_repairs",
+    "table:workflow_import_restores",
     "table:workflow_import_applications",
     "trigger:trg_workflow_lifecycle_reopen_authorization",
   ].sort();

@@ -118,6 +118,7 @@ history below explains each migration without duplicating that live value.
 | V42 | **Milestone validation settlement**: permits `milestone.validate` to atomically settle its validation Attempt and record causally matching verdicts and evidence |
 | V43 | **Milestone completion transition**: permits only a causally matching `milestone.complete` operation to move a Milestone lifecycle directly to canonical `completed` |
 | V44 | **Hierarchy reopen authorization**: permits terminal-to-`ready` transitions only through the matching Task, Slice, or Milestone reopen operation for each hierarchy level |
+| V45 | **Authority recovery receipts**: immutable, operation-bound receipts for Authority Cutover, pre-later-write Import Restore, and retained-Application Forward Repair |
 
 ---
 
@@ -1622,6 +1623,84 @@ resulting_authority_epoch     INTEGER NOT NULL
   S06 must canonicalize the preview and verify its source/change hashes before
   the receipt transaction.
 
+#### `workflow_authority_cutovers`
+```
+operation_id                TEXT PRIMARY KEY
+project_id                  TEXT NOT NULL
+authority_contract_version INTEGER NOT NULL
+evidence_hash               TEXT NOT NULL
+consent_hash                TEXT NOT NULL
+cutover_at                  TEXT NOT NULL
+resulting_project_revision  INTEGER NOT NULL
+resulting_authority_epoch   INTEGER NOT NULL
+```
+- The receipt must match one `authority.cutover` operation that advances the
+  project revision and Authority Epoch by exactly one. Project/epoch pairs are
+  unique. Receipt and linked operation rows are immutable.
+
+#### `workflow_import_restores`
+```
+operation_id                            TEXT PRIMARY KEY
+project_id                              TEXT NOT NULL
+application_operation_id               TEXT NOT NULL
+application_identity_hash              TEXT NOT NULL
+application_resulting_project_revision INTEGER NOT NULL
+application_resulting_authority_epoch  INTEGER NOT NULL
+erased_lineage_hash                     TEXT NOT NULL
+erased_lineage_json                     TEXT NOT NULL
+preview_id                              TEXT NOT NULL
+preview_hash                            TEXT NOT NULL
+backup_id                               TEXT NOT NULL
+backup_sha256                           TEXT NOT NULL
+backup_byte_size                        INTEGER NOT NULL
+backup_schema_version                   INTEGER NOT NULL
+backup_project_revision                 INTEGER NOT NULL
+backup_authority_epoch                  INTEGER NOT NULL
+difference_hash                         TEXT NOT NULL
+consent_hash                            TEXT NOT NULL
+verification_hash                       TEXT NOT NULL
+restored_at                             TEXT NOT NULL
+resulting_project_revision              INTEGER NOT NULL
+resulting_authority_epoch               INTEGER NOT NULL
+```
+- Restore replaces the pre-Application backup and therefore deliberately does
+  not reference the erased Application or its operation by foreign key. The
+  erased identity is retained as checked JSON plus scalar digests.
+- The restored database records one `import.restore` operation at the backup
+  revision plus one without changing the backup Authority Epoch. The erased
+  Application operation and receipt must be absent. Restore receipts and their
+  linked operation are immutable.
+
+#### `workflow_import_forward_repairs`
+```
+operation_id                 TEXT PRIMARY KEY
+project_id                   TEXT NOT NULL
+application_operation_id    TEXT NOT NULL
+application_identity_hash   TEXT NOT NULL
+preview_id                   TEXT NOT NULL
+preview_hash                 TEXT NOT NULL
+backup_id                    TEXT NOT NULL
+difference_hash              TEXT NOT NULL
+plan_schema_version          INTEGER NOT NULL
+plan_hash                    TEXT NOT NULL UNIQUE
+plan_json                    TEXT NOT NULL
+target_count                 INTEGER NOT NULL
+mutation_count               INTEGER NOT NULL
+preserved_count              INTEGER NOT NULL
+rejected_count               INTEGER NOT NULL
+unresolved_count             INTEGER NOT NULL
+repaired_at                  TEXT NOT NULL
+resulting_project_revision   INTEGER NOT NULL
+resulting_authority_epoch    INTEGER NOT NULL
+```
+- Forward Repair requires the retained Import Application and its exact
+  index-zero `legacy-import.applied` event. It advances revision once without
+  lowering or advancing the Authority Epoch.
+- The checked plan envelope binds the Application, Preview, backup, difference,
+  and complete disposition accounting. `target_count` equals the mutation,
+  preserved, and rejected counts; unresolved work must be zero. Receipt and
+  linked operation rows are immutable.
+
 #### `workflow_kernel_checkpoints`
 ```
 kernel_checkpoint_id          TEXT PRIMARY KEY
@@ -1813,6 +1892,9 @@ workflow_human_acceptances ───┘
 
 workflow_operations ──► workflow_projection_work (enqueue provenance)
 workflow_operations ──► workflow_import_applications
+workflow_operations ──► workflow_authority_cutovers
+workflow_operations ──► workflow_import_restores
+workflow_operations ──► workflow_import_forward_repairs ──► workflow_import_applications
 workflow_item_lifecycles ──► workflow_kernel_checkpoints
 workflow_execution_attempts ──► workflow_kernel_checkpoints
 workflow_kernel_checkpoints ──► workflow_kernel_checkpoints (current-head chain)

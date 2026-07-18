@@ -314,10 +314,14 @@ export function captureLegacyImportBaseSnapshot(
   return dependencies.readTransaction(() => {
     const observedSchema = dependencies.source.readSchemaVersion();
     if (observedSchema !== LEGACY_IMPORT_BASE_DATABASE_SCHEMA_VERSION) {
-      fail("LEGACY_IMPORT_BASE_UNSUPPORTED_SCHEMA", "legacy import Preview requires database schema 44", {
-        expected_schema_version: LEGACY_IMPORT_BASE_DATABASE_SCHEMA_VERSION,
-        observed_schema_version: typeof observedSchema === "number" ? observedSchema : null,
-      });
+      fail(
+        "LEGACY_IMPORT_BASE_UNSUPPORTED_SCHEMA",
+        `legacy import Preview requires database schema ${LEGACY_IMPORT_BASE_DATABASE_SCHEMA_VERSION}`,
+        {
+          expected_schema_version: LEGACY_IMPORT_BASE_DATABASE_SCHEMA_VERSION,
+          observed_schema_version: typeof observedSchema === "number" ? observedSchema : null,
+        },
+      );
     }
     const authority = authorityFrom(dependencies.source.readAuthorityRows());
     const rows = captureRows(dependencies.source);

@@ -28,6 +28,7 @@ const MANIFEST = JSON.parse(
 ) as LegacyImportCorpusManifest;
 
 const ELIGIBLE_CASES = new Set([
+  "action-matrix",
   "custom-workflow",
   "gsd-nested",
   "jsonl-history",
@@ -58,7 +59,7 @@ function seedActionMatrixBase(source: string): void {
   }
 }
 
-test("public corpus compiles 12 eligible Previews and refuses 14 unresolved Previews", (t) => {
+test("public corpus compiles 13 eligible Previews and refuses 13 unresolved Previews", (t) => {
   const directory = mkdtempSync(join(tmpdir(), "gsd-application-plan-corpus-"));
   t.after(() => rmSync(directory, { recursive: true, force: true }));
   const compiled = new Map<string, number>();
@@ -102,8 +103,8 @@ test("public corpus compiles 12 eligible Previews and refuses 14 unresolved Prev
   }
 
   assert.deepEqual([...compiled.keys()].sort(), [...ELIGIBLE_CASES].sort());
-  assert.equal(compiled.size, 12);
-  assert.equal(refused.length, 14);
+  assert.equal(compiled.size, 13);
+  assert.equal(refused.length, 13);
   assert.equal(compiled.get("planning-flat-complete"), 5);
   assert.equal(compiled.get("gsd-nested"), 22);
   assert.equal(compiled.get("custom-workflow"), 18);

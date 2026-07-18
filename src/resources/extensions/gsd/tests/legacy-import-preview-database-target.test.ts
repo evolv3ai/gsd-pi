@@ -46,11 +46,12 @@ import { loadLegacyImportCorpusCase } from "./helpers/legacy-import-corpus.ts";
 const CORPUS_ROOT = new URL("./__fixtures__/legacy-import-corpus/v1/", import.meta.url);
 const DATABASE_MATRIX_SCENARIOS = [
   "corrupt",
-  "current-v44",
-  "future-v45",
+  "current-v45",
+  "future-v46",
   "historical-v30",
   "historical-v34",
   "historical-v43",
+  "historical-v44",
   "unversioned-populated",
   "wal-present",
 ] as const;
@@ -80,6 +81,13 @@ function createDatabase(path: string, version: number | null, populated = false)
       database.exec(`
         CREATE TRIGGER trg_workflow_lifecycle_reopen_authorization
         AFTER INSERT ON trigger_anchor BEGIN SELECT 1; END
+      `);
+    }
+    if (version !== null && version >= 45) {
+      database.exec(`
+        CREATE TABLE workflow_authority_cutovers (operation_id TEXT PRIMARY KEY);
+        CREATE TABLE workflow_import_restores (operation_id TEXT PRIMARY KEY);
+        CREATE TABLE workflow_import_forward_repairs (operation_id TEXT PRIMARY KEY);
       `);
     }
     if (populated) {
@@ -460,7 +468,7 @@ test("legacy preview database target inspects retained main-only bytes and leave
   const gsd = join(base, ".gsd");
   mkdirSync(gsd);
   const databasePath = join(gsd, "gsd.db");
-  createDatabase(databasePath, 44);
+  createDatabase(databasePath, 45);
   const beforeBytes = readFileSync(databasePath);
   const beforeNames = readdirSync(gsd).sort();
   const capture = captureLegacyImportSourceSet({ roots: [root("project", "project", gsd, ".gsd")] });
@@ -958,7 +966,8 @@ test("legacy preview database target classifies supported schema boundaries and 
     { name: "historical-v30", version: 30, code: "historical-schema-version", outcome: "mapped" },
     { name: "historical-v34", version: 34, code: "historical-schema-version", outcome: "mapped" },
     { name: "historical-v43", version: 43, code: "historical-schema-version", outcome: "mapped" },
-    { name: "future-v45", version: 45, code: "future-schema-version", outcome: "unparsed" },
+    { name: "historical-v44", version: 44, code: "historical-schema-version", outcome: "mapped" },
+    { name: "future-v46", version: 46, code: "future-schema-version", outcome: "unparsed" },
   ] as const;
   for (const scenario of scenarios) {
     const gsd = join(base, scenario.name);
@@ -1002,6 +1011,36 @@ test("legacy preview database target classifies supported schema boundaries and 
   assert.deepEqual(corruptResult.diagnoses[0]?.locator, { start_byte: 0, end_byte: 16 });
   assert.doesNotMatch(JSON.stringify(corruptResult.diagnoses), /not a sqlite database/u);
   assert.deepEqual(Object.keys(corruptResult.diagnoses[0]?.raw_value ?? {}).sort(), ["redacted", "sha256"]);
+});
+
+test("legacy preview database target requires every v45 recovery receipt anchor", (t) => {
+  const base = temporaryDirectory(t);
+  for (const missingName of [
+    "workflow_authority_cutovers",
+    "workflow_import_restores",
+    "workflow_import_forward_repairs",
+  ]) {
+    const gsd = join(base, missingName);
+    mkdirSync(gsd);
+    const path = join(gsd, "gsd.db");
+    createDatabase(path, 45);
+    const database = new DatabaseSync(path);
+    database.exec(`DROP TABLE ${missingName}`);
+    database.close();
+    const capture = captureLegacyImportSourceSet({
+      roots: [root(missingName.replaceAll("_", "-"), "project", gsd, ".gsd")],
+    });
+    const result = interpretLegacyImportDatabaseTargets(
+      capture,
+      collectLegacyImportDatabaseTargetEvidence(capture, inspectLegacyImportDatabaseTarget),
+    );
+    assert.equal(result.sources[0]?.outcome, "unparsed", missingName);
+    assert.deepEqual(
+      result.diagnoses.map((diagnosis) => diagnosis.code),
+      ["unsupported-database-schema"],
+      missingName,
+    );
+  }
 });
 
 test("legacy preview database target rejects undeclared evidence fields even with a recomputed hash", (t) => {

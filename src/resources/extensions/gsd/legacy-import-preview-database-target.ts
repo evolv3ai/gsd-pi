@@ -1,10 +1,11 @@
 // Project/App: gsd-pi
 // File Purpose: Capture-bound database target selection and pure interpretation for legacy import Preview.
 
-import type {
-  LegacyImportPreviewResolution,
-  LegacyImportSha256,
-  LegacyImportTarget,
+import {
+  LEGACY_IMPORT_BASE_DATABASE_SCHEMA_VERSION,
+  type LegacyImportPreviewResolution,
+  type LegacyImportSha256,
+  type LegacyImportTarget,
 } from "./legacy-import-contract.js";
 import {
   decodeLegacyImportCapture,
@@ -20,7 +21,7 @@ import type {
 import { hashLegacyImportBytes, hashLegacyImportValue } from "./legacy-import-preview.js";
 
 const DATABASE_PARSER_ID = "gsd-sqlite-target";
-const CURRENT_DATABASE_SCHEMA_VERSION = 44;
+const CURRENT_DATABASE_SCHEMA_VERSION = LEGACY_IMPORT_BASE_DATABASE_SCHEMA_VERSION;
 const EXTERNAL_ROOT_PATTERN = /^\$GSD_STATE_DIR\/projects\/[^/]+$/u;
 const SHA256_PATTERN = /^sha256:[0-9a-f]{64}$/u;
 
@@ -52,6 +53,7 @@ export interface LegacyImportDatabaseTargetSchemaEvidence {
     project_authority: boolean;
     workflow_import_applications: boolean;
     milestone_reopen_trigger: boolean;
+    authority_recovery_receipts: boolean;
   };
   core_row_counts: {
     milestones: number | null;
@@ -253,6 +255,7 @@ function isValidSchema(schema: unknown): schema is LegacyImportDatabaseTargetSch
       "project_authority",
       "workflow_import_applications",
       "milestone_reopen_trigger",
+      "authority_recovery_receipts",
     ])
     || !hasExactKeys(schema["core_row_counts"], ["milestones", "decisions", "memories"])
     || !Array.isArray(schema["versions"])
@@ -273,6 +276,7 @@ function isValidSchema(schema: unknown): schema is LegacyImportDatabaseTargetSch
     || typeof anchors["project_authority"] !== "boolean"
     || typeof anchors["workflow_import_applications"] !== "boolean"
     || typeof anchors["milestone_reopen_trigger"] !== "boolean"
+    || typeof anchors["authority_recovery_receipts"] !== "boolean"
     || versions.some((version) => !Number.isSafeInteger(version) || (version as number) < 1)
   ) return false;
   const numericVersions = versions as number[];
@@ -501,7 +505,8 @@ function sidecarDiagnosis(group: DatabaseTargetGroup): LegacyImportPendingDiagno
 function anchorFactsMatch(version: number, schema: LegacyImportDatabaseTargetSchemaEvidence): boolean {
   return schema.anchors.project_authority === (version >= 31)
     && schema.anchors.workflow_import_applications === (version >= 35)
-    && schema.anchors.milestone_reopen_trigger === (version >= 44);
+    && schema.anchors.milestone_reopen_trigger === (version >= 44)
+    && schema.anchors.authority_recovery_receipts === (version >= 45);
 }
 
 function coreDatabaseIsPopulated(schema: LegacyImportDatabaseTargetSchemaEvidence): boolean {

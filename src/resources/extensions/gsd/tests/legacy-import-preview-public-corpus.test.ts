@@ -38,9 +38,9 @@ const MANIFEST = JSON.parse(readFileSync(join(CORPUS_PATH, "corpus.json"), "utf8
 
 const DEVIATIONS = {
   "action-matrix": {
-    reason: "stricter-database-target",
-    counts: [1, 1, 1, 1, 1, 1],
-    semantic_hash: "sha256:2b9eefc8389c2732523e4609fb66cc3d2aca1d62a642eb68cf40086684645312",
+    reason: "state-narrative-preservation",
+    counts: [1, 1, 1, 1, 0, 0],
+    semantic_hash: "sha256:ff87e2acb988e4b26c630127ca3d8c701dbe184d2dc0a289cd4ae318d3176dd1",
   },
   "assessment-matrix": {
     reason: "empty-base-create",
@@ -55,7 +55,7 @@ const DEVIATIONS = {
   "db-target-matrix": {
     reason: "multi-target-ambiguity",
     counts: [0, 0, 0, 0, 2, 3],
-    semantic_hash: "sha256:337589bd052372b741b7ab379927a258dbde14dddea17d6d09c125246391cb22",
+    semantic_hash: "sha256:7ef0586963a3e05390b5c0661cc86698f568d624da0e96c11a30b1520033ed52",
   },
   "gsd-flat": {
     reason: "empty-base-create-instead-of-update",
@@ -65,7 +65,7 @@ const DEVIATIONS = {
   "lifecycle-truth-matrix": {
     reason: "t06-conflicting-completeness",
     counts: [7, 0, 0, 7, 2, 11],
-    semantic_hash: "sha256:49cf4b34ebd1a3781cd27f653f0bba5bc2081b278c557f4d996451983e2da88d",
+    semantic_hash: "sha256:d54e1168caae09c4dafd4a2f5386d6aaab0c1b528710e49a45a101039db874e8",
   },
   "planning-flat-complete": {
     reason: "empty-base-create-instead-of-update",

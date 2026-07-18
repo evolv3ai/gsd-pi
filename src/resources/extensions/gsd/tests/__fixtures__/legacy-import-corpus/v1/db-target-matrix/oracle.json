@@ -5,8 +5,8 @@
   "importer_version": "v1-test",
   "base_project_revision": 0,
   "base_authority_epoch": 0,
-  "base_database_schema_version": 44,
-  "source_set_hash": "sha256:5512ca657bc6b00e33daf1734ffb0d6c277b1d8a3e3216ff4316c9fb8643c3c3",
+  "base_database_schema_version": 45,
+  "source_set_hash": "sha256:267072254d67b1c247f2d63bc7af21a9949d319b0d34b53349fdc2ddeeac1f06",
   "change_set_hash": "sha256:4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
   "counts": {
     "create": 0,
@@ -29,22 +29,22 @@
       "outcome": "unparsed"
     },
     {
-      "source_id": "database-current-v44",
-      "path": "current-v44/.gsd/gsd.db",
+      "source_id": "database-current-v45",
+      "path": "current-v45/.gsd/gsd.db",
       "kind": "sqlite-database",
-      "byte_size": 6144,
-      "sha256": "sha256:c08fcd8e92600b3ee4e675e9170791521e4fe0cc565d47922031dbbc323a2361",
+      "byte_size": 9728,
+      "sha256": "sha256:c56c2c8906d99df7bcb16d19697bddd504d8662339a47f18b8714023b95a8286",
       "parser_id": "gsd-sqlite-target",
       "parser_version": "1",
       "encoding": "binary",
       "outcome": "mapped"
     },
     {
-      "source_id": "database-future-v45",
-      "path": "future-v45/.gsd/gsd.db",
+      "source_id": "database-future-v46",
+      "path": "future-v46/.gsd/gsd.db",
       "kind": "sqlite-database",
-      "byte_size": 6144,
-      "sha256": "sha256:36df060bee30fca9da2ef214e8cb9571c638e02d86c02c6495046c2066ec971d",
+      "byte_size": 9728,
+      "sha256": "sha256:baff6e1edb51f7c22091a7f94d500be262d061086acda4ef2593b13329916d2e",
       "parser_id": "gsd-sqlite-target",
       "parser_version": "1",
       "encoding": "binary",
@@ -78,6 +78,17 @@
       "kind": "sqlite-database",
       "byte_size": 6144,
       "sha256": "sha256:4e7c326f5d3a2c7f1deb0c12cd90d54eaeb3bc54cecfd04f3f80f46fa8c0c660",
+      "parser_id": "gsd-sqlite-target",
+      "parser_version": "1",
+      "encoding": "binary",
+      "outcome": "mapped"
+    },
+    {
+      "source_id": "database-historical-v44",
+      "path": "historical-v44/.gsd/gsd.db",
+      "kind": "sqlite-database",
+      "byte_size": 6144,
+      "sha256": "sha256:c08fcd8e92600b3ee4e675e9170791521e4fe0cc565d47922031dbbc323a2361",
       "parser_id": "gsd-sqlite-target",
       "parser_version": "1",
       "encoding": "binary",
@@ -135,7 +146,10 @@
       "code": "corrupt-database",
       "severity": "blocker",
       "source_id": "database-corrupt",
-      "locator": { "start_byte": 0, "end_byte": 16 },
+      "locator": {
+        "start_byte": 0,
+        "end_byte": 16
+      },
       "raw_value": {
         "redacted": true,
         "sha256": "sha256:06e6f4165ae87c1a245003cd6f3edf385090453ed3b90ba6ba69002b05f31335"
@@ -143,23 +157,29 @@
       "message": "The target is not an openable SQLite database and cannot be classified safely."
     },
     {
-      "diagnosis_id": "diagnosis-future-schema",
+      "diagnosis_id": "diagnosis-future-v46",
       "code": "future-schema-version",
       "severity": "blocker",
-      "source_id": "database-future-v45",
-      "locator": { "start_byte": 0, "end_byte": 16 },
+      "source_id": "database-future-v46",
+      "locator": {
+        "start_byte": 0,
+        "end_byte": 16
+      },
       "raw_value": {
         "redacted": true,
         "sha256": "sha256:3f8434aff012ffcb594ad7527d6042841ce94f499887f86ab828f84a9a275f91"
       },
-      "message": "Schema v45 is newer than the accepted v44 target and must remain untouched."
+      "message": "Schema v46 is newer than the accepted v45 target and must remain untouched."
     },
     {
       "diagnosis_id": "diagnosis-historical-v30",
       "code": "historical-schema-version",
       "severity": "info",
       "source_id": "database-historical-v30",
-      "locator": { "start_byte": 0, "end_byte": 16 },
+      "locator": {
+        "start_byte": 0,
+        "end_byte": 16
+      },
       "raw_value": {
         "redacted": true,
         "sha256": "sha256:3f8434aff012ffcb594ad7527d6042841ce94f499887f86ab828f84a9a275f91"
@@ -171,7 +191,10 @@
       "code": "historical-schema-version",
       "severity": "info",
       "source_id": "database-historical-v34",
-      "locator": { "start_byte": 0, "end_byte": 16 },
+      "locator": {
+        "start_byte": 0,
+        "end_byte": 16
+      },
       "raw_value": {
         "redacted": true,
         "sha256": "sha256:3f8434aff012ffcb594ad7527d6042841ce94f499887f86ab828f84a9a275f91"
@@ -183,7 +206,10 @@
       "code": "historical-schema-version",
       "severity": "info",
       "source_id": "database-historical-v43",
-      "locator": { "start_byte": 0, "end_byte": 16 },
+      "locator": {
+        "start_byte": 0,
+        "end_byte": 16
+      },
       "raw_value": {
         "redacted": true,
         "sha256": "sha256:3f8434aff012ffcb594ad7527d6042841ce94f499887f86ab828f84a9a275f91"
@@ -191,11 +217,29 @@
       "message": "Schema v43 is a supported historical target before milestone reopen authorization."
     },
     {
+      "diagnosis_id": "diagnosis-historical-v44",
+      "code": "historical-schema-version",
+      "severity": "info",
+      "source_id": "database-historical-v44",
+      "locator": {
+        "start_byte": 0,
+        "end_byte": 16
+      },
+      "raw_value": {
+        "redacted": true,
+        "sha256": "sha256:3f8434aff012ffcb594ad7527d6042841ce94f499887f86ab828f84a9a275f91"
+      },
+      "message": "Schema v44 is a supported historical database target."
+    },
+    {
       "diagnosis_id": "diagnosis-unversioned-populated",
       "code": "unversioned-populated-database",
       "severity": "warning",
       "source_id": "database-unversioned-populated",
-      "locator": { "start_byte": 0, "end_byte": 16 },
+      "locator": {
+        "start_byte": 0,
+        "end_byte": 16
+      },
       "raw_value": {
         "redacted": true,
         "sha256": "sha256:3f8434aff012ffcb594ad7527d6042841ce94f499887f86ab828f84a9a275f91"
@@ -207,7 +251,10 @@
       "code": "wal-sidecars-present",
       "severity": "warning",
       "source_id": "database-wal-main",
-      "locator": { "start_byte": 0, "end_byte": 16 },
+      "locator": {
+        "start_byte": 0,
+        "end_byte": 16
+      },
       "raw_value": {
         "redacted": true,
         "sha256": "sha256:3f8434aff012ffcb594ad7527d6042841ce94f499887f86ab828f84a9a275f91"
@@ -221,33 +268,56 @@
       "disposition": "unsupported"
     },
     {
-      "diagnosis_id": "diagnosis-future-schema",
+      "diagnosis_id": "diagnosis-future-v46",
       "disposition": "unsupported"
     },
     {
       "diagnosis_id": "diagnosis-historical-v30",
       "disposition": "mapped",
-      "target": { "kind": "database-target", "key": "historical-v30/.gsd/gsd.db" }
+      "target": {
+        "kind": "database-target",
+        "key": "historical-v30/.gsd/gsd.db"
+      }
     },
     {
       "diagnosis_id": "diagnosis-historical-v34",
       "disposition": "mapped",
-      "target": { "kind": "database-target", "key": "historical-v34/.gsd/gsd.db" }
+      "target": {
+        "kind": "database-target",
+        "key": "historical-v34/.gsd/gsd.db"
+      }
     },
     {
       "diagnosis_id": "diagnosis-historical-v43",
       "disposition": "mapped",
-      "target": { "kind": "database-target", "key": "historical-v43/.gsd/gsd.db" }
+      "target": {
+        "kind": "database-target",
+        "key": "historical-v43/.gsd/gsd.db"
+      }
+    },
+    {
+      "diagnosis_id": "diagnosis-historical-v44",
+      "disposition": "mapped",
+      "target": {
+        "kind": "database-target",
+        "key": "historical-v44/.gsd/gsd.db"
+      }
     },
     {
       "diagnosis_id": "diagnosis-unversioned-populated",
       "disposition": "mapped",
-      "target": { "kind": "database-target", "key": "unversioned-populated/.gsd/gsd.db" }
+      "target": {
+        "kind": "database-target",
+        "key": "unversioned-populated/.gsd/gsd.db"
+      }
     },
     {
       "diagnosis_id": "diagnosis-wal-sidecars",
       "disposition": "preserved",
-      "target": { "kind": "database-target", "key": "wal-present/.gsd/gsd.db" }
+      "target": {
+        "kind": "database-target",
+        "key": "wal-present/.gsd/gsd.db"
+      }
     }
   ]
 }

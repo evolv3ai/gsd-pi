@@ -3,13 +3,14 @@
 
 import assert from "node:assert/strict";
 
-import type {
-  LegacyImportPreviewDiagnosis,
-  LegacyImportPreviewResolution,
-  LegacyImportPreviewSource,
-  LegacyImportRawValue,
-  LegacyImportTarget,
-  LegacyImportValue,
+import {
+  LEGACY_IMPORT_BASE_DATABASE_SCHEMA_VERSION,
+  type LegacyImportPreviewDiagnosis,
+  type LegacyImportPreviewResolution,
+  type LegacyImportPreviewSource,
+  type LegacyImportRawValue,
+  type LegacyImportTarget,
+  type LegacyImportValue,
 } from "../legacy-import-contract.ts";
 import type {
   LegacyImportBaseRow,
@@ -105,7 +106,7 @@ export function classificationBase(
 ): LegacyImportBaseSnapshot {
   return {
     snapshot_schema_version: 1,
-    database_schema_version: 44,
+    database_schema_version: LEGACY_IMPORT_BASE_DATABASE_SCHEMA_VERSION,
     authority: {
       singleton: 1,
       project_id: "project-test",

@@ -259,6 +259,11 @@ function schemaEvidence(db: DbAdapter): LegacyImportDatabaseTargetSchemaEvidence
       project_authority: objectExists(rows, "table", "project_authority"),
       workflow_import_applications: objectExists(rows, "table", "workflow_import_applications"),
       milestone_reopen_trigger: objectExists(rows, "trigger", "trg_workflow_lifecycle_reopen_authorization"),
+      authority_recovery_receipts: [
+        "workflow_authority_cutovers",
+        "workflow_import_restores",
+        "workflow_import_forward_repairs",
+      ].every((name) => objectExists(rows, "table", name)),
     },
     core_row_counts: {
       milestones: inspectCoreRows ? coreRowCount(db, rows, "milestones") : null,

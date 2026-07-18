@@ -10,6 +10,7 @@ import { fileURLToPath } from "node:url";
 import { describe, test } from "node:test";
 
 import {
+  LEGACY_IMPORT_BASE_DATABASE_SCHEMA_VERSION,
   LEGACY_IMPORT_PREVIEW_TOP_LEVEL_KEYS,
   type LegacyImportPreviewEnvelope,
   type LegacyImportSha256,
@@ -147,7 +148,7 @@ function sealInput(): LegacyImportPreviewSealInput {
     importer_version: "1",
     base: {
       snapshot_schema_version: 1,
-      database_schema_version: 44,
+      database_schema_version: LEGACY_IMPORT_BASE_DATABASE_SCHEMA_VERSION,
       authority: {
         singleton: 1,
         project_id: "project-1",
@@ -316,8 +317,11 @@ describe("legacy preview identity", () => {
 
   test("legacy preview identity rejects an unsupported database schema", () => {
     const input = sealInput();
-    input.base = { ...input.base, database_schema_version: 43 as 44 };
-    assert.throws(() => sealLegacyImportPreview(input), /database schema 44/);
+    input.base = {
+      ...input.base,
+      database_schema_version: 44 as typeof LEGACY_IMPORT_BASE_DATABASE_SCHEMA_VERSION,
+    };
+    assert.throws(() => sealLegacyImportPreview(input), /database schema 45/);
   });
 
   test("legacy preview identity rejects import kinds the application receipt cannot store", () => {
@@ -472,7 +476,7 @@ function sourceFixture(overrides: Partial<LegacyImportBaseSnapshotSource> = {}) 
   const source: LegacyImportBaseSnapshotSource = {
     readSchemaVersion() {
       assertInside("schema");
-      return 44;
+      return LEGACY_IMPORT_BASE_DATABASE_SCHEMA_VERSION;
     },
     readAuthorityRows() {
       assertInside("authority");
@@ -634,7 +638,7 @@ describe("legacy preview base snapshot", () => {
     );
   });
 
-  test("legacy preview base snapshot reads the already-open v44 database without writes", () => {
+  test("legacy preview base snapshot reads the current database without writes", () => {
     assert.equal(openDatabase(":memory:"), true);
     try {
       const db = _getAdapter();
@@ -683,7 +687,10 @@ describe("legacy preview base snapshot", () => {
 
       const after = db.prepare("SELECT total_changes() AS count").get()?.["count"];
       assert.equal(after, before);
-      assert.equal(snapshot.database_schema_version, 44);
+      assert.equal(
+        snapshot.database_schema_version,
+        LEGACY_IMPORT_BASE_DATABASE_SCHEMA_VERSION,
+      );
       assert.deepEqual([...new Set(snapshot.rows.map((row) => row.row_set))], EXPECTED_BASE_ROW_SETS);
       const rows = new Map(snapshot.rows.map((row) => [row.row_set, row.value]));
       for (const rowSet of EXPECTED_BASE_ROW_SETS) {
@@ -779,7 +786,7 @@ function actionMatrixBaseSnapshot(): LegacyImportBaseSnapshot {
   try {
     database.exec("PRAGMA query_only=ON");
     const schema = database.prepare("SELECT max(version) AS version FROM schema_version").get();
-    assert.equal(schema?.version, 44);
+    assert.equal(schema?.version, LEGACY_IMPORT_BASE_DATABASE_SCHEMA_VERSION);
     const rawAuthority = database.prepare(`
       SELECT singleton, project_id, project_root_realpath, revision, authority_epoch,
              created_at, updated_at
@@ -810,7 +817,7 @@ function actionMatrixBaseSnapshot(): LegacyImportBaseSnapshot {
     });
     return {
       snapshot_schema_version: 1,
-      database_schema_version: 44,
+      database_schema_version: LEGACY_IMPORT_BASE_DATABASE_SCHEMA_VERSION,
       authority,
       rows,
       relevant_rows_hash: hashLegacyImportValue(rows),
@@ -836,7 +843,7 @@ function composeLegacyInterpretations(
 }
 
 describe("legacy preview task classification", () => {
-  test("legacy preview action matrix classification against a captured v44 fixture", (t) => {
+  test("legacy preview action matrix classification against a captured current fixture", (t) => {
     const capture = captureLegacyCorpusPaths(
       t,
       "action-matrix",
@@ -1027,7 +1034,10 @@ test("legacy public Preview composes and revalidates one deterministic read-only
       SELECT revision, authority_epoch FROM project_authority WHERE singleton = 1
     `).get();
     assert.ok(authority);
-    assert.equal(database.prepare("SELECT max(version) AS version FROM schema_version").get()?.["version"], 44);
+    assert.equal(
+      database.prepare("SELECT max(version) AS version FROM schema_version").get()?.["version"],
+      LEGACY_IMPORT_BASE_DATABASE_SCHEMA_VERSION,
+    );
     const totalChangesBefore = database.prepare("SELECT total_changes() AS count").get()?.["count"];
 
     const first = createLegacyImportPreview(input);
@@ -1038,7 +1048,10 @@ test("legacy public Preview composes and revalidates one deterministic read-only
     assert.equal(first.preview.importer_version, "1");
     assert.equal(first.preview.base_project_revision, authority["revision"]);
     assert.equal(first.preview.base_authority_epoch, authority["authority_epoch"]);
-    assert.equal(first.preview.base_database_schema_version, 44);
+    assert.equal(
+      first.preview.base_database_schema_version,
+      LEGACY_IMPORT_BASE_DATABASE_SCHEMA_VERSION,
+    );
     assert.equal(first.preview_hash, hashLegacyImportValue(first.preview));
     assert.deepEqual(first.preview.counts, {
       create: 0,
@@ -1285,7 +1298,7 @@ describe("legacy public Preview expected artifact validation", () => {
     importer_version: "1",
     base_project_revision: -1,
     base_authority_epoch: -1,
-    base_database_schema_version: 44,
+    base_database_schema_version: LEGACY_IMPORT_BASE_DATABASE_SCHEMA_VERSION,
     source_set_hash: "not-a-source-hash",
     change_set_hash: "not-a-change-hash",
     counts: {},

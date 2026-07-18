@@ -4,7 +4,10 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import type { LegacyImportValue } from "../legacy-import-contract.ts";
+import {
+  LEGACY_IMPORT_BASE_DATABASE_SCHEMA_VERSION,
+  type LegacyImportValue,
+} from "../legacy-import-contract.ts";
 import { sealLegacyImportVerifiedBackup } from "../legacy-import-backup.ts";
 import {
   LEGACY_IMPORT_APPLICATION_EVENT_TYPE,
@@ -30,7 +33,7 @@ function emptyPreview(): LegacyImportPreviewSealInput {
     importer_version: "1",
     base: {
       snapshot_schema_version: 1,
-      database_schema_version: 44,
+      database_schema_version: LEGACY_IMPORT_BASE_DATABASE_SCHEMA_VERSION,
       authority: {
         singleton: 1,
         project_id: "project-1",

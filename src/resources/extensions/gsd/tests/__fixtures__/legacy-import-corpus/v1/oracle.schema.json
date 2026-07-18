@@ -10,7 +10,7 @@
     "importer_version": { "$ref": "#/$defs/trimmedNonBlank" },
     "base_project_revision": { "type": "integer", "minimum": 0 },
     "base_authority_epoch": { "type": "integer", "minimum": 0 },
-    "base_database_schema_version": { "const": 44 },
+    "base_database_schema_version": { "const": 45 },
     "source_set_hash": { "$ref": "#/$defs/hash" },
     "change_set_hash": { "$ref": "#/$defs/hash" },
     "counts": {

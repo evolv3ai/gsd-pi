@@ -419,7 +419,7 @@ test("legacy import backup verification requires one main database and one ok ro
   }
 });
 
-test("legacy import backup verification rejects foreign keys and requires schema v44 anchors", (t) => {
+test("legacy import backup verification rejects foreign keys and requires schema v45 anchors", (t) => {
   const { testVerify } = verificationApi();
   const scenarios = [
     {
@@ -454,6 +454,28 @@ test("legacy import backup verification rejects foreign keys and requires schema
       }),
       "verification",
       scenario.code,
+    );
+  }
+});
+
+test("legacy import backup verification requires every v45 recovery receipt anchor", (t) => {
+  const { testVerify } = verificationApi();
+  for (const missingName of [
+    "workflow_authority_cutovers",
+    "workflow_import_restores",
+    "workflow_import_forward_repairs",
+  ]) {
+    const fixture = snapshotFixture(t);
+    expectVerificationError(
+      () => testVerify(fixture.input, {
+        openReadOnly: (path) => interceptedConnection(path, {
+          rows: (sql, rows) => sql.toLowerCase().includes("from sqlite_schema")
+            ? rows.filter((row) => row["name"] !== missingName)
+            : rows,
+        }),
+      }),
+      "verification",
+      "LEGACY_IMPORT_BACKUP_SCHEMA_INVALID",
     );
   }
 });

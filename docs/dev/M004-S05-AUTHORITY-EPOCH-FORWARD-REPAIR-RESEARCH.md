@@ -352,8 +352,23 @@ S05 will not add:
 
 ## Implementation sequence
 
+T02 resolved the receipt model as additive schema V45:
+
+- `workflow_authority_cutovers` binds one epoch-advancing
+  `authority.cutover` operation;
+- `workflow_import_restores` retains checked erased-Application lineage
+  without a foreign key to the erased aggregate; and
+- `workflow_import_forward_repairs` requires the retained Application and its
+  exact index-zero Application event, plus complete zero-unresolved plan
+  accounting.
+
+All three receipts and their linked operations are immutable. Fresh creation,
+genuine V44 upgrade, pre-migration backup, injected-fault rollback with no
+leaked V45 objects, independent backup reopen, exact causality, and sealed
+legacy-corpus V45/V46 boundaries are executable tests.
+
 1. T02 adds the minimum durable cutover, restore, and Forward Repair receipt
-   model.
+   model. (Completed.)
 2. T03 makes epoch advancement private to one typed cutover operation.
 3. T04 builds the pure exact restore assessor and recommendation result.
 4. T05 implements one crash-safe eligible live restore and records erased

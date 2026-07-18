@@ -26,7 +26,11 @@ import { basename, dirname, join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { describe, test, type TestContext } from "node:test";
 
-import type { LegacyImportPreviewSource, LegacyImportSha256 } from "../legacy-import-contract.ts";
+import {
+  LEGACY_IMPORT_BASE_DATABASE_SCHEMA_VERSION,
+  type LegacyImportPreviewSource,
+  type LegacyImportSha256,
+} from "../legacy-import-contract.ts";
 import {
   captureCurrentLegacyImportBaseSnapshot,
   LegacyImportBaseSnapshotError,
@@ -113,7 +117,7 @@ function source(sourceId: string, path: string, shaDigit: string): LegacyImportP
 function baseSnapshot(projectRootRealpath = "/workspace/project-1"): LegacyImportBaseSnapshot {
   return {
     snapshot_schema_version: 1,
-    database_schema_version: 44,
+    database_schema_version: LEGACY_IMPORT_BASE_DATABASE_SCHEMA_VERSION,
     authority: {
       singleton: 1,
       project_id: "project-1",
@@ -1241,7 +1245,10 @@ describe("legacy import backup checkpoint", () => {
     }];
     const drifts: readonly ((base: LegacyImportBaseSnapshot) => LegacyImportBaseSnapshot)[] = [
       (base) => ({ ...base, snapshot_schema_version: 2 as 1 }),
-      (base) => ({ ...base, database_schema_version: 43 as 44 }),
+      (base) => ({
+        ...base,
+        database_schema_version: 44 as typeof LEGACY_IMPORT_BASE_DATABASE_SCHEMA_VERSION,
+      }),
       (base) => ({ ...base, authority: { ...base.authority, project_id: "other-project" } }),
       (base) => ({ ...base, authority: { ...base.authority, project_root_realpath: `${base.authority.project_root_realpath}-moved` } }),
       (base) => ({ ...base, authority: { ...base.authority, revision: base.authority.revision + 1 } }),

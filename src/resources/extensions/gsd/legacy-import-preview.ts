@@ -364,6 +364,7 @@ function createLegacyImportPreviewInternal(
       && evidence.inspection.schema.anchors.project_authority
       && evidence.inspection.schema.anchors.workflow_import_applications
       && evidence.inspection.schema.anchors.milestone_reopen_trigger
+      && evidence.inspection.schema.anchors.authority_recovery_receipts
     ) {
       gsdDatabaseEvidence.push(inspectLegacyImportGsdDatabaseEvidence(request));
     }
