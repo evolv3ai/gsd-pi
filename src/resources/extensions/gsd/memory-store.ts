@@ -1,13 +1,13 @@
 // GSD Memory Store — CRUD, ranked queries, maintenance, and prompt formatting
 //
 // Storage layer for auto-learned project memories. Follows context-store.ts patterns.
-// All functions degrade gracefully: return empty results when DB unavailable, never throw.
+// Reads degrade gracefully when the DB is unavailable; createMemory surfaces
+// genuine SQL faults so callers do not mistake lost writes for success.
 
 import {
   isDbAvailable,
   _getAdapter,
   transaction,
-  isInTransaction,
   insertMemoryRow,
   rewriteMemoryId,
   updateMemoryContentRow,
@@ -576,31 +576,7 @@ export function createMemory(fields: {
   const adapter = _getAdapter();
   if (!adapter) return null;
 
-  try {
-    return transaction(() => doCreateMemory(adapter, fields));
-  } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
-
-    // Targeted recovery: a malformed memory store can sometimes be rebuilt
-    // by VACUUM. Skip when inside a transaction — SQLite refuses VACUUM
-    // there and a secondary throw would mask the real fault.
-    if (message.toLowerCase().includes('malformed') && !isInTransaction()) {
-      try {
-        adapter.prepare('VACUUM').run();
-        const recoveryMessage = 'recovered malformed memory store via VACUUM';
-        process.stderr.write(`memory-store: ${recoveryMessage}\n`);
-        logWarning('memory-store', recoveryMessage);
-        return transaction(() => doCreateMemory(adapter, fields));
-      } catch (retryErr) {
-        const retryMsg = retryErr instanceof Error ? retryErr.message : String(retryErr);
-        logWarning('memory-store', `VACUUM recovery for memory store failed: ${retryMsg}`);
-        // Surface the *original* malformed error — it's the actionable signal.
-        throw err;
-      }
-    }
-
-    throw err;
-  }
+  return transaction(() => doCreateMemory(adapter, fields));
 }
 
 function doCreateMemory(

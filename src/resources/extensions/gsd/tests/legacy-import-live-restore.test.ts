@@ -2,6 +2,7 @@
 // File Purpose: Crash-safe real-file legacy Import Application restore contract.
 
 import assert from "node:assert/strict";
+import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import {
   cpSync,
@@ -393,6 +394,36 @@ test("an abandoned claimed intent is cleaned and retried from the unchanged orig
   assert.equal(existsSync(paths.activeIntentPath), true);
   assert.equal(restoreLegacyImportLive(structuredClone(prepared.input)).status, "committed");
   assert.equal(existsSync(paths.recoveryDirectory), false);
+});
+
+test("a reused live PID cannot preserve an abandoned restore intent", () => {
+  const prepared = preparedInput();
+  const paths = getDatabaseReplacementPaths(prepared.databasePath);
+  const unrelated = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], {
+    stdio: "ignore",
+  });
+  assert.ok(unrelated.pid);
+  try {
+    assert.throws(
+      () => _restoreLegacyImportLiveForTest(prepared.input, {
+        boundary(point) {
+          if (point !== "after-intent") return;
+          const intent = JSON.parse(readFileSync(paths.activeIntentPath, "utf8")) as Record<string, unknown>;
+          intent["ownerPid"] = unrelated.pid;
+          writeFileSync(paths.activeIntentPath, JSON.stringify(intent));
+          throw new Error("injected owner exit followed by PID reuse");
+        },
+      }),
+      (error: unknown) => (error as { code?: unknown }).code
+        === "LEGACY_IMPORT_LIVE_RESTORE_STAGE_FAILED",
+    );
+
+    assert.equal(existsSync(paths.activeIntentPath), true);
+    assert.equal(restoreLegacyImportLive(structuredClone(prepared.input)).status, "committed");
+    assert.equal(existsSync(paths.recoveryDirectory), false);
+  } finally {
+    unrelated.kill("SIGKILL");
+  }
 });
 
 test("intent identity tampering is retained and blocks ownership cleanup", () => {

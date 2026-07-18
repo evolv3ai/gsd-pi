@@ -120,3 +120,33 @@ export function openSqliteReadOnly(path: string): SqliteReadOnlyConnection {
     throw new SqliteReadOnlyConfigurationError();
   }
 }
+
+export function inspectSqliteReadOnlySnapshot<T>(path: string, inspect: (db: DbAdapter) => T): T {
+  const connection = openSqliteReadOnly(path);
+  let transactionOpen = false;
+  let failure: unknown;
+  let result: T | undefined;
+  try {
+    connection.db.exec("BEGIN");
+    transactionOpen = true;
+    result = inspect(connection.db);
+  } catch (error) {
+    failure = error;
+  } finally {
+    if (transactionOpen) {
+      try {
+        connection.db.exec("ROLLBACK");
+      } catch (error) {
+        if (failure === undefined) failure = error;
+      }
+    }
+    try {
+      connection.db.close();
+    } catch (error) {
+      if (failure === undefined) failure = error;
+    }
+  }
+  if (failure !== undefined) throw failure;
+  if (result === undefined) throw new Error("SQLite read-only snapshot returned no result");
+  return result;
+}

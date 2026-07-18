@@ -3,6 +3,7 @@
 
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
+import { DatabaseSync } from "node:sqlite";
 import { copyFileSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -13,10 +14,10 @@ import {
   SCHEMA_VERSION,
   _getAdapter,
   closeDatabase,
-  openIsolatedDatabase,
   openDatabase,
   transaction,
 } from "../gsd-db.ts";
+import { createDbAdapter } from "../db-adapter.ts";
 import {
   _setDomainOperationFaultForTest,
   executeImportDomainOperation,
@@ -682,8 +683,7 @@ test("import.apply Domain Operation: stale Preview revision and epoch leave no i
 
 test("import.apply Domain Operation: writer contention remains a revision conflict", (t) => {
   const dbPath = openFixture(t);
-  const blocker = openIsolatedDatabase(dbPath);
-  assert.ok(blocker);
+  const blocker = createDbAdapter(new DatabaseSync(dbPath));
   blocker.exec("BEGIN IMMEDIATE");
   t.after(() => {
     blocker.exec("ROLLBACK");
@@ -870,8 +870,7 @@ test("the Domain Operation owns the outer reserved-writer transaction", (t) => {
 
 test("writer lock exhaustion surfaces as a revision conflict", (t) => {
   const dbPath = openFixture(t);
-  const blocker = openIsolatedDatabase(dbPath);
-  assert.ok(blocker);
+  const blocker = createDbAdapter(new DatabaseSync(dbPath));
   blocker.exec("BEGIN IMMEDIATE");
   t.after(() => {
     blocker.exec("ROLLBACK");

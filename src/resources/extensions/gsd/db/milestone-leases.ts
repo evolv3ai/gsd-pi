@@ -207,18 +207,20 @@ export function refreshMilestoneLease(
   const now = new Date();
   const expiresIso = ttlExpiry(now);
   const db = _getAdapter()!;
-  const result = db.prepare(
-    `UPDATE milestone_leases
-     SET expires_at = :expires_at
-     WHERE milestone_id = :milestone_id
-       AND worker_id = :worker_id
-       AND fencing_token = :token
-       AND status = 'held'`,
-  ).run({
-    ":expires_at": expiresIso,
-    ":milestone_id": milestoneId,
-    ":worker_id": workerId,
-    ":token": fencingToken,
+  const result = transaction(() => {
+    return db.prepare(
+      `UPDATE milestone_leases
+       SET expires_at = :expires_at
+       WHERE milestone_id = :milestone_id
+         AND worker_id = :worker_id
+         AND fencing_token = :token
+         AND status = 'held'`,
+    ).run({
+      ":expires_at": expiresIso,
+      ":milestone_id": milestoneId,
+      ":worker_id": workerId,
+      ":token": fencingToken,
+    });
   });
   const changes =
     typeof (result as { changes?: unknown }).changes === "number"

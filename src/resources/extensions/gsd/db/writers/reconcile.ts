@@ -9,7 +9,7 @@ import { dirname, join } from "node:path";
 import { createHash } from "node:crypto";
 import { GSDError, GSD_STALE_STATE } from "../../errors.js";
 import { logError, logWarning } from "../../workflow-logger.js";
-import { getDbOrNull, openDatabase } from "../engine.js";
+import { getDbOrNull, openDatabase, transaction } from "../engine.js";
 import { TERMINAL_STATUS_SQL } from "../sql-constants.js";
 
 export class CanonicalWorktreeDivergenceError extends GSDError {
@@ -340,8 +340,7 @@ export function reconcileWorktreeDb(
            END`
         : "COALESCE(m.target_repositories, '[]')";
 
-      adapter.exec("BEGIN");
-      try {
+      transaction(() => {
         // Join the target decisions so we can prefer an existing main.source
         // when the worktree predates v16 — otherwise a write-through reconcile
         // would clobber 'escalation'-sourced decisions with the literal default.
@@ -722,11 +721,7 @@ export function reconcileWorktreeDb(
           `).run());
         }
 
-        adapter.exec("COMMIT");
-      } catch (txErr) {
-        try { adapter.exec("ROLLBACK"); } catch (e) { logWarning("db", `rollback failed: ${(e as Error).message}`); }
-        throw txErr;
-      }
+      });
       return { ...merged, conflicts };
     } finally {
       try { adapter.exec("DETACH DATABASE wt"); } catch (e) { logWarning("db", `detach worktree DB failed: ${(e as Error).message}`); }

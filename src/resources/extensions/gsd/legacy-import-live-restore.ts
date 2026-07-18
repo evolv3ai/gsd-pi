@@ -11,6 +11,7 @@ import {
   fstatSync,
   fsyncSync,
   lstatSync,
+  linkSync,
   mkdirSync,
   openSync,
   readFileSync,
@@ -51,16 +52,20 @@ import {
   type LegacyImportRestoreAssessmentConsent,
 } from "./legacy-import-restore-assessment.js";
 import { openSqliteReadOnly } from "./sqlite-readonly.js";
+import { processStartIdentity } from "./process-start-identity.js";
 import {
   _executeImportRestoreDomainOperation,
   type DomainJsonValue,
 } from "./db/domain-operation.js";
 import {
+  assertDatabaseMaintenanceAllowsReplacement,
   detachActiveDatabaseForReplacement,
   getDatabaseReplacementPaths,
   getDb,
   getDbPath,
+  immediateTransaction,
   reopenDatabaseAfterReplacement,
+  type DatabaseReplacementReopenEvidence,
   type DatabaseReplacementReceiptCapability,
   type DatabaseReplacementToken,
 } from "./db/engine.js";
@@ -70,6 +75,7 @@ export const LEGACY_IMPORT_LIVE_RESTORE_SCHEMA_VERSION = 1 as const;
 const INTENT_SCHEMA_VERSION = 1 as const;
 const INTENT_FILE = "active.json";
 const CANDIDATE_FILE = "candidate.sqlite";
+const RECOVERY_CLAIM_PREFIX = `${INTENT_FILE}.recovery-claim-`;
 
 export type LegacyImportLiveRestoreStage =
   | "contract"
@@ -157,14 +163,53 @@ export interface LegacyImportLiveRestoreResult {
 }
 
 type LiveRestoreBoundary =
+  | "after-claim-write"
+  | "after-claim-file-sync"
+  | "after-claim-publish"
+  | "after-claim-directory-sync"
   | "after-stage"
   | "after-intent"
+  | "after-candidate-copy"
+  | "after-candidate-sync"
+  | "after-candidate-verify"
+  | "after-recovery-copy"
+  | "after-recovery-sync"
+  | "after-recovery-intent"
+  | "after-recovery-publish"
+  | "before-final-assessment"
+  | "after-final-assessment"
+  | "after-checkpoint"
+  | "after-journal-mode"
+  | "after-active-close"
   | "after-detach"
+  | "after-wal-removal"
+  | "after-shm-removal"
+  | "after-journal-removal"
+  | "before-database-publish"
   | "after-database-publish"
+  | "after-live-parent-sync"
+  | "after-published-file-verify"
   | "after-publish"
+  | "before-reopen-open"
+  | "after-reopen-open"
+  | "after-reopen-proof"
   | "after-reopen"
+  | "after-quick-check"
+  | "after-integrity-check"
+  | "after-foreign-key-check"
+  | "after-base-verification"
   | "before-receipt-commit"
   | "after-receipt"
+  | "after-receipt-intent"
+  | "after-receipt-checkpoint"
+  | "after-database-sync"
+  | "after-terminal-assessment"
+  | "after-cleanup-claim-link"
+  | "after-cleanup-claim-verify"
+  | "after-cleanup-entries"
+  | "after-cleanup-intent"
+  | "after-cleanup-claim-unlink"
+  | "after-cleanup-directory"
   | "after-cleanup";
 
 interface LiveRestoreDependencies {
@@ -199,8 +244,9 @@ interface RestoreFileIdentity extends Record<string, DomainJsonValue> {
 interface RestoreIntent extends Record<string, DomainJsonValue> {
   intentSchemaVersion: 1;
   requestHash: string;
-  stage: "claimed" | "staged" | "published" | "receipt-recorded";
+  stage: "claimed" | "staged" | "recovery-staged" | "published" | "receipt-recorded";
   ownerPid: number;
+  ownerProcessStartIdentity: string;
   ownerNonce: string;
   originalDatabaseDevice: string;
   originalDatabaseInode: string;
@@ -222,6 +268,7 @@ interface RestoreIntent extends Record<string, DomainJsonValue> {
 }
 
 const activeRestoreOwners = new Set<string>();
+let selfProcessStartIdentity: string | null | undefined;
 
 function fail(
   code: LegacyImportLiveRestoreErrorCode,
@@ -492,6 +539,7 @@ function intentFor(
     requestHash: hash,
     stage: "claimed",
     ownerPid: process.pid,
+    ownerProcessStartIdentity: requireSelfProcessStartIdentity(),
     ownerNonce: randomUUID(),
     originalDatabaseDevice: originalDatabase.device,
     originalDatabaseInode: originalDatabase.inode,
@@ -549,14 +597,20 @@ function writeIntent(path: string, intent: RestoreIntent, syncDir: (path: string
   requireSameIntentOwner(current, intent);
   const transition = `${current.stage}->${intent.stage}`;
   if (transition !== "claimed->staged"
+    && transition !== "staged->recovery-staged"
+    && transition !== "published->recovery-staged"
+    && transition !== "recovery-staged->published"
     && transition !== "staged->published"
     && transition !== "published->receipt-recorded") {
     fail("LEGACY_IMPORT_LIVE_RESTORE_INTENT_CONFLICT", "converge", "restore intent attempted an invalid state transition");
   }
   const currentCandidate = intentCandidateFileIdentity(current);
   const nextCandidate = intentCandidateFileIdentity(intent);
+  const stagesRecoveryCandidate = transition === "staged->recovery-staged"
+    || transition === "published->recovery-staged";
   if ((current.stage === "claimed" && nextCandidate === null)
-    || (current.stage !== "claimed" && (
+    || (stagesRecoveryCandidate && (currentCandidate === null || nextCandidate === null))
+    || (current.stage !== "claimed" && !stagesRecoveryCandidate && (
       currentCandidate === null
       || nextCandidate === null
       || !sameFileIdentity(currentCandidate, nextCandidate)
@@ -588,14 +642,29 @@ function systemErrorCode(error: unknown): string | undefined {
     : undefined;
 }
 
+function requireSelfProcessStartIdentity(): string {
+  if (selfProcessStartIdentity === undefined) {
+    selfProcessStartIdentity = processStartIdentity(process.pid);
+  }
+  if (selfProcessStartIdentity === null) {
+    fail(
+      "LEGACY_IMPORT_LIVE_RESTORE_CONTRACT_INVALID",
+      "contract",
+      "live restore cannot prove the current process start identity",
+    );
+  }
+  return selfProcessStartIdentity;
+}
+
 function intentOwnerIsActive(intent: RestoreIntent): boolean {
   if (intent.ownerPid === process.pid) return activeRestoreOwners.has(intent.ownerNonce);
   try {
     process.kill(intent.ownerPid, 0);
-    return true;
   } catch (error) {
-    return systemErrorCode(error) !== "ESRCH";
+    if (systemErrorCode(error) === "ESRCH") return false;
   }
+  const currentIdentity = processStartIdentity(intent.ownerPid);
+  return currentIdentity === null || currentIdentity === intent.ownerProcessStartIdentity;
 }
 
 function pathEntryExists(path: string): boolean {
@@ -608,26 +677,34 @@ function pathEntryExists(path: string): boolean {
   }
 }
 
-function claimIntent(path: string, intent: RestoreIntent, syncDir: (path: string) => void): boolean {
+function claimIntent(path: string, intent: RestoreIntent, ops: LiveRestoreDependencies): boolean {
+  const temporary = `${path}.tmp-${process.pid}-${randomUUID()}`;
   let fd: number | undefined;
-  let created = false;
+  let linkAttempted = false;
+  let published = false;
   try {
-    fd = openSync(path, fsConstants.O_WRONLY | fsConstants.O_CREAT | fsConstants.O_EXCL, 0o600);
-    created = true;
+    fd = openSync(temporary, fsConstants.O_WRONLY | fsConstants.O_CREAT | fsConstants.O_EXCL, 0o600);
     writeFileSync(fd, canonicalLegacyImportJson(intent), "utf8");
+    ops.boundary?.("after-claim-write");
     fsyncSync(fd);
+    ops.boundary?.("after-claim-file-sync");
     closeSync(fd);
     fd = undefined;
-    syncDir(dirname(path));
+    linkAttempted = true;
+    linkSync(temporary, path);
+    published = true;
+    ops.boundary?.("after-claim-publish");
+    ops.syncDirectory(dirname(path));
+    ops.boundary?.("after-claim-directory-sync");
+    unlinkSync(temporary);
+    ops.syncDirectory(dirname(path));
     return true;
   } catch (error) {
     if (fd !== undefined) {
       try { closeSync(fd); } catch { /* retain original error */ }
     }
-    if (systemErrorCode(error) === "EEXIST") return false;
-    if (created) {
-      try { unlinkSync(path); } catch { /* retain original error */ }
-    }
+    try { if (existsSync(temporary)) unlinkSync(temporary); } catch { /* retain original error */ }
+    if (!published && linkAttempted && systemErrorCode(error) === "EEXIST") return false;
     throw error;
   }
 }
@@ -636,6 +713,7 @@ function intentIdentity(intent: RestoreIntent): string {
   const {
     stage: _stage,
     ownerPid: _ownerPid,
+    ownerProcessStartIdentity: _ownerProcessStartIdentity,
     ownerNonce: _ownerNonce,
     originalDatabaseDevice: _originalDatabaseDevice,
     originalDatabaseInode: _originalDatabaseInode,
@@ -654,6 +732,7 @@ function requireMatchingIntent(actual: RestoreIntent, expected: RestoreIntent): 
 
 function requireSameIntentOwner(actual: RestoreIntent, expected: RestoreIntent): void {
   if (actual.ownerPid !== expected.ownerPid
+    || actual.ownerProcessStartIdentity !== expected.ownerProcessStartIdentity
     || actual.ownerNonce !== expected.ownerNonce
     || !sameFileIdentity(intentOriginalFileIdentity(actual), intentOriginalFileIdentity(expected))) {
     fail("LEGACY_IMPORT_LIVE_RESTORE_INTENT_CONFLICT", "converge", "active restore intent owner changed");
@@ -701,7 +780,7 @@ function readIntent(path: string): RestoreIntent | null {
     fail("LEGACY_IMPORT_LIVE_RESTORE_INTENT_CONFLICT", "converge", "active restore intent is malformed", false, {}, error);
   }
   const required = [
-    "intentSchemaVersion", "requestHash", "stage", "ownerPid", "ownerNonce",
+    "intentSchemaVersion", "requestHash", "stage", "ownerPid", "ownerProcessStartIdentity", "ownerNonce",
     "originalDatabaseDevice", "originalDatabaseInode",
     "candidateDatabaseDevice", "candidateDatabaseInode", "applicationOperationId",
     "applicationIdentityHash", "backupId", "backupSha256", "backupByteSize",
@@ -712,6 +791,7 @@ function readIntent(path: string): RestoreIntent | null {
   if (!hasExactDataKeys(value, required)
     || value["intentSchemaVersion"] !== INTENT_SCHEMA_VERSION
     || (value["stage"] !== "claimed" && value["stage"] !== "staged"
+      && value["stage"] !== "recovery-staged"
       && value["stage"] !== "published" && value["stage"] !== "receipt-recorded")) {
     fail("LEGACY_IMPORT_LIVE_RESTORE_INTENT_CONFLICT", "converge", "active restore intent does not satisfy the exact contract");
   }
@@ -719,6 +799,7 @@ function readIntent(path: string): RestoreIntent | null {
     "requestHash", "applicationIdentityHash", "backupId", "backupSha256",
     "assessmentEvidenceHash", "differenceHash", "consentHash", "erasedLineageHash",
   ]) requireHash(value[field], `intent.${field}`);
+  requireHash(value["ownerProcessStartIdentity"], "intent.ownerProcessStartIdentity");
   if (typeof value["applicationOperationId"] !== "string"
     || value["applicationOperationId"].trim().length === 0
     || !Number.isSafeInteger(value["ownerPid"])
@@ -776,56 +857,173 @@ function ensureRecoveryDirectory(path: string): void {
   }
 }
 
+function pathsReferenceSameFile(firstPath: string, secondPath: string): boolean {
+  try {
+    const first = lstatSync(firstPath, { bigint: true });
+    const second = lstatSync(secondPath, { bigint: true });
+    return first.isFile()
+      && second.isFile()
+      && !first.isSymbolicLink()
+      && !second.isSymbolicLink()
+      && first.dev === second.dev
+      && first.ino === second.ino;
+  } catch (error) {
+    if (systemErrorCode(error) === "ENOENT") return false;
+    fail("LEGACY_IMPORT_LIVE_RESTORE_PATH_INVALID", "converge", "cannot compare restore recovery entries", false, {}, error);
+  }
+}
+
+function unlinkIfPresent(path: string): void {
+  try {
+    unlinkSync(path);
+  } catch (error) {
+    if (systemErrorCode(error) !== "ENOENT") throw error;
+  }
+}
+
 function cleanupRecoveryDirectory(
   path: string,
   expectedIntent: RestoreIntent,
-  syncDir: (path: string) => void,
-): void {
-  if (!existsSync(path)) return;
-  const active = readIntent(join(path, INTENT_FILE));
-  if (active === null) {
-    fail("LEGACY_IMPORT_LIVE_RESTORE_INTENT_CONFLICT", "converge", "restore cleanup requires its active intent");
-  }
-  requireMatchingIntent(active, expectedIntent);
-  requireSameIntentOwner(active, expectedIntent);
-  const stat = lstatSync(path, { bigint: true });
-  if (realpathSync(path) !== path || !stat.isDirectory() || stat.isSymbolicLink()) {
-    fail("LEGACY_IMPORT_LIVE_RESTORE_CONVERGENCE_FAILED", "converge", "restore recovery directory ownership changed");
-  }
-  const allowed = new Set([INTENT_FILE, CANDIDATE_FILE]);
-  for (const entry of readdirSync(path)) {
-    if (!allowed.has(entry) && !entry.startsWith(`${INTENT_FILE}.tmp-`)) {
-      fail("LEGACY_IMPORT_LIVE_RESTORE_CONVERGENCE_FAILED", "converge", "restore recovery directory contains an unknown entry");
+  ops: LiveRestoreDependencies,
+): boolean {
+  if (!existsSync(path)) return false;
+  const activeIntentPath = join(path, INTENT_FILE);
+  const claimPath = join(path, `${RECOVERY_CLAIM_PREFIX}${process.pid}-${randomUUID()}`);
+  let ownsClaim = false;
+  try {
+    try {
+      linkSync(activeIntentPath, claimPath);
+      ownsClaim = true;
+    } catch (error) {
+      if (systemErrorCode(error) === "ENOENT") return false;
+      throw error;
     }
-    const entryPath = join(path, entry);
-    const entryStat = lstatSync(entryPath, { bigint: true });
-    if (!entryStat.isFile() || entryStat.isSymbolicLink()) {
-      fail("LEGACY_IMPORT_LIVE_RESTORE_CONVERGENCE_FAILED", "converge", "restore recovery entry changed kind");
+    ops.boundary?.("after-cleanup-claim-link");
+    ops.syncDirectory(path);
+
+    const claimedIntent = readIntent(claimPath);
+    if (claimedIntent === null) return false;
+    requireMatchingIntent(claimedIntent, expectedIntent);
+    requireSameIntentOwner(claimedIntent, expectedIntent);
+    const callerOwnsIntent = claimedIntent.ownerPid === process.pid
+      && activeRestoreOwners.has(claimedIntent.ownerNonce);
+    if (!callerOwnsIntent && intentOwnerIsActive(claimedIntent)) return false;
+    if (!pathsReferenceSameFile(activeIntentPath, claimPath)) return false;
+    ops.boundary?.("after-cleanup-claim-verify");
+
+    const stat = lstatSync(path, { bigint: true });
+    if (realpathSync(path) !== path || !stat.isDirectory() || stat.isSymbolicLink()) {
+      fail("LEGACY_IMPORT_LIVE_RESTORE_CONVERGENCE_FAILED", "converge", "restore recovery directory ownership changed");
     }
-    unlinkSync(entryPath);
+    const entries = readdirSync(path);
+    const concurrentClaims: string[] = [];
+    for (const entry of entries) {
+      const entryPath = join(path, entry);
+      const allowed = entry === INTENT_FILE
+        || entry === CANDIDATE_FILE
+        || entry.startsWith(`${INTENT_FILE}.tmp-`)
+        || entry.startsWith(RECOVERY_CLAIM_PREFIX);
+      if (!allowed) {
+        fail("LEGACY_IMPORT_LIVE_RESTORE_CONVERGENCE_FAILED", "converge", "restore recovery directory contains an unknown entry");
+      }
+      let entryStat;
+      try {
+        entryStat = lstatSync(entryPath, { bigint: true });
+      } catch (error) {
+        if (systemErrorCode(error) === "ENOENT") continue;
+        throw error;
+      }
+      if (!entryStat.isFile() || entryStat.isSymbolicLink()) {
+        fail("LEGACY_IMPORT_LIVE_RESTORE_CONVERGENCE_FAILED", "converge", "restore recovery entry changed kind");
+      }
+      if (entry === INTENT_FILE || entryPath === claimPath) continue;
+      if (entry.startsWith(RECOVERY_CLAIM_PREFIX) && pathsReferenceSameFile(entryPath, claimPath)) {
+        concurrentClaims.push(entryPath);
+        continue;
+      }
+      unlinkIfPresent(entryPath);
+    }
+    ops.boundary?.("after-cleanup-entries");
+
+    if (!callerOwnsIntent && intentOwnerIsActive(claimedIntent)) return false;
+    if (!pathsReferenceSameFile(activeIntentPath, claimPath)) return false;
+    unlinkSync(activeIntentPath);
+    ops.boundary?.("after-cleanup-intent");
+
+    for (const concurrentClaim of concurrentClaims) unlinkIfPresent(concurrentClaim);
+    unlinkIfPresent(claimPath);
+    ownsClaim = false;
+    ops.boundary?.("after-cleanup-claim-unlink");
+    let removedDirectory = false;
+    try {
+      rmdirSync(path);
+      removedDirectory = true;
+    } catch (error) {
+      const code = systemErrorCode(error);
+      if (code !== "ENOENT" && code !== "ENOTEMPTY" && code !== "EEXIST") throw error;
+    }
+    ops.boundary?.("after-cleanup-directory", { removedDirectory });
+    ops.syncDirectory(dirname(path));
+    return true;
+  } finally {
+    if (ownsClaim) unlinkIfPresent(claimPath);
   }
-  rmdirSync(path);
-  syncDir(dirname(path));
 }
 
-function removeLiveSidecars(databasePath: string): void {
-  for (const suffix of ["-wal", "-shm", "-journal"]) {
+function cleanupTerminalRecoveryDirectory(path: string, ops: LiveRestoreDependencies): void {
+  if (!existsSync(path)) return;
+  const stat = lstatSync(path, { bigint: true });
+  if (realpathSync(path) !== path || !stat.isDirectory() || stat.isSymbolicLink()) {
+    fail("LEGACY_IMPORT_LIVE_RESTORE_CONVERGENCE_FAILED", "converge", "terminal restore recovery directory is not empty");
+  }
+  for (const entry of readdirSync(path)) {
+    if (!entry.startsWith(RECOVERY_CLAIM_PREFIX)) {
+      fail("LEGACY_IMPORT_LIVE_RESTORE_CONVERGENCE_FAILED", "converge", "terminal restore recovery directory is not empty");
+    }
+    const entryPath = join(path, entry);
+    let entryStat;
+    try {
+      entryStat = lstatSync(entryPath);
+    } catch (error) {
+      if (systemErrorCode(error) === "ENOENT") continue;
+      throw error;
+    }
+    if (!entryStat.isFile() || entryStat.isSymbolicLink()) {
+      fail("LEGACY_IMPORT_LIVE_RESTORE_CONVERGENCE_FAILED", "converge", "terminal restore recovery claim changed kind");
+    }
+    unlinkIfPresent(entryPath);
+  }
+  try {
+    rmdirSync(path);
+  } catch (error) {
+    if (systemErrorCode(error) !== "ENOENT") throw error;
+  }
+  ops.syncDirectory(dirname(path));
+}
+
+function removeLiveSidecars(databasePath: string, boundary?: LiveRestoreDependencies["boundary"]): void {
+  const sidecars = [
+    ["-wal", "after-wal-removal"],
+    ["-shm", "after-shm-removal"],
+    ["-journal", "after-journal-removal"],
+  ] as const;
+  for (const [suffix, removedBoundary] of sidecars) {
     const path = `${databasePath}${suffix}`;
     let stat;
     try {
       stat = lstatSync(path, { bigint: true });
     } catch (error) {
-      if (systemErrorCode(error) === "ENOENT") continue;
+      if (systemErrorCode(error) === "ENOENT") {
+        boundary?.(removedBoundary, { suffix });
+        continue;
+      }
       fail("LEGACY_IMPORT_LIVE_RESTORE_PATH_INVALID", "publish", "cannot inspect live SQLite sidecar", false, {}, error);
     }
-    if (stat.isSymbolicLink()) {
-      unlinkSync(path);
-      continue;
-    }
-    if (!stat.isFile()) {
+    if (!stat.isSymbolicLink() && !stat.isFile()) {
       fail("LEGACY_IMPORT_LIVE_RESTORE_PATH_INVALID", "publish", "live SQLite sidecar is not a regular owned file");
     }
     unlinkSync(path);
+    boundary?.(removedBoundary, { suffix });
   }
 }
 
@@ -849,6 +1047,14 @@ function requireFreshEligibleAssessment(input: RestoreInputSnapshot): void {
   }
 }
 
+function isSqliteWriterContention(error: unknown): boolean {
+  const code = systemErrorCode(error) ?? "";
+  const message = typeof error === "object" && error !== null && "message" in error
+    ? String((error as { message?: unknown }).message ?? "")
+    : String(error);
+  return code.includes("SQLITE_BUSY") || /SQLITE_BUSY|database is locked/iu.test(message);
+}
+
 function verifyCandidate(
   input: RestoreInputSnapshot,
   application: LegacyImportApplicationEvidence,
@@ -866,7 +1072,7 @@ function verifyCandidate(
   });
 }
 
-function verifyOpenDatabaseIntegrity(): LegacyImportBaseSnapshot {
+function verifyOpenDatabaseIntegrity(boundary?: LiveRestoreDependencies["boundary"]): LegacyImportBaseSnapshot {
   const db = getDb();
   const exactlyOk = (pragma: "quick_check" | "integrity_check"): void => {
     const rows = db.prepare(`PRAGMA ${pragma}`).all();
@@ -875,11 +1081,16 @@ function verifyOpenDatabaseIntegrity(): LegacyImportBaseSnapshot {
     }
   };
   exactlyOk("quick_check");
+  boundary?.("after-quick-check");
   exactlyOk("integrity_check");
+  boundary?.("after-integrity-check");
   if (db.prepare("PRAGMA foreign_key_check").all().length !== 0) {
     fail("LEGACY_IMPORT_LIVE_RESTORE_VERIFICATION_FAILED", "verify", "installed database has foreign-key violations");
   }
-  return captureCurrentLegacyImportBaseSnapshot();
+  boundary?.("after-foreign-key-check");
+  const base = captureCurrentLegacyImportBaseSnapshot();
+  boundary?.("after-base-verification");
+  return base;
 }
 
 function verificationForBase(
@@ -924,8 +1135,9 @@ function verifyPublishedDatabaseFile(input: RestoreInputSnapshot, databasePath: 
 function verifyInstalledDatabase(
   input: RestoreInputSnapshot,
   installedDatabaseSha256: string,
+  boundary?: LiveRestoreDependencies["boundary"],
 ): LegacyImportLiveRestoreVerification {
-  const base = verifyOpenDatabaseIntegrity();
+  const base = verifyOpenDatabaseIntegrity(boundary);
   if (
     base.authority.project_id !== input.backup.project_id
     || base.authority.project_root_realpath !== input.backup.project_root_realpath
@@ -1087,13 +1299,16 @@ function convergePublished(
   installedDatabaseSha256: string,
   capability: DatabaseReplacementReceiptCapability,
 ): LegacyImportLiveRestoreResult {
-  const verification = verifyInstalledDatabase(input, installedDatabaseSha256);
+  const verification = verifyInstalledDatabase(input, installedDatabaseSha256, ops.boundary);
   const result = recordReceipt(input, intent, verification, capability, ops);
   ops.boundary?.("after-receipt", { operationId: result.operationId });
   const receiptRecorded = { ...intent, stage: "receipt-recorded" as const };
   writeIntent(activeIntentPath, receiptRecorded, ops.syncDirectory);
+  ops.boundary?.("after-receipt-intent");
   strictCheckpointAfterReceipt();
+  ops.boundary?.("after-receipt-checkpoint");
   ops.syncFile(databasePath);
+  ops.boundary?.("after-database-sync");
   ops.syncDirectory(dirname(databasePath));
   const terminal = assessLegacyImportRestore({
     applicationIdentityHash: input.applicationIdentityHash,
@@ -1102,7 +1317,16 @@ function convergePublished(
   if (terminal.decision !== "already-restored") {
     fail("LEGACY_IMPORT_LIVE_RESTORE_RECEIPT_FAILED", "receipt", "restore receipt did not pass strict terminal validation");
   }
-  cleanupRecoveryDirectory(recoveryDirectory, intent, ops.syncDirectory);
+  ops.boundary?.("after-terminal-assessment");
+  if (!cleanupRecoveryDirectory(recoveryDirectory, intent, ops)) {
+    fail(
+      "LEGACY_IMPORT_LIVE_RESTORE_INTENT_CONFLICT",
+      "converge",
+      "restore cleanup lost its active intent",
+      true,
+      { requestHash: intent.requestHash },
+    );
+  }
   ops.boundary?.("after-cleanup");
   return result;
 }
@@ -1115,41 +1339,110 @@ function convergeRecoveredPublication(
   activeIntentPath: string,
   ops: LiveRestoreDependencies,
 ): LegacyImportLiveRestoreResult {
-  const publishedIntent = intent.stage === "staged"
-    ? { ...intent, stage: "published" as const }
-    : intent;
-  if (intent.stage === "staged") {
-    writeIntent(activeIntentPath, publishedIntent, ops.syncDirectory);
-  }
-  const candidateIdentity = intentCandidateFileIdentity(publishedIntent);
+  const candidatePath = join(recoveryDirectory, CANDIDATE_FILE);
+  let recoveryIntent = intent;
+  let candidateIdentity = intentCandidateFileIdentity(intent);
   if (candidateIdentity === null) {
     fail("LEGACY_IMPORT_LIVE_RESTORE_CONVERGENCE_FAILED", "converge", "published recovery lacks candidate file identity");
   }
+  const currentIdentity = fileIdentity(databasePath, "published recovery database");
+  const liveMatchesIntent = sameFileIdentity(currentIdentity, candidateIdentity)
+    && hashFile(databasePath) === input.backup.backup_sha256;
+  let stagedCandidate = false;
+
+  if (intent.stage === "recovery-staged") {
+    if (pathEntryExists(candidatePath)) {
+      requireRegularFile(candidatePath, input.backup.backup_byte_size);
+      if (hashFile(candidatePath) !== input.backup.backup_sha256
+        || !sameFileIdentity(fileIdentity(candidatePath, "recovery candidate"), candidateIdentity)) {
+        fail("LEGACY_IMPORT_LIVE_RESTORE_CONVERGENCE_FAILED", "converge", "recovery candidate does not match its intent proof");
+      }
+      stagedCandidate = true;
+    } else if (!liveMatchesIntent) {
+      fail("LEGACY_IMPORT_LIVE_RESTORE_CONVERGENCE_FAILED", "converge", "recovery publication is missing its pinned candidate");
+    }
+  } else if (!liveMatchesIntent) {
+    if (pathEntryExists(candidatePath)) {
+      const staleCandidate = lstatSync(candidatePath, { bigint: true });
+      if (!staleCandidate.isFile() || staleCandidate.isSymbolicLink()) {
+        fail("LEGACY_IMPORT_LIVE_RESTORE_PATH_INVALID", "converge", "stale recovery candidate is not one owned file");
+      }
+      unlinkSync(candidatePath);
+    }
+    ops.copyFile(input.backup.backup_ref, candidatePath);
+    ops.boundary?.("after-recovery-copy", { candidatePath });
+    ops.syncFile(candidatePath);
+    ops.boundary?.("after-recovery-sync", { candidatePath });
+    requireRegularFile(candidatePath, input.backup.backup_byte_size);
+    if (hashFile(candidatePath) !== input.backup.backup_sha256) {
+      fail("LEGACY_IMPORT_LIVE_RESTORE_VERIFICATION_FAILED", "verify", "recovery candidate bytes do not match the approved backup");
+    }
+    candidateIdentity = fileIdentity(candidatePath, "recovery candidate");
+    recoveryIntent = {
+      ...intent,
+      stage: "recovery-staged",
+      candidateDatabaseDevice: candidateIdentity.device,
+      candidateDatabaseInode: candidateIdentity.inode,
+    };
+    writeIntent(activeIntentPath, recoveryIntent, ops.syncDirectory);
+    ops.boundary?.("after-recovery-intent", { candidatePath });
+    stagedCandidate = true;
+  }
+
   let detached: DatabaseReplacementToken | undefined;
+  let reopenEvidence: DatabaseReplacementReopenEvidence = stagedCandidate ? {} : {
+    expectedPublishedSha256: input.backup.backup_sha256,
+    persistedOriginalFileIdentity: intentOriginalFileIdentity(recoveryIntent),
+    expectedPublishedFileIdentity: candidateIdentity,
+    expectedActiveIntentFileIdentity: fileIdentity(activeIntentPath, "active restore intent"),
+    expectedActiveIntentSha256: hashIntent(recoveryIntent),
+  };
   try {
-    detached = detachActiveDatabaseForReplacement(databasePath);
-    removeLiveSidecars(databasePath);
+    detached = detachActiveDatabaseForReplacement(databasePath, ops.boundary);
+    ops.boundary?.("after-detach");
+    removeLiveSidecars(databasePath, ops.boundary);
     requireRegularFile(input.backup.backup_ref, input.backup.backup_byte_size);
     if (hashFile(input.backup.backup_ref) !== input.backup.backup_sha256) {
       fail("LEGACY_IMPORT_LIVE_RESTORE_VERIFICATION_FAILED", "verify", "recovery backup bytes changed before convergence");
     }
-    copyFileSync(input.backup.backup_ref, databasePath);
-    chmodSync(databasePath, 0o600);
+    if (stagedCandidate) {
+      ops.boundary?.("before-database-publish", { databasePath });
+      ops.publish(candidatePath, databasePath);
+      reopenEvidence = {
+        expectedPublishedSha256: input.backup.backup_sha256,
+        expectedPublishedFileIdentity: candidateIdentity,
+        expectedActiveIntentFileIdentity: fileIdentity(activeIntentPath, "active restore intent"),
+        expectedActiveIntentSha256: hashIntent(recoveryIntent),
+      };
+      ops.boundary?.("after-recovery-publish", { databasePath });
+    }
     ops.syncFile(databasePath);
     ops.syncDirectory(dirname(databasePath));
+    ops.boundary?.("after-live-parent-sync", { databasePath });
     const installedDatabaseSha256 = verifyPublishedDatabaseFile(input, databasePath);
-    const activeIntentIdentity = fileIdentity(activeIntentPath, "active restore intent");
-    const capability = reopenDatabaseAfterReplacement(detached, {
+    ops.boundary?.("after-published-file-verify", { databasePath });
+    const publishedIntent = recoveryIntent.stage === "published"
+      ? recoveryIntent
+      : { ...recoveryIntent, stage: "published" as const };
+    if (recoveryIntent.stage !== "published") {
+      writeIntent(activeIntentPath, publishedIntent, ops.syncDirectory);
+    }
+    reopenEvidence = {
       expectedPublishedSha256: installedDatabaseSha256,
-      persistedOriginalFileIdentity: intentOriginalFileIdentity(publishedIntent),
+      ...(!stagedCandidate ? {
+        persistedOriginalFileIdentity: intentOriginalFileIdentity(recoveryIntent),
+      } : {}),
       expectedPublishedFileIdentity: candidateIdentity,
-      expectedActiveIntentFileIdentity: activeIntentIdentity,
+      expectedActiveIntentFileIdentity: fileIdentity(activeIntentPath, "active restore intent"),
       expectedActiveIntentSha256: hashIntent(publishedIntent),
-    });
+    };
+    ops.boundary?.("after-publish", { databasePath });
+    const capability = reopenDatabaseAfterReplacement(detached, reopenEvidence, ops.boundary);
     detached = undefined;
     if (capability === null) {
       fail("LEGACY_IMPORT_LIVE_RESTORE_REOPEN_FAILED", "reopen", "recovered publication did not produce a receipt capability", true);
     }
+    ops.boundary?.("after-reopen", { databasePath });
     return convergePublished(
       input,
       publishedIntent,
@@ -1162,7 +1455,7 @@ function convergeRecoveredPublication(
     );
   } catch (error) {
     if (detached !== undefined) {
-      try { reopenDatabaseAfterReplacement(detached); } catch (reopenError) {
+      try { reopenDatabaseAfterReplacement(detached, reopenEvidence, ops.boundary); } catch (reopenError) {
         fail(
           "LEGACY_IMPORT_LIVE_RESTORE_REOPEN_FAILED",
           "reopen",
@@ -1224,7 +1517,11 @@ export function _restoreLegacyImportLiveForTest(
       if (durable.decision !== "already-restored") {
         fail("LEGACY_IMPORT_LIVE_RESTORE_RECEIPT_FAILED", "receipt", "terminal restore could not complete durable convergence");
       }
-      cleanupRecoveryDirectory(recoveryDirectory, active, ops.syncDirectory);
+      if (!cleanupRecoveryDirectory(recoveryDirectory, active, ops)) {
+        return _restoreLegacyImportLiveForTest(input, overrides);
+      }
+    } else {
+      cleanupTerminalRecoveryDirectory(recoveryDirectory, ops);
     }
     return terminal;
   }
@@ -1247,16 +1544,19 @@ export function _restoreLegacyImportLiveForTest(
     const currentIdentity = fileIdentity(databasePath, "active recovery database");
     const originalIdentity = intentOriginalFileIdentity(active);
     const candidateIdentity = intentCandidateFileIdentity(active);
+    const stagedRecoveryCandidate = active.stage === "recovery-staged"
+      && candidateIdentity !== null
+      && pathEntryExists(candidatePath)
+      && sameFileIdentity(fileIdentity(candidatePath, "recovery candidate"), candidateIdentity);
     if (sameFileIdentity(currentIdentity, originalIdentity)
       && (active.stage === "claimed" || active.stage === "staged")) {
-      cleanupRecoveryDirectory(recoveryDirectory, active, ops.syncDirectory);
+      cleanupRecoveryDirectory(recoveryDirectory, active, ops);
       return _restoreLegacyImportLiveForTest(input, overrides);
     }
-    if (installedBackup
+    if (stagedRecoveryCandidate || (installedBackup
       && candidateIdentity !== null
       && sameFileIdentity(currentIdentity, candidateIdentity)
-      && active.stage !== "claimed"
-      && !pathEntryExists(candidatePath)) {
+      && active.stage !== "claimed")) {
       return convergeRecoveredPublication(
         input,
         active,
@@ -1297,24 +1597,44 @@ export function _restoreLegacyImportLiveForTest(
   let published = false;
   let ownsIntent = false;
   try {
-    ensureRecoveryDirectory(recoveryDirectory);
-    ownsIntent = claimIntent(activeIntentPath, intent, ops.syncDirectory);
-    if (!ownsIntent) {
-      const competing = readIntent(activeIntentPath);
-      if (competing !== null) requireMatchingIntent(competing, intent);
-      fail(
-        "LEGACY_IMPORT_LIVE_RESTORE_INTENT_CONFLICT",
-        "converge",
-        "the same restore request acquired the replacement fence first",
-        true,
-        { requestHash: hash },
-      );
-    }
+    immediateTransaction(() => {
+      try {
+        assertDatabaseMaintenanceAllowsReplacement(databasePath);
+      } catch (error) {
+        fail(
+          "LEGACY_IMPORT_LIVE_RESTORE_INTENT_CONFLICT",
+          "recheck",
+          "database maintenance owns the replacement boundary",
+          true,
+          { requestHash: hash },
+          error,
+        );
+      }
+      ops.boundary?.("before-final-assessment");
+      requireFreshEligibleAssessment(input);
+      ops.boundary?.("after-final-assessment");
+      ensureRecoveryDirectory(recoveryDirectory);
+      ownsIntent = claimIntent(activeIntentPath, intent, ops);
+      if (!ownsIntent) {
+        const competing = readIntent(activeIntentPath);
+        if (competing !== null) requireMatchingIntent(competing, intent);
+        fail(
+          "LEGACY_IMPORT_LIVE_RESTORE_INTENT_CONFLICT",
+          "converge",
+          "the same restore request acquired the replacement fence first",
+          true,
+          { requestHash: hash },
+        );
+      }
+    });
     activeRestoreOwners.add(intent.ownerNonce);
     ops.boundary?.("after-intent", { requestHash: hash });
     ops.copyFile(input.backup.backup_ref, candidatePath);
+    ops.boundary?.("after-candidate-copy", { candidatePath });
     ops.syncFile(candidatePath);
+    ops.boundary?.("after-candidate-sync", { candidatePath });
     verifyCandidate(input, application, candidatePath);
+    ops.boundary?.("after-candidate-verify", { candidatePath });
     const candidateIdentity = fileIdentity(candidatePath, "staged restore candidate");
     const stagedIntent: RestoreIntent = {
       ...intent,
@@ -1326,14 +1646,17 @@ export function _restoreLegacyImportLiveForTest(
     ops.boundary?.("after-stage", { candidatePath });
 
     requireFreshEligibleAssessment(input);
-    detached = detachActiveDatabaseForReplacement(databasePath);
-    removeLiveSidecars(databasePath);
+    detached = detachActiveDatabaseForReplacement(databasePath, ops.boundary);
+    removeLiveSidecars(databasePath, ops.boundary);
     ops.boundary?.("after-detach");
+    ops.boundary?.("before-database-publish", { databasePath });
     ops.publish(candidatePath, databasePath);
     published = true;
     ops.boundary?.("after-database-publish", { databasePath });
     ops.syncDirectory(dirname(databasePath));
+    ops.boundary?.("after-live-parent-sync", { databasePath });
     const installedDatabaseSha256 = verifyPublishedDatabaseFile(input, databasePath);
+    ops.boundary?.("after-published-file-verify", { databasePath });
     const publishedIntent = { ...stagedIntent, stage: "published" as const };
     writeIntent(activeIntentPath, publishedIntent, ops.syncDirectory);
     ops.boundary?.("after-publish", { databasePath });
@@ -1345,7 +1668,7 @@ export function _restoreLegacyImportLiveForTest(
       expectedPublishedFileIdentity: candidateIdentity,
       expectedActiveIntentFileIdentity: activeIntentIdentity,
       expectedActiveIntentSha256: hashIntent(publishedIntent),
-    });
+    }, ops.boundary);
     if (receiptCapability === null) {
       fail(
         "LEGACY_IMPORT_LIVE_RESTORE_REOPEN_FAILED",
@@ -1371,7 +1694,7 @@ export function _restoreLegacyImportLiveForTest(
     if (detached !== undefined) {
       try {
         if (published) {
-          removeLiveSidecars(databasePath);
+          removeLiveSidecars(databasePath, ops.boundary);
           const recoveryIntent = readIntent(activeIntentPath);
           if (recoveryIntent === null) {
             fail("LEGACY_IMPORT_LIVE_RESTORE_INTENT_CONFLICT", "converge", "published restore lost its active intent");
@@ -1388,9 +1711,9 @@ export function _restoreLegacyImportLiveForTest(
             expectedPublishedFileIdentity: candidateIdentity,
             expectedActiveIntentFileIdentity: fileIdentity(activeIntentPath, "active restore intent"),
             expectedActiveIntentSha256: hashIntent(recoveryIntent),
-          });
+          }, ops.boundary);
         } else {
-          reopenDatabaseAfterReplacement(detached);
+          reopenDatabaseAfterReplacement(detached, {}, ops.boundary);
         }
         detached = undefined;
       } catch (reopenError) {
@@ -1407,9 +1730,19 @@ export function _restoreLegacyImportLiveForTest(
       }
     }
     if (!published && ownsIntent) {
-      try { cleanupRecoveryDirectory(recoveryDirectory, intent, ops.syncDirectory); } catch { /* surface original */ }
+      try { cleanupRecoveryDirectory(recoveryDirectory, intent, ops); } catch { /* surface original */ }
     }
     if (error instanceof LegacyImportLiveRestoreError) throw error;
+    if (!published && !ownsIntent && isSqliteWriterContention(error)) {
+      fail(
+        "LEGACY_IMPORT_LIVE_RESTORE_INTENT_CONFLICT",
+        "recheck",
+        "a canonical writer owns the database while live restore is claiming authority",
+        true,
+        { requestHash: hash },
+        error,
+      );
+    }
     fail(
       published
         ? "LEGACY_IMPORT_LIVE_RESTORE_CONVERGENCE_FAILED"

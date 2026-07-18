@@ -49,6 +49,10 @@ import {
   insertArtifact,
   getArtifact,
   upsertMilestonePlanning,
+  getDatabaseReplacementPaths,
+  getSlice,
+  setSliceSketchFlag,
+  deleteDecisionById,
 } from '../gsd-db.ts';
 import { MigrationBackupError } from '../db-migration-backup.ts';
 import { _resetLogs, peekLogs, setStderrLoggingEnabled } from '../workflow-logger.ts';
@@ -197,6 +201,67 @@ describe('gsd-db', () => {
     assert.deepStrictEqual(missing, null, 'non-existent decision returns null');
 
     closeDatabase();
+  });
+
+  test('gsd-db: canonical writers reject active database replacement intent without mutation', () => {
+    const dbPath = tempDbPath();
+    const replacementPaths = getDatabaseReplacementPaths(dbPath);
+    openDatabase(dbPath);
+
+    try {
+      insertDecision({
+        id: 'D001',
+        when_context: 'before replacement',
+        scope: 'global',
+        decision: 'preserve this decision',
+        choice: 'existing',
+        rationale: 'proves delete fencing',
+        revisable: 'yes',
+        made_by: 'agent',
+        superseded_by: null,
+      });
+      insertMilestone({ id: 'M001', title: 'Replacement fence', status: 'active' });
+      insertSlice({
+        id: 'S01',
+        milestoneId: 'M001',
+        title: 'Preserve this slice',
+        status: 'active',
+        sequence: 1,
+      });
+
+      fs.mkdirSync(replacementPaths.recoveryDirectory);
+      fs.writeFileSync(replacementPaths.activeIntentPath, '{}');
+
+      assert.throws(
+        () => insertDecision({
+          id: 'D002',
+          when_context: 'during replacement',
+          scope: 'global',
+          decision: 'must not be inserted',
+          choice: 'blocked',
+          rationale: 'proves insert fencing',
+          revisable: 'yes',
+          made_by: 'agent',
+          superseded_by: null,
+        }),
+        /Database writes are fenced while replacement intent exists/,
+      );
+      assert.throws(
+        () => setSliceSketchFlag('M001', 'S01', true),
+        /Database writes are fenced while replacement intent exists/,
+      );
+      assert.throws(
+        () => deleteDecisionById('D001'),
+        /Database writes are fenced while replacement intent exists/,
+      );
+
+      assert.equal(getDecisionById('D002'), null, 'fenced insert must not create a decision');
+      assert.equal(getSlice('M001', 'S01')?.is_sketch, 0, 'fenced update must not change the slice');
+      assert.ok(getDecisionById('D001'), 'fenced delete must preserve the decision');
+    } finally {
+      fs.rmSync(replacementPaths.recoveryDirectory, { recursive: true, force: true });
+      cleanup(dbPath);
+    }
   });
 
   test('gsd-db: insert + get requirement', () => {

@@ -9,11 +9,6 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as os from 'node:os';
 import {
-  _resetLogs,
-  peekLogs,
-  setStderrLoggingEnabled,
-} from '../workflow-logger.ts';
-import {
   getActiveMemories,
   getActiveMemoriesRanked,
   nextMemoryId,
@@ -440,20 +435,14 @@ test('memory-store: createMemory throws on memory-table SQL errors (regression #
   closeDatabase();
 });
 
-test('memory-store: VACUUM retry rolls back partial memory and logs recovery', () => {
+test('memory-store: malformed writes fail loud without an unfenced VACUUM retry', () => {
   openDatabase(':memory:');
 
   const adapter = _getAdapter()!;
   const originalPrepareMethod = adapter.prepare;
   const originalPrepare = adapter.prepare.bind(adapter);
-  const previousStderrLogging = setStderrLoggingEnabled(false);
-  const streamAny = process.stderr as unknown as {
-    write: (chunk: string | Uint8Array, ...rest: unknown[]) => boolean;
-  };
-  const originalStderrWrite = streamAny.write.bind(streamAny);
   let selectFailures = 0;
   let vacuumRuns = 0;
-  _resetLogs();
 
   adapter.prepare = ((sql: string) => {
     if (sql === 'SELECT seq FROM memories WHERE id = :id' && selectFailures === 0) {
@@ -482,32 +471,20 @@ test('memory-store: VACUUM retry rolls back partial memory and logs recovery', (
 
     return originalPrepare(sql);
   }) as typeof adapter.prepare;
-  streamAny.write = (): boolean => true;
 
   try {
-    const id = createMemory({ category: 'gotcha', content: 'recover without duplicate' });
-    assert.equal(id, 'MEM001', 'retry should create a single first memory');
+    assert.throws(
+      () => createMemory({ category: 'gotcha', content: 'surface malformed store' }),
+      /database disk image is malformed/,
+      'createMemory must preserve the original malformed-store error',
+    );
 
     const rows = adapter.prepare('SELECT id FROM memories ORDER BY seq').all();
-    assert.deepStrictEqual(
-      rows.map((row) => row['id']),
-      ['MEM001'],
-      'failed first attempt should not leave a live _TMP_ memory behind',
-    );
+    assert.deepStrictEqual(rows, [], 'the failed transaction must roll back its temporary memory');
     assert.equal(selectFailures, 1, 'test should simulate one malformed SELECT after INSERT');
-    assert.equal(vacuumRuns, 1, 'malformed recovery should run VACUUM once');
-    assert.ok(
-      peekLogs().some((entry) =>
-        entry.component === 'memory-store' &&
-        entry.message === 'recovered malformed memory store via VACUUM'
-      ),
-      'successful VACUUM recovery should be emitted to the workflow logger',
-    );
+    assert.equal(vacuumRuns, 0, 'malformed writes must not bypass the replacement fence with VACUUM');
   } finally {
     adapter.prepare = originalPrepareMethod;
-    streamAny.write = originalStderrWrite;
-    setStderrLoggingEnabled(previousStderrLogging);
-    _resetLogs();
     closeDatabase();
   }
 });

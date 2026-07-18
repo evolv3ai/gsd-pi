@@ -446,3 +446,170 @@ replacement boundary:
   intent paths, sidecar links, and unsupported directory durability. T06
   retains the exhaustive boundary-fault, real SIGKILL, startup,
   stale-validator, and multi-process contention matrices.
+
+### T06 reconciled fault and contention research
+
+T06 treats the filesystem protocol and the SQLite writer protocol as one
+authority boundary. Three durable database states are valid:
+
+- `A`: the post-Application database at revision `R+1`, epoch `E`, with its
+  Application receipt and history intact;
+- `B`: the verified pre-Application backup at revision `R`, epoch `E`, before
+  a restore receipt commits; and
+- `B+R`: the installed backup plus exactly one `import.restore` operation,
+  receipt, event, outbox delivery, and Projection Work item at revision `R+1`
+  and epoch `E`.
+
+No exception, process death, restart, or race may produce another revision or
+epoch combination. A cutover that wins before the restore claim may advance to
+`E+1`; restore never lowers it.
+
+#### Writer-wins serialization rule
+
+The T05 cooperative intent fence is necessary but not sufficient. Its final
+eligibility assessment and intent creation currently occur without SQLite's
+reserved writer lock. A writer can therefore begin first, commit after the
+last assessment, be included in the detach checkpoint, and then be erased by
+publication. Writers that checked the fence before blocking on SQLite can also
+begin after an intent appears unless the fence is checked again after the
+writer lock is acquired. Direct autocommit writers bypass the transaction
+entry fence entirely.
+
+T06 freezes this ordering:
+
+1. restore acquires `BEGIN IMMEDIATE` before its final eligibility check;
+2. while holding that lock it re-reads exact Application, head, authority,
+   coordination, and backup facts, atomically publishes and fsyncs its intent,
+   then commits the claim transaction;
+3. every ordinary production mutation acquires the same writer lock and
+   rechecks the active intent after acquisition;
+4. a writer or typed cutover already holding the lock commits first, so the
+   restore's locked recheck observes the later work and routes to Forward
+   Repair; and
+5. a writer queued behind an accepted restore claim rolls back with typed,
+   retryable replacement contention before changing a row.
+
+The restore receipt retains its exact, single-use inode/content capability.
+No generic force flag or writer bypass is added.
+
+#### Crash boundary matrix
+
+The deterministic harness uses fresh subprocesses, real `SIGKILL`, and pipe
+handshakes. A child emits one `READY` record at a named synchronous boundary
+and blocks on stdin; the parent inspects or starts a contender, then releases
+or kills it. Timers are failure guards only, never scheduling primitives.
+After child close, tests inspect raw paths, hashes, device/inode identities,
+intent bytes, candidate bytes, and sidecars before any SQLite open. They then
+use the defensive read-only adapter for integrity, foreign-key, authority, and
+lineage checks.
+
+The exhaustive boundaries are:
+
+- locked final assessment and before intent claim;
+- claim write, file fsync, no-replace publication, and directory fsync;
+- candidate copy, candidate fsync, and independent candidate verification;
+- claimed-to-staged intent publication and directory fsync;
+- final assessment, strict checkpoint, journal-mode switch, tracked handle
+  closes, and each live sidecar removal;
+- immediately before and after the database rename, live-parent fsync,
+  published-file verification, and staged-to-published intent publication;
+- reopen before open, after open, and after exact inode/content proof;
+- quick check, integrity check, foreign-key check, and exact base/
+  representative verification;
+- receipt transaction before commit, immediately after commit, and lost
+  response;
+- receipt-recorded intent, post-receipt checkpoint, database fsync, parent
+  fsync, and terminal assessment; and
+- candidate/temp removal, intent removal, recovery-directory removal, and
+  cleanup parent fsync.
+
+For deaths before publication, `A` remains authoritative and a fresh exact
+retry cleans or reclaims only an abandoned matching intent. For deaths after
+rename but before intent advancement, the live inode must equal the pinned
+candidate and restart converges to `B+R`. For deaths before receipt commit,
+the SQLite transaction leaves zero restore lineage and retry commits it once.
+For deaths after receipt commit, a fresh process returns the complete stored
+result as `replayed` and only finishes durable cleanup.
+
+#### Faults the implementation must close before the matrix can pass
+
+- Claim publication must be atomic and fully fsynced. Writing `active.json`
+  directly permits a process death to leave malformed JSON that fails closed
+  forever rather than converging.
+- Recovery after a published rename must never overwrite the live database in
+  place. It must stage, fsync, and atomically publish exact backup bytes again,
+  or a death during copy can corrupt the only canonical path.
+- Cleanup must converge if a death occurs after intent unlink but before
+  recovery-directory removal. An exact empty owned directory is safe to remove
+  during terminal replay; unknown residue is refused.
+- Handle-close bookkeeping must remain recoverable when an adapter reports a
+  close error after it has actually closed. A failed detach cannot leave a
+  poisoned active/cache reference without a deterministic reopen route.
+
+#### Required race proofs
+
+- Same request: one exclusive owner commits; an active-owner loser receives
+  retryable contention; a fresh retry replays the one durable receipt.
+- Abandoned same request: after the owner is killed and observed dead, one
+  contender reclaims and commits without duplicating lineage.
+- Changed request: the loser cannot remove or alter the winner's intent or
+  candidate and receives a typed refusal.
+- Pre-claim canonical writer: its accepted operation survives, and restore
+  refuses with later-operation Forward Repair evidence.
+- Pre-claim typed cutover: its receipt and advanced epoch survive, and restore
+  refuses with `AUTHORITY_CUTOVER_COMMITTED`.
+- Post-claim queued writer: the post-lock fence rolls it back before mutation;
+  it never writes the old inode or creates mixed sidecars.
+- Lost response: only a process killed after durable receipt commit may have
+  no response; exact retry returns identical operation and result identities.
+
+Every injected exception and death is followed by an independent reopen.
+Success requires one valid live database, no mixed or hot SQLite sidecars,
+deterministic intent cleanup, preservation of all accepted history outside the
+eligible Application rollback, and no silent success before durable receipt.
+
+#### Adversarial review addendum
+
+The first implementation pass exposed four additional authority gaps that the
+final proof must include:
+
+- Runtime memory CRUD, source, embedding, relation, maintenance, and backfill
+  mutations are canonical database writes. They must use the same post-lock
+  replacement fence as workflow writers; a memory-only change may not alter the
+  restore assessment and could otherwise be silently overwritten.
+- Startup schema/journal repair must acquire an exclusive SQLite writer lock,
+  recheck the intent after acquiring it, and retain exclusive ownership through
+  initialization. Schema-current startup may configure only connection-local,
+  non-writing pragmas. A precheck alone has the same stale-validator race as an
+  ordinary writer.
+- Isolated observation handles are read-only and `query_only`. Observation
+  soft-state mutations use the canonical fenced handle rather than turning an
+  observational adapter into a second writer path.
+- Recovery reopen evidence is state-specific: before the recovery candidate is
+  published, an exception reopens the unchanged detached inode with no
+  replacement claim; immediately after atomic publication it uses the exact
+  recovery-staged inode/content/intent proof; after intent advancement it uses
+  the exact published-intent proof.
+
+Sidecar boundaries are distinct (`-wal`, `-shm`, and `-journal`) rather than one
+repeated callback. Final verification copies the closed base database without
+sidecars and independently proves its integrity and restore receipt, so a
+surviving WAL cannot hide accepted history or make a mixed publication appear
+valid.
+
+PID existence is not process identity. Restore ownership therefore persists a
+process-start identity and requires an exact `(pid, start identity)` match; a
+reused PID is abandoned, while an indeterminate platform probe fails closed.
+The detailed platform decision and reclaim protocol are recorded in
+`M004-S05-T06-PID-OWNERSHIP-RESEARCH.md`.
+
+Checkpoint and VACUUM are writers for replacement-coordination purposes even
+though they do not add domain rows. They no longer run implicitly while a
+connection closes. Explicit maintenance acquires `BEGIN IMMEDIATE`, rechecks
+the replacement fence, publishes a fsynced process-identity maintenance intent,
+then releases the SQLite transaction before the SQLite operation that cannot
+run inside a transaction. Restore acquires the same writer lock and rechecks
+that maintenance intent before claiming replacement. Thus whichever lock owner
+wins proceeds; the loser returns typed retryable contention. A killed
+maintenance owner is reclaimed only by mismatched/missing process-start
+identity, never by age.

@@ -273,10 +273,12 @@ export function recordDispatchClaim(input: RecordClaimInput): RecordClaimResult 
 export function markRunning(dispatchId: number): void {
   if (!isDbAvailable()) return;
   const db = _getAdapter()!;
-  db.prepare(
-    `UPDATE unit_dispatches SET status = 'running'
-     WHERE id = :id AND status = 'claimed'`,
-  ).run({ ":id": dispatchId });
+  transaction(() => {
+    db.prepare(
+      `UPDATE unit_dispatches SET status = 'running'
+       WHERE id = :id AND status = 'claimed'`,
+    ).run({ ":id": dispatchId });
+  });
 }
 
 export interface CompleteOpts {
@@ -407,11 +409,13 @@ export function markPaused(dispatchId: number): void {
   if (!isDbAvailable()) return;
   const now = new Date().toISOString();
   const db = _getAdapter()!;
-  db.prepare(
-    `UPDATE unit_dispatches
-     SET status = 'paused', ended_at = :ended_at
-     WHERE id = :id AND status IN ('claimed','running')`,
-  ).run({ ":id": dispatchId, ":ended_at": now });
+  transaction(() => {
+    db.prepare(
+      `UPDATE unit_dispatches
+       SET status = 'paused', ended_at = :ended_at
+       WHERE id = :id AND status IN ('claimed','running')`,
+    ).run({ ":id": dispatchId, ":ended_at": now });
+  });
 }
 
 /** Transition a dispatch into `canceled`. */
@@ -419,11 +423,13 @@ export function markCanceled(dispatchId: number, reason: string): void {
   if (!isDbAvailable()) return;
   const now = new Date().toISOString();
   const db = _getAdapter()!;
-  db.prepare(
-    `UPDATE unit_dispatches
-     SET status = 'canceled', ended_at = :ended_at, exit_reason = :reason
-     WHERE id = :id AND status IN ('pending','claimed','running')`,
-  ).run({ ":id": dispatchId, ":ended_at": now, ":reason": reason });
+  transaction(() => {
+    db.prepare(
+      `UPDATE unit_dispatches
+       SET status = 'canceled', ended_at = :ended_at, exit_reason = :reason
+       WHERE id = :id AND status IN ('pending','claimed','running')`,
+    ).run({ ":id": dispatchId, ":ended_at": now, ":reason": reason });
+  });
 }
 
 /**

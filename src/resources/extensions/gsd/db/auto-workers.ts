@@ -110,9 +110,11 @@ export function heartbeatAutoWorker(workerId: string): void {
   if (!isDbAvailable()) return;
   const now = new Date().toISOString();
   const db = _getAdapter()!;
-  db.prepare(
-    `UPDATE workers SET last_heartbeat_at = :now WHERE worker_id = :worker_id AND status = 'active'`,
-  ).run({ ":now": now, ":worker_id": workerId });
+  transaction(() => {
+    db.prepare(
+      `UPDATE workers SET last_heartbeat_at = :now WHERE worker_id = :worker_id AND status = 'active'`,
+    ).run({ ":now": now, ":worker_id": workerId });
+  });
 }
 
 /**

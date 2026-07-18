@@ -128,17 +128,19 @@ export function completeCommand(
   if (!isDbAvailable()) return;
   const now = new Date().toISOString();
   const db = _getAdapter()!;
-  db.prepare(
-    `UPDATE command_queue
-     SET completed_at = :now, result_json = :result_json
-     WHERE id = :id
-       AND claimed_by = :worker_id
-       AND completed_at IS NULL`,
-  ).run({
-    ":id": id,
-    ":worker_id": workerId,
-    ":now": now,
-    ":result_json": result ? JSON.stringify(result) : null,
+  transaction(() => {
+    db.prepare(
+      `UPDATE command_queue
+       SET completed_at = :now, result_json = :result_json
+       WHERE id = :id
+         AND claimed_by = :worker_id
+         AND completed_at IS NULL`,
+    ).run({
+      ":id": id,
+      ":worker_id": workerId,
+      ":now": now,
+      ":result_json": result ? JSON.stringify(result) : null,
+    });
   });
 }
 

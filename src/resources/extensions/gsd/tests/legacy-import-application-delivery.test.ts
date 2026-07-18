@@ -2,6 +2,7 @@
 // File Purpose: Public legacy Import Application contention and projection-delivery isolation proof.
 
 import assert from "node:assert/strict";
+import { DatabaseSync } from "node:sqlite";
 import { cpSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -20,12 +21,11 @@ import {
 } from "../legacy-import-application.ts";
 import { createLegacyImportPreview } from "../legacy-import-preview.ts";
 import { captureCurrentLegacyImportBaseSnapshot } from "../legacy-import-preview-base.ts";
-import type { DbAdapter } from "../db-adapter.ts";
+import { createDbAdapter, type DbAdapter } from "../db-adapter.ts";
 import {
   _getAdapter,
   closeDatabase,
   openDatabase,
-  openIsolatedDatabase,
 } from "../gsd-db.ts";
 import { createLegacyImportCorpusSourceRoots } from "./helpers/legacy-import-corpus.ts";
 
@@ -189,8 +189,7 @@ test("held writer lock is a typed retryable Application contention failure with 
 }, (t) => {
   const prepared = prepareCase();
   const before = logicalSnapshot();
-  const blocker = openIsolatedDatabase(prepared.databasePath);
-  assert.ok(blocker);
+  const blocker = createDbAdapter(new DatabaseSync(prepared.databasePath));
   let lockHeld = true;
   blocker.exec("BEGIN IMMEDIATE");
   t.after(() => {

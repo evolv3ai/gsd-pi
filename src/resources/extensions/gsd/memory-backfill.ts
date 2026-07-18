@@ -23,7 +23,7 @@
 // already migrated (e.g. a fresh md-importer run that introduced a new
 // supersedes-chain).
 
-import { isDbAvailable, _getAdapter } from "./gsd-db.js";
+import { isDbAvailable, _getAdapter, updateMemoryStructuredFieldsRow } from "./gsd-db.js";
 import { createMemory } from "./memory-store.js";
 import { logWarning } from "./workflow-logger.js";
 
@@ -84,10 +84,6 @@ export function backfillDecisionsToMemories(): number {
     const checkExisting = adapter.prepare(
       "SELECT id, structured_fields FROM memories WHERE structured_fields LIKE :pattern LIMIT 1",
     );
-    const updateStructuredFields = adapter.prepare(
-      "UPDATE memories SET structured_fields = :sf, updated_at = :ts WHERE id = :id",
-    );
-
     let written = 0;
     let healed = 0;
     for (const raw of decisions) {
@@ -135,11 +131,7 @@ export function backfillDecisionsToMemories(): number {
             ...currentSf,
             superseded_by: row.superseded_by,
           };
-          updateStructuredFields.run({
-            ":id": existing.id,
-            ":sf": JSON.stringify(merged),
-            ":ts": new Date().toISOString(),
-          });
+          updateMemoryStructuredFieldsRow(existing.id, merged, new Date().toISOString());
           healed += 1;
         }
         continue;

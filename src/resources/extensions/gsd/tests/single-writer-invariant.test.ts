@@ -88,6 +88,7 @@ const DB_WRITER_ALLOWLIST_GUIDANCE = [
 
 function isSingleWriterFile(rel: string): boolean {
   const norm = rel.split("\\").join("/");
+  if (norm === "sqlite-readonly.ts") return true;
   if (norm === "gsd-db.ts" || norm === "unit-ownership.ts") return true;
   if (norm === "db/engine.ts") return true;
   if (norm.startsWith("db/writers/") && norm.endsWith(".ts")) return true;
@@ -326,6 +327,12 @@ test("db/queries.ts (the Query Module) is read-only — contains no write SQL", 
     `db/queries.ts must contain no write SQL — move write wrappers to the explicit DB writer allowlist:\n` +
       violations.map((v) => `  db/queries.ts:${v.line} [${v.kind}] — ${v.snippet}`).join("\n"),
   );
+});
+
+test("sqlite-readonly.ts owns only read-transaction control", () => {
+  const path = join(gsdDir, "sqlite-readonly.ts");
+  const violations = findRawWriteSqlViolations("sqlite-readonly.ts", readFileSync(path, "utf-8"));
+  assert.deepEqual(violations.map(({ kind }) => kind), ["exec(BEGIN)", "exec(ROLLBACK)"]);
 });
 
 test("gsd-db.ts exports the expected single-writer wrappers", async () => {

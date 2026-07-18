@@ -24,7 +24,7 @@ import {
   type LegacyImportBaseSnapshot,
 } from "./legacy-import-preview-base.js";
 import { getDb, readTransaction, SCHEMA_VERSION } from "./db/engine.js";
-import { openSqliteReadOnly } from "./sqlite-readonly.js";
+import { inspectSqliteReadOnlySnapshot } from "./sqlite-readonly.js";
 
 export const LEGACY_IMPORT_RESTORE_ASSESSMENT_SCHEMA_VERSION = 1 as const;
 export const LEGACY_IMPORT_RESTORE_ASSESSMENT_CONSENT_SCHEMA_VERSION = 1 as const;
@@ -558,36 +558,12 @@ function applicationMatchesInput(
 }
 
 function captureBackupBase(backupRef: string): LegacyImportBaseSnapshot {
-  const connection = openSqliteReadOnly(backupRef);
-  let transactionOpen = false;
-  let failure: unknown;
-  let snapshot: LegacyImportBaseSnapshot | undefined;
-  try {
-    connection.db.exec("BEGIN");
-    transactionOpen = true;
-    snapshot = captureLegacyImportBaseSnapshot({
+  return inspectSqliteReadOnlySnapshot(backupRef, (db) =>
+    captureLegacyImportBaseSnapshot({
       readTransaction: (operation) => operation(),
-      source: createLegacyImportBaseSnapshotSource(connection.db),
-    });
-  } catch (error) {
-    failure = error;
-  } finally {
-    if (transactionOpen) {
-      try {
-        connection.db.exec("ROLLBACK");
-      } catch (error) {
-        if (failure === undefined) failure = error;
-      }
-    }
-    try {
-      connection.db.close();
-    } catch (error) {
-      if (failure === undefined) failure = error;
-    }
-  }
-  if (failure !== undefined) throw failure;
-  if (snapshot === undefined) throw new Error("backup base capture returned no snapshot");
-  return snapshot;
+      source: createLegacyImportBaseSnapshotSource(db),
+    }),
+  );
 }
 
 function coordinationCounts(projectRootRealpath: string): LegacyImportRestoreCoordinationCounts {
