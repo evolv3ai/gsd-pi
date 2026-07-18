@@ -14,7 +14,7 @@ You are running the GSD **plan-phase** workflow — create a detailed plan for a
 
 1. **Load authoritative context.** Read the milestone ROADMAP entry, CONTEXT, RESEARCH, the Decisions Register, and the discuss outcomes. Take a bounded codebase snapshot to ground the plan in current code reality.
 
-2. **Research (unless skipped).** If open questions remain and `--skip-research` is off, run a bounded research pass (grounded in the snapshot, not an open-ended survey). Fold findings into RESEARCH.
+2. **Research (unless skipped).** If open questions remain and `--skip-research` is off, run a bounded research pass (grounded in the snapshot, not an open-ended survey). Before writing the plan, call `gsd_summary_save` with `artifact_type: "RESEARCH"` and the applicable `milestone_id` / `slice_id` so the durable RESEARCH artifact exists.
 
 3. **Decompose into slices/tasks.** Break the milestone into ordered, independently-verifiable slices; break each slice into concrete tasks. Each task has a clear definition of done and a verification method.
 
@@ -22,7 +22,7 @@ You are running the GSD **plan-phase** workflow — create a detailed plan for a
 
 5. **Verification loop.** Self-review the plan for gaps: missing tasks, unclear acceptance, orphaned requirements, unrealistic ordering. Revise until the plan is internally consistent.
 
-6. **Write the plan** to the milestone/slice's plan artifact in `.gsd/`. Record durable decisions via `/gsd knowledge rule`.
+6. **Write the plan** to the milestone/slice's plan artifact in `.gsd/` only after required RESEARCH/UI-SPEC inputs are saved or explicitly skipped. Record durable decisions via `/gsd knowledge rule`.
 
 7. **Route.** Recommend `/gsd dispatch execute` (or `/gsd next`).
 
