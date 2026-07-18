@@ -158,13 +158,37 @@ async function runWithSerializedStdioTrustPrompt<T>(
 	const queued = previous.catch(() => {}).then(() => current);
 	stdioTrustPromptQueue = queued;
 
-	const approvalAbort = createTrustApprovalAbort(serverName, signal, timeout);
 	try {
-		await Promise.race([previous.catch(() => {}), approvalAbort.aborted]);
-		if (approvalAbort.signal.aborted) await approvalAbort.aborted;
-		return await Promise.race([run(approvalAbort.signal), approvalAbort.aborted]);
+		if (signal?.aborted) {
+			throw trustApprovalAbortError(serverName, signal.reason);
+		}
+		if (signal) {
+			await new Promise<void>((resolve, reject) => {
+				const onAbort = () => {
+					cleanup();
+					reject(trustApprovalAbortError(serverName, signal.reason));
+				};
+				const onPrevious = () => {
+					cleanup();
+					resolve();
+				};
+				const cleanup = () => {
+					signal.removeEventListener("abort", onAbort);
+				};
+				signal.addEventListener("abort", onAbort, { once: true });
+				previous.catch(() => {}).then(onPrevious, onPrevious);
+			});
+		} else {
+			await previous.catch(() => {});
+		}
+
+		const approvalAbort = createTrustApprovalAbort(serverName, signal, timeout);
+		try {
+			return await Promise.race([run(approvalAbort.signal), approvalAbort.aborted]);
+		} finally {
+			approvalAbort.cleanup();
+		}
 	} finally {
-		approvalAbort.cleanup();
 		releasePrompt();
 	}
 }
