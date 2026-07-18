@@ -19,12 +19,13 @@ export function registerPreflightTool(pi: ExtensionAPI): void {
     promptSnippet: "Run the planf3-gsd preflight and show the workflow map.",
     promptGuidelines: [
       "Pass orchestratorFacts (your host, model, authMode, loaded skills) so the orchestrator stage is filled.",
-      "Set signOff: true ONLY after the human explicitly approved the rendered map (approve / approve-with-note / abort).",
+      "Sign-off requires approvalToken: the token the CONSOLE preflight run prints for the human. You cannot generate or guess it — if you do not have one, ask the human to run /planf3-gsd-preflight and relay the token to you.",
     ],
     parameters: Type.Object({
       htmlPath: Type.Optional(Type.String()),
       orchestratorFacts: Type.Optional(FactsSchema),
       signOff: Type.Optional(Type.Boolean()),
+      approvalToken: Type.Optional(Type.String()),
       note: Type.Optional(Type.String()),
       offline: Type.Optional(Type.Boolean()),
       ping: Type.Optional(Type.Boolean()),
@@ -40,7 +41,7 @@ export function registerPreflightTool(pi: ExtensionAPI): void {
           orchestrator: (params.orchestratorFacts as OrchestratorFacts | undefined) ?? null,
         };
         if (params.signOff === true) {
-          const { path, approvalHash } = await signOffPreflight(deps, params.note ?? null);
+          const { path, approvalHash } = await signOffPreflight(deps, params.note ?? null, params.approvalToken ?? null);
           return {
             content: [{ type: "text" as const, text: `Signed off. Record: ${path}\napprovalHash: ${approvalHash}` }],
             details: { recordPath: path, approvalHash },
