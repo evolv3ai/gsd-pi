@@ -1349,11 +1349,11 @@ function classifyTurnGitActionFailure(action: TurnGitActionMode, err: unknown): 
   const stderr = errorWithStreams.stderr?.trim() ?? "";
   const message = errorWithStreams.message ?? getErrorMessage(err);
   const combined = `${stderr}\n${message}`;
-  if (TRANSIENT_GIT_FAILURE_PATTERNS.some((pattern) => pattern.test(combined))) {
-    return "transient";
-  }
   if (action === "commit" && stderr && errorWithStreams.status === 1) {
     return "hook-content";
+  }
+  if (TRANSIENT_GIT_FAILURE_PATTERNS.some((pattern) => pattern.test(combined))) {
+    return "transient";
   }
   return "unknown";
 }
