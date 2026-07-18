@@ -1712,6 +1712,94 @@ test("verified task git closeout hook failure pauses after remediation cap", asy
   }
 });
 
+test("verified task git closeout partial multi-repo commit pauses instead of redoing task", async () => {
+  const root = join(tmpdir(), `gsd-deep-project-parent-commit-${randomUUID()}`);
+  const initChildRepo = (dir: string) => {
+    mkdirSync(dir, { recursive: true });
+    execFileSync("git", ["init"], { cwd: dir, stdio: "ignore" });
+    execFileSync("git", ["config", "user.email", "test@example.com"], { cwd: dir, stdio: "ignore" });
+    execFileSync("git", ["config", "user.name", "Test User"], { cwd: dir, stdio: "ignore" });
+    writeFileSync(join(dir, "README.md"), "# child\n");
+    execFileSync("git", ["add", "README.md"], { cwd: dir, stdio: "ignore" });
+    execFileSync("git", ["commit", "-m", "init"], { cwd: dir, stdio: "ignore" });
+  };
+  try {
+    mkdirSync(join(root, ".gsd", "milestones"), { recursive: true });
+    writeFileSync(
+      join(root, ".gsd", "PREFERENCES.md"),
+      [
+        "---",
+        "version: 1",
+        "workspace:",
+        "  mode: parent",
+        "  repositories:",
+        "    frontend:",
+        "      path: frontend",
+        "    backend:",
+        "      path: backend",
+        "---",
+        "",
+      ].join("\n"),
+    );
+    execFileSync("git", ["init"], { cwd: root, stdio: "ignore" });
+    execFileSync("git", ["config", "user.email", "test@example.com"], { cwd: root, stdio: "ignore" });
+    execFileSync("git", ["config", "user.name", "Test User"], { cwd: root, stdio: "ignore" });
+    writeFileSync(join(root, ".gitignore"), "frontend/\nbackend/\n.gsd/\n");
+    execFileSync("git", ["add", ".gitignore"], { cwd: root, stdio: "ignore" });
+    execFileSync("git", ["commit", "-m", "chore: ignore nested repos"], { cwd: root, stdio: "ignore" });
+
+    initChildRepo(join(root, "frontend"));
+    initChildRepo(join(root, "backend"));
+
+    // Only backend rejects the commit via a pre-commit hook; frontend commits cleanly,
+    // producing a partial multi-repo commit state.
+    const backendHook = join(root, "backend", ".git", "hooks", "pre-commit");
+    writeFileSync(backendHook, ["#!/bin/sh", "echo blocked by test hook >&2", "exit 1"].join("\n"));
+    chmodSync(backendHook, 0o755);
+
+    writeFileSync(join(root, "frontend", "feature.txt"), "frontend change\n");
+    writeFileSync(join(root, "backend", "feature.txt"), "backend change\n");
+
+    const s = new AutoSession();
+    s.active = true;
+    s.basePath = root;
+    s.originalBasePath = root;
+    s.currentUnit = { type: "execute-task", id: "M001/S01/T01", startedAt: Date.now() };
+
+    let pauseCalled = false;
+    const notifications: Array<{ message: string; severity?: string }> = [];
+    const result = await postUnitPostVerification({
+      s,
+      ctx: { ui: { notify: (message: string, severity?: string) => notifications.push({ message, severity }) } } as any,
+      pi: {} as any,
+      buildSnapshotOpts: () => ({}) as any,
+      lockBase: () => root,
+      stopAuto: async () => {},
+      pauseAuto: async () => { pauseCalled = true; },
+      updateProgressWidget: () => {},
+    });
+
+    // Partial multi-repo commit must pause instead of re-dispatching the task, because
+    // some repositories already committed and re-running would duplicate that work.
+    assert.equal(result, "stopped");
+    assert.equal(pauseCalled, true);
+    // No task remediation retry is scheduled when work is already partially committed.
+    assert.equal(s.pendingVerificationRetry, null);
+    assert.equal(s.verificationRetryCount.has("git-commit:execute-task:M001/S01/T01"), false);
+    assert.ok(
+      notifications.some(
+        (entry) => entry.severity === "error" && entry.message.includes("backend"),
+      ),
+      "partial multi-repo commit should surface the failing repository as an error",
+    );
+    // Frontend is committed; backend remains uncommitted (hook rejected it).
+    assert.equal(execFileSync("git", ["status", "--porcelain"], { cwd: join(root, "frontend"), encoding: "utf-8" }).trim(), "");
+    assert.notEqual(execFileSync("git", ["status", "--porcelain"], { cwd: join(root, "backend"), encoding: "utf-8" }).trim(), "");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("deep project setup: approval wait wins over deterministic write-gate placeholder", async () => {
   const base = makeBase();
   try {
