@@ -1,0 +1,1432 @@
+// Project/App: gsd-pi
+// File Purpose: Sole crash-convergent owner for an eligible live legacy-import database restore.
+
+import { createHash, randomUUID } from "node:crypto";
+import {
+  chmodSync,
+  closeSync,
+  constants as fsConstants,
+  copyFileSync,
+  existsSync,
+  fstatSync,
+  fsyncSync,
+  lstatSync,
+  mkdirSync,
+  openSync,
+  readFileSync,
+  readdirSync,
+  realpathSync,
+  renameSync,
+  rmdirSync,
+  unlinkSync,
+  writeFileSync,
+} from "node:fs";
+import { dirname, isAbsolute, join } from "node:path";
+
+import type { ExecutionInvocation } from "./execution-invocation.js";
+import {
+  isValidLegacyImportVerifiedBackup,
+  verifyLegacyImportBackupArtifact,
+  type LegacyImportVerifiedBackup,
+} from "./legacy-import-backup.js";
+import {
+  inspectLegacyImportApplicationEvidence,
+  type LegacyImportApplicationEvidence,
+} from "./legacy-import-application-evidence.js";
+import {
+  canonicalLegacyImportJson,
+  hashLegacyImportValue,
+  isStrictLegacyImportData,
+} from "./legacy-import-preview.js";
+import {
+  captureCurrentLegacyImportBaseSnapshot,
+  captureLegacyImportBaseSnapshot,
+  createLegacyImportBaseSnapshotSource,
+  type LegacyImportBaseSnapshot,
+} from "./legacy-import-preview-base.js";
+import {
+  assessLegacyImportRestore,
+  LEGACY_IMPORT_RESTORE_ASSESSMENT_CONSENT_SCHEMA_VERSION,
+  type LegacyImportRestoreAssessment,
+  type LegacyImportRestoreAssessmentConsent,
+} from "./legacy-import-restore-assessment.js";
+import { openSqliteReadOnly } from "./sqlite-readonly.js";
+import {
+  _executeImportRestoreDomainOperation,
+  type DomainJsonValue,
+} from "./db/domain-operation.js";
+import {
+  detachActiveDatabaseForReplacement,
+  getDatabaseReplacementPaths,
+  getDb,
+  getDbPath,
+  reopenDatabaseAfterReplacement,
+  type DatabaseReplacementReceiptCapability,
+  type DatabaseReplacementToken,
+} from "./db/engine.js";
+import { insertImportRestoreReceipt } from "./db/writers/authority-recovery.js";
+
+export const LEGACY_IMPORT_LIVE_RESTORE_SCHEMA_VERSION = 1 as const;
+const INTENT_SCHEMA_VERSION = 1 as const;
+const INTENT_FILE = "active.json";
+const CANDIDATE_FILE = "candidate.sqlite";
+
+export type LegacyImportLiveRestoreStage =
+  | "contract"
+  | "recheck"
+  | "stage"
+  | "checkpoint"
+  | "publish"
+  | "reopen"
+  | "verify"
+  | "receipt"
+  | "converge";
+
+export type LegacyImportLiveRestoreErrorCode =
+  | "LEGACY_IMPORT_LIVE_RESTORE_CONTRACT_INVALID"
+  | "LEGACY_IMPORT_LIVE_RESTORE_NOT_ELIGIBLE"
+  | "LEGACY_IMPORT_LIVE_RESTORE_ASSESSMENT_CHANGED"
+  | "LEGACY_IMPORT_LIVE_RESTORE_INTENT_CONFLICT"
+  | "LEGACY_IMPORT_LIVE_RESTORE_PATH_INVALID"
+  | "LEGACY_IMPORT_LIVE_RESTORE_STAGE_FAILED"
+  | "LEGACY_IMPORT_LIVE_RESTORE_CHECKPOINT_FAILED"
+  | "LEGACY_IMPORT_LIVE_RESTORE_REOPEN_FAILED"
+  | "LEGACY_IMPORT_LIVE_RESTORE_VERIFICATION_FAILED"
+  | "LEGACY_IMPORT_LIVE_RESTORE_RECEIPT_FAILED"
+  | "LEGACY_IMPORT_LIVE_RESTORE_CONVERGENCE_FAILED";
+
+export class LegacyImportLiveRestoreError extends Error {
+  readonly code: LegacyImportLiveRestoreErrorCode;
+  readonly stage: LegacyImportLiveRestoreStage;
+  readonly retryable: boolean;
+  readonly evidence: Readonly<Record<string, DomainJsonValue>>;
+
+  constructor(
+    code: LegacyImportLiveRestoreErrorCode,
+    stage: LegacyImportLiveRestoreStage,
+    message: string,
+    retryable = false,
+    evidence: Record<string, DomainJsonValue> = {},
+    options?: ErrorOptions,
+  ) {
+    super(message, options);
+    this.name = "LegacyImportLiveRestoreError";
+    this.code = code;
+    this.stage = stage;
+    this.retryable = retryable;
+    this.evidence = Object.freeze({ ...evidence });
+  }
+}
+
+export interface LegacyImportLiveRestoreInput {
+  readonly invocation: Readonly<ExecutionInvocation>;
+  readonly applicationIdentityHash: string;
+  readonly backup: Readonly<LegacyImportVerifiedBackup>;
+  readonly assessment: Readonly<LegacyImportRestoreAssessment>;
+  readonly consent: Readonly<LegacyImportRestoreAssessmentConsent>;
+}
+
+export interface LegacyImportLiveRestoreVerification {
+  readonly verificationSchemaVersion: 1;
+  readonly installedDatabaseSha256: string;
+  readonly relevantRowsHash: string;
+  readonly representativeRowsHash: string;
+  readonly quickCheck: "ok";
+  readonly integrityCheck: "ok";
+  readonly foreignKeyViolations: 0;
+}
+
+export interface LegacyImportLiveRestoreResult {
+  readonly status: "committed" | "replayed";
+  readonly operationId: string;
+  readonly projectId: string;
+  readonly applicationOperationId: string;
+  readonly applicationIdentityHash: string;
+  readonly backupId: string;
+  readonly backupSha256: string;
+  readonly differenceHash: string;
+  readonly consentHash: string;
+  readonly verificationHash: string;
+  readonly installedDatabaseSha256: string;
+  readonly resultingProjectRevision: number;
+  readonly resultingAuthorityEpoch: number;
+  readonly eventIds: readonly string[];
+  readonly outboxIds: readonly number[];
+  readonly projectionWorkIds: readonly string[];
+  readonly verification: Readonly<LegacyImportLiveRestoreVerification>;
+}
+
+type LiveRestoreBoundary =
+  | "after-stage"
+  | "after-intent"
+  | "after-detach"
+  | "after-database-publish"
+  | "after-publish"
+  | "after-reopen"
+  | "before-receipt-commit"
+  | "after-receipt"
+  | "after-cleanup";
+
+interface LiveRestoreDependencies {
+  boundary?(point: LiveRestoreBoundary, evidence?: Readonly<Record<string, unknown>>): void;
+  copyFile(source: string, destination: string): void;
+  publish(candidate: string, databasePath: string): void;
+  syncFile(path: string): void;
+  syncDirectory(path: string): void;
+}
+
+interface RestoreInputSnapshot {
+  invocation: ExecutionInvocation;
+  applicationIdentityHash: string;
+  backup: LegacyImportVerifiedBackup;
+  assessment: LegacyImportRestoreAssessment;
+  consent: LegacyImportRestoreAssessmentConsent;
+}
+
+interface ErasedLineage extends Record<string, DomainJsonValue> {
+  schemaVersion: 1;
+  applicationOperationId: string;
+  applicationIdentityHash: string;
+  applicationResultingProjectRevision: number;
+  applicationResultingAuthorityEpoch: number;
+}
+
+interface RestoreFileIdentity extends Record<string, DomainJsonValue> {
+  device: string;
+  inode: string;
+}
+
+interface RestoreIntent extends Record<string, DomainJsonValue> {
+  intentSchemaVersion: 1;
+  requestHash: string;
+  stage: "claimed" | "staged" | "published" | "receipt-recorded";
+  ownerPid: number;
+  ownerNonce: string;
+  originalDatabaseDevice: string;
+  originalDatabaseInode: string;
+  candidateDatabaseDevice: string | null;
+  candidateDatabaseInode: string | null;
+  applicationOperationId: string;
+  applicationIdentityHash: string;
+  backupId: string;
+  backupSha256: string;
+  backupByteSize: number;
+  backupSchemaVersion: number;
+  backupProjectRevision: number;
+  backupAuthorityEpoch: number;
+  assessmentEvidenceHash: string;
+  differenceHash: string;
+  consentHash: string;
+  erasedLineageHash: string;
+  erasedLineageJson: string;
+}
+
+const activeRestoreOwners = new Set<string>();
+
+function fail(
+  code: LegacyImportLiveRestoreErrorCode,
+  stage: LegacyImportLiveRestoreStage,
+  message: string,
+  retryable = false,
+  evidence: Record<string, DomainJsonValue> = {},
+  cause?: unknown,
+): never {
+  throw new LegacyImportLiveRestoreError(
+    code,
+    stage,
+    message,
+    retryable,
+    evidence,
+    cause === undefined ? undefined : { cause },
+  );
+}
+
+function deepFreeze<T>(value: T, seen = new Set<object>()): T {
+  if (value === null || typeof value !== "object" || seen.has(value)) return value;
+  seen.add(value);
+  for (const child of Object.values(value)) deepFreeze(child, seen);
+  return Object.freeze(value);
+}
+
+function isPlainRecord(value: unknown): value is Record<string, unknown> {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) return false;
+  const prototype = Object.getPrototypeOf(value);
+  return prototype === Object.prototype || prototype === null;
+}
+
+function hasExactDataKeys(value: unknown, keys: readonly string[]): value is Record<string, unknown> {
+  if (!isPlainRecord(value) || Object.getOwnPropertySymbols(value).length !== 0) return false;
+  const descriptors = Object.getOwnPropertyDescriptors(value);
+  return Object.keys(descriptors).length === keys.length && keys.every((key) => (
+    Object.hasOwn(descriptors, key)
+    && Object.hasOwn(descriptors[key] ?? {}, "value")
+    && descriptors[key]?.enumerable === true
+  ));
+}
+
+function requireHash(value: unknown, field: string): string {
+  if (typeof value !== "string" || !/^sha256:[0-9a-f]{64}$/.test(value)) {
+    fail("LEGACY_IMPORT_LIVE_RESTORE_CONTRACT_INVALID", "contract", `${field} must be one canonical SHA-256 digest`);
+  }
+  return value;
+}
+
+function requireText(value: unknown, field: string): string {
+  if (typeof value !== "string" || value.trim().length === 0) {
+    fail("LEGACY_IMPORT_LIVE_RESTORE_CONTRACT_INVALID", "contract", `${field} must be non-blank text`);
+  }
+  return value;
+}
+
+function normalizeInvocation(value: unknown): ExecutionInvocation {
+  if (!isPlainRecord(value)) {
+    fail("LEGACY_IMPORT_LIVE_RESTORE_CONTRACT_INVALID", "contract", "invocation must be one exact object");
+  }
+  const required = ["idempotencyKey", "sourceTransport", "actorType"];
+  const optional = ["actorId", "traceId", "turnId"];
+  const descriptors = Object.getOwnPropertyDescriptors(value);
+  const keys = Object.keys(descriptors);
+  if (
+    Object.getOwnPropertySymbols(value).length !== 0
+    || !required.every((key) => Object.hasOwn(descriptors, key))
+    || !keys.every((key) => required.includes(key) || optional.includes(key))
+    || keys.some((key) => !Object.hasOwn(descriptors[key] ?? {}, "value") || descriptors[key]?.enumerable !== true)
+  ) {
+    fail("LEGACY_IMPORT_LIVE_RESTORE_CONTRACT_INVALID", "contract", "invocation does not satisfy the exact contract");
+  }
+  const sourceTransport = descriptors["sourceTransport"]?.value;
+  if (sourceTransport !== "internal" && sourceTransport !== "pi-tool" && sourceTransport !== "workflow-mcp") {
+    fail("LEGACY_IMPORT_LIVE_RESTORE_CONTRACT_INVALID", "contract", "invocation source transport is invalid");
+  }
+  const optionalText = (field: "actorId" | "traceId" | "turnId"): string | undefined => {
+    const descriptor = descriptors[field];
+    return descriptor === undefined ? undefined : requireText(descriptor.value, `invocation.${field}`);
+  };
+  const actorId = optionalText("actorId");
+  const traceId = optionalText("traceId");
+  const turnId = optionalText("turnId");
+  return {
+    idempotencyKey: requireText(descriptors["idempotencyKey"]?.value, "invocation.idempotencyKey"),
+    sourceTransport,
+    actorType: requireText(descriptors["actorType"]?.value, "invocation.actorType"),
+    ...(actorId === undefined ? {} : { actorId }),
+    ...(traceId === undefined ? {} : { traceId }),
+    ...(turnId === undefined ? {} : { turnId }),
+  };
+}
+
+function snapshotInput(value: unknown): RestoreInputSnapshot {
+  if (!hasExactDataKeys(value, [
+    "invocation",
+    "applicationIdentityHash",
+    "backup",
+    "assessment",
+    "consent",
+  ])) {
+    fail("LEGACY_IMPORT_LIVE_RESTORE_CONTRACT_INVALID", "contract", "live restore input does not satisfy the exact v1 contract");
+  }
+  if (!isStrictLegacyImportData(value)) {
+    fail("LEGACY_IMPORT_LIVE_RESTORE_CONTRACT_INVALID", "contract", "live restore input must contain strict acyclic data");
+  }
+  let detached: Record<string, unknown>;
+  try {
+    detached = structuredClone(value);
+  } catch (error) {
+    fail("LEGACY_IMPORT_LIVE_RESTORE_CONTRACT_INVALID", "contract", "live restore input could not be detached", false, {}, error);
+  }
+  if (!isValidLegacyImportVerifiedBackup(detached["backup"])) {
+    fail("LEGACY_IMPORT_LIVE_RESTORE_CONTRACT_INVALID", "contract", "backup does not satisfy the complete verified contract");
+  }
+  const consent = detached["consent"];
+  if (!hasExactDataKeys(consent, [
+    "consentSchemaVersion",
+    "decision",
+    "destructiveDatabaseRestore",
+    "evidenceHash",
+  ]) || consent["consentSchemaVersion"] !== LEGACY_IMPORT_RESTORE_ASSESSMENT_CONSENT_SCHEMA_VERSION
+    || consent["decision"] !== "proceed"
+    || consent["destructiveDatabaseRestore"] !== true) {
+    fail("LEGACY_IMPORT_LIVE_RESTORE_CONTRACT_INVALID", "contract", "explicit destructive restore Consent is required");
+  }
+  const assessment = detached["assessment"];
+  if (!isPlainRecord(assessment) || assessment["assessmentSchemaVersion"] !== 1) {
+    fail("LEGACY_IMPORT_LIVE_RESTORE_CONTRACT_INVALID", "contract", "assessment does not satisfy the v1 contract");
+  }
+  return deepFreeze({
+    invocation: normalizeInvocation(detached["invocation"]),
+    applicationIdentityHash: requireHash(detached["applicationIdentityHash"], "applicationIdentityHash"),
+    backup: detached["backup"],
+    assessment: assessment as unknown as LegacyImportRestoreAssessment,
+    consent: {
+      consentSchemaVersion: LEGACY_IMPORT_RESTORE_ASSESSMENT_CONSENT_SCHEMA_VERSION,
+      decision: "proceed",
+      destructiveDatabaseRestore: true,
+      evidenceHash: requireHash(consent["evidenceHash"], "consent.evidenceHash"),
+    },
+  });
+}
+
+function hashFile(path: string): string {
+  return `sha256:${createHash("sha256").update(readFileSync(path)).digest("hex")}`;
+}
+
+function hashIntent(intent: RestoreIntent): string {
+  return `sha256:${createHash("sha256").update(canonicalLegacyImportJson(intent)).digest("hex")}`;
+}
+
+function syncFile(path: string): void {
+  const fd = openSync(path, fsConstants.O_RDONLY | (fsConstants.O_NOFOLLOW ?? 0));
+  try {
+    fsyncSync(fd);
+  } finally {
+    closeSync(fd);
+  }
+}
+
+function syncDirectory(path: string): void {
+  const fd = openSync(path, fsConstants.O_RDONLY | (fsConstants.O_DIRECTORY ?? 0));
+  try {
+    fsyncSync(fd);
+  } finally {
+    closeSync(fd);
+  }
+}
+
+function defaultDependencies(overrides: Partial<LiveRestoreDependencies>): LiveRestoreDependencies {
+  return {
+    copyFile(source, destination) {
+      copyFileSync(source, destination, fsConstants.COPYFILE_EXCL);
+      chmodSync(destination, 0o600);
+    },
+    publish: (candidate, databasePath) => renameSync(candidate, databasePath),
+    syncFile,
+    syncDirectory,
+    ...overrides,
+  };
+}
+
+function backupBase(backupPath: string): LegacyImportBaseSnapshot {
+  const connection = openSqliteReadOnly(backupPath);
+  try {
+    return captureLegacyImportBaseSnapshot({
+      readTransaction: (fn) => fn(),
+      source: createLegacyImportBaseSnapshotSource(connection.db),
+    });
+  } finally {
+    connection.db.close();
+  }
+}
+
+function requireRegularFile(path: string, byteSize: number): void {
+  const stat = lstatSync(path, { bigint: true });
+  if (
+    !isAbsolute(path)
+    || realpathSync(path) !== path
+    || !stat.isFile()
+    || stat.isSymbolicLink()
+    || stat.size !== BigInt(byteSize)
+  ) {
+    fail("LEGACY_IMPORT_LIVE_RESTORE_PATH_INVALID", "stage", "restore file identity is invalid");
+  }
+}
+
+function requireDatabasePath(): string {
+  const path = getDbPath();
+  if (!path || path === ":memory:" || !isAbsolute(path)) {
+    fail("LEGACY_IMPORT_LIVE_RESTORE_PATH_INVALID", "contract", "live restore requires the active file-backed database");
+  }
+  try {
+    if (realpathSync(path) !== path) throw new Error("database path is not canonical");
+  } catch (error) {
+    fail("LEGACY_IMPORT_LIVE_RESTORE_PATH_INVALID", "contract", "active database path is not one canonical regular path", false, {}, error);
+  }
+  return path;
+}
+
+function requestHash(input: RestoreInputSnapshot): string {
+  return hashLegacyImportValue({
+    liveRestoreSchemaVersion: LEGACY_IMPORT_LIVE_RESTORE_SCHEMA_VERSION,
+    invocation: input.invocation,
+    applicationIdentityHash: input.applicationIdentityHash,
+    backupId: input.backup.backup_id,
+    backupSha256: input.backup.backup_sha256,
+    backupByteSize: input.backup.backup_byte_size,
+    assessmentEvidenceHash: input.assessment.evidenceHash,
+    differenceHash: input.assessment.facts.difference?.differenceHash ?? null,
+    consentHash: hashLegacyImportValue(input.consent),
+  });
+}
+
+function erasedLineage(input: RestoreInputSnapshot): ErasedLineage {
+  const applicationOperationId = input.assessment.facts.applicationOperationId;
+  const applicationResultingProjectRevision = input.assessment.facts.applicationResultingProjectRevision;
+  const applicationResultingAuthorityEpoch = input.assessment.facts.applicationResultingAuthorityEpoch;
+  if (typeof applicationOperationId !== "string"
+    || !Number.isSafeInteger(applicationResultingProjectRevision)
+    || Number(applicationResultingProjectRevision) <= 0
+    || !Number.isSafeInteger(applicationResultingAuthorityEpoch)
+    || Number(applicationResultingAuthorityEpoch) < 0) {
+    fail("LEGACY_IMPORT_LIVE_RESTORE_CONTRACT_INVALID", "contract", "eligible assessment lacks exact erased Application authority");
+  }
+  return {
+    schemaVersion: 1,
+    applicationOperationId,
+    applicationIdentityHash: input.applicationIdentityHash,
+    applicationResultingProjectRevision: Number(applicationResultingProjectRevision),
+    applicationResultingAuthorityEpoch: Number(applicationResultingAuthorityEpoch),
+  };
+}
+
+function intentFor(
+  input: RestoreInputSnapshot,
+  hash: string,
+  lineage: ErasedLineage,
+  originalDatabase: RestoreFileIdentity,
+): RestoreIntent {
+  const differenceHash = input.assessment.facts.difference?.differenceHash;
+  if (typeof differenceHash !== "string") {
+    fail("LEGACY_IMPORT_LIVE_RESTORE_NOT_ELIGIBLE", "recheck", "eligible assessment lacks an exact difference digest");
+  }
+  return {
+    intentSchemaVersion: INTENT_SCHEMA_VERSION,
+    requestHash: hash,
+    stage: "claimed",
+    ownerPid: process.pid,
+    ownerNonce: randomUUID(),
+    originalDatabaseDevice: originalDatabase.device,
+    originalDatabaseInode: originalDatabase.inode,
+    candidateDatabaseDevice: null,
+    candidateDatabaseInode: null,
+    applicationOperationId: lineage.applicationOperationId,
+    applicationIdentityHash: input.applicationIdentityHash,
+    backupId: input.backup.backup_id,
+    backupSha256: input.backup.backup_sha256,
+    backupByteSize: input.backup.backup_byte_size,
+    backupSchemaVersion: input.backup.backup_database_schema_version,
+    backupProjectRevision: input.backup.base_project_revision,
+    backupAuthorityEpoch: input.backup.base_authority_epoch,
+    assessmentEvidenceHash: input.assessment.evidenceHash,
+    differenceHash,
+    consentHash: hashLegacyImportValue(input.consent),
+    erasedLineageHash: hashLegacyImportValue(lineage),
+    erasedLineageJson: canonicalLegacyImportJson(lineage),
+  };
+}
+
+function fileIdentity(path: string, label: string): RestoreFileIdentity {
+  let stat;
+  try {
+    stat = lstatSync(path, { bigint: true });
+  } catch (error) {
+    fail("LEGACY_IMPORT_LIVE_RESTORE_PATH_INVALID", "converge", `cannot inspect ${label}`, false, {}, error);
+  }
+  if (!stat.isFile() || stat.isSymbolicLink()) {
+    fail("LEGACY_IMPORT_LIVE_RESTORE_PATH_INVALID", "converge", `${label} must be one regular file`);
+  }
+  return { device: String(stat.dev), inode: String(stat.ino) };
+}
+
+function sameFileIdentity(left: RestoreFileIdentity, right: RestoreFileIdentity): boolean {
+  return left.device === right.device && left.inode === right.inode;
+}
+
+function intentOriginalFileIdentity(intent: RestoreIntent): RestoreFileIdentity {
+  return { device: intent.originalDatabaseDevice, inode: intent.originalDatabaseInode };
+}
+
+function intentCandidateFileIdentity(intent: RestoreIntent): RestoreFileIdentity | null {
+  return intent.candidateDatabaseDevice === null || intent.candidateDatabaseInode === null
+    ? null
+    : { device: intent.candidateDatabaseDevice, inode: intent.candidateDatabaseInode };
+}
+
+function writeIntent(path: string, intent: RestoreIntent, syncDir: (path: string) => void): void {
+  const current = readIntent(path);
+  if (current === null) {
+    fail("LEGACY_IMPORT_LIVE_RESTORE_INTENT_CONFLICT", "converge", "restore intent ownership changed before update");
+  }
+  requireMatchingIntent(current, intent);
+  requireSameIntentOwner(current, intent);
+  const transition = `${current.stage}->${intent.stage}`;
+  if (transition !== "claimed->staged"
+    && transition !== "staged->published"
+    && transition !== "published->receipt-recorded") {
+    fail("LEGACY_IMPORT_LIVE_RESTORE_INTENT_CONFLICT", "converge", "restore intent attempted an invalid state transition");
+  }
+  const currentCandidate = intentCandidateFileIdentity(current);
+  const nextCandidate = intentCandidateFileIdentity(intent);
+  if ((current.stage === "claimed" && nextCandidate === null)
+    || (current.stage !== "claimed" && (
+      currentCandidate === null
+      || nextCandidate === null
+      || !sameFileIdentity(currentCandidate, nextCandidate)
+    ))) {
+    fail("LEGACY_IMPORT_LIVE_RESTORE_INTENT_CONFLICT", "converge", "restore intent candidate identity changed during update");
+  }
+  const temporary = `${path}.tmp-${process.pid}-${randomUUID()}`;
+  let fd: number | undefined;
+  try {
+    fd = openSync(temporary, fsConstants.O_WRONLY | fsConstants.O_CREAT | fsConstants.O_EXCL, 0o600);
+    writeFileSync(fd, canonicalLegacyImportJson(intent), "utf8");
+    fsyncSync(fd);
+    closeSync(fd);
+    fd = undefined;
+    renameSync(temporary, path);
+    syncDir(dirname(path));
+  } catch (error) {
+    if (fd !== undefined) {
+      try { closeSync(fd); } catch { /* retain original error */ }
+    }
+    try { if (existsSync(temporary)) unlinkSync(temporary); } catch { /* retain original error */ }
+    throw error;
+  }
+}
+
+function systemErrorCode(error: unknown): string | undefined {
+  return typeof error === "object" && error !== null && "code" in error
+    ? String((error as { code?: unknown }).code ?? "")
+    : undefined;
+}
+
+function intentOwnerIsActive(intent: RestoreIntent): boolean {
+  if (intent.ownerPid === process.pid) return activeRestoreOwners.has(intent.ownerNonce);
+  try {
+    process.kill(intent.ownerPid, 0);
+    return true;
+  } catch (error) {
+    return systemErrorCode(error) !== "ESRCH";
+  }
+}
+
+function pathEntryExists(path: string): boolean {
+  try {
+    lstatSync(path);
+    return true;
+  } catch (error) {
+    if (systemErrorCode(error) === "ENOENT") return false;
+    fail("LEGACY_IMPORT_LIVE_RESTORE_PATH_INVALID", "converge", "cannot inspect restore recovery entry", false, {}, error);
+  }
+}
+
+function claimIntent(path: string, intent: RestoreIntent, syncDir: (path: string) => void): boolean {
+  let fd: number | undefined;
+  let created = false;
+  try {
+    fd = openSync(path, fsConstants.O_WRONLY | fsConstants.O_CREAT | fsConstants.O_EXCL, 0o600);
+    created = true;
+    writeFileSync(fd, canonicalLegacyImportJson(intent), "utf8");
+    fsyncSync(fd);
+    closeSync(fd);
+    fd = undefined;
+    syncDir(dirname(path));
+    return true;
+  } catch (error) {
+    if (fd !== undefined) {
+      try { closeSync(fd); } catch { /* retain original error */ }
+    }
+    if (systemErrorCode(error) === "EEXIST") return false;
+    if (created) {
+      try { unlinkSync(path); } catch { /* retain original error */ }
+    }
+    throw error;
+  }
+}
+
+function intentIdentity(intent: RestoreIntent): string {
+  const {
+    stage: _stage,
+    ownerPid: _ownerPid,
+    ownerNonce: _ownerNonce,
+    originalDatabaseDevice: _originalDatabaseDevice,
+    originalDatabaseInode: _originalDatabaseInode,
+    candidateDatabaseDevice: _candidateDatabaseDevice,
+    candidateDatabaseInode: _candidateDatabaseInode,
+    ...identity
+  } = intent;
+  return canonicalLegacyImportJson(identity);
+}
+
+function requireMatchingIntent(actual: RestoreIntent, expected: RestoreIntent): void {
+  if (actual.requestHash !== expected.requestHash || intentIdentity(actual) !== intentIdentity(expected)) {
+    fail("LEGACY_IMPORT_LIVE_RESTORE_INTENT_CONFLICT", "converge", "active restore intent does not match the approved request");
+  }
+}
+
+function requireSameIntentOwner(actual: RestoreIntent, expected: RestoreIntent): void {
+  if (actual.ownerPid !== expected.ownerPid
+    || actual.ownerNonce !== expected.ownerNonce
+    || !sameFileIdentity(intentOriginalFileIdentity(actual), intentOriginalFileIdentity(expected))) {
+    fail("LEGACY_IMPORT_LIVE_RESTORE_INTENT_CONFLICT", "converge", "active restore intent owner changed");
+  }
+}
+
+function readIntent(path: string): RestoreIntent | null {
+  if (!existsSync(path)) return null;
+  const directoryPath = dirname(path);
+  let fd: number | undefined;
+  let serialized: string;
+  try {
+    const directory = lstatSync(directoryPath, { bigint: true });
+    const before = lstatSync(path, { bigint: true });
+    if (realpathSync(directoryPath) !== directoryPath
+      || !directory.isDirectory()
+      || directory.isSymbolicLink()
+      || realpathSync(path) !== path
+      || !before.isFile()
+      || before.isSymbolicLink()) {
+      throw new Error("restore intent path is not one owned regular file");
+    }
+    fd = openSync(path, fsConstants.O_RDONLY | (fsConstants.O_NOFOLLOW ?? 0));
+    const opened = fstatSync(fd, { bigint: true });
+    if (!opened.isFile() || opened.dev !== before.dev || opened.ino !== before.ino || opened.size !== before.size) {
+      throw new Error("restore intent identity changed before read");
+    }
+    serialized = readFileSync(fd, "utf8");
+    const after = fstatSync(fd, { bigint: true });
+    if (after.dev !== opened.dev || after.ino !== opened.ino || after.size !== opened.size) {
+      throw new Error("restore intent identity changed during read");
+    }
+    closeSync(fd);
+    fd = undefined;
+  } catch (error) {
+    if (fd !== undefined) {
+      try { closeSync(fd); } catch { /* retain original error */ }
+    }
+    fail("LEGACY_IMPORT_LIVE_RESTORE_INTENT_CONFLICT", "converge", "active restore intent path is unsafe", false, {}, error);
+  }
+  let value: unknown;
+  try {
+    value = JSON.parse(serialized);
+  } catch (error) {
+    fail("LEGACY_IMPORT_LIVE_RESTORE_INTENT_CONFLICT", "converge", "active restore intent is malformed", false, {}, error);
+  }
+  const required = [
+    "intentSchemaVersion", "requestHash", "stage", "ownerPid", "ownerNonce",
+    "originalDatabaseDevice", "originalDatabaseInode",
+    "candidateDatabaseDevice", "candidateDatabaseInode", "applicationOperationId",
+    "applicationIdentityHash", "backupId", "backupSha256", "backupByteSize",
+    "backupSchemaVersion", "backupProjectRevision", "backupAuthorityEpoch",
+    "assessmentEvidenceHash", "differenceHash", "consentHash", "erasedLineageHash",
+    "erasedLineageJson",
+  ];
+  if (!hasExactDataKeys(value, required)
+    || value["intentSchemaVersion"] !== INTENT_SCHEMA_VERSION
+    || (value["stage"] !== "claimed" && value["stage"] !== "staged"
+      && value["stage"] !== "published" && value["stage"] !== "receipt-recorded")) {
+    fail("LEGACY_IMPORT_LIVE_RESTORE_INTENT_CONFLICT", "converge", "active restore intent does not satisfy the exact contract");
+  }
+  for (const field of [
+    "requestHash", "applicationIdentityHash", "backupId", "backupSha256",
+    "assessmentEvidenceHash", "differenceHash", "consentHash", "erasedLineageHash",
+  ]) requireHash(value[field], `intent.${field}`);
+  if (typeof value["applicationOperationId"] !== "string"
+    || value["applicationOperationId"].trim().length === 0
+    || !Number.isSafeInteger(value["ownerPid"])
+    || Number(value["ownerPid"]) <= 0
+    || typeof value["ownerNonce"] !== "string"
+    || !/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(value["ownerNonce"])
+    || typeof value["originalDatabaseDevice"] !== "string"
+    || !/^\d+$/.test(value["originalDatabaseDevice"])
+    || typeof value["originalDatabaseInode"] !== "string"
+    || !/^[1-9]\d*$/.test(value["originalDatabaseInode"])
+    || typeof value["erasedLineageJson"] !== "string"
+    || !Number.isSafeInteger(value["backupByteSize"])
+    || Number(value["backupByteSize"]) <= 0
+    || !Number.isSafeInteger(value["backupSchemaVersion"])
+    || Number(value["backupSchemaVersion"]) <= 0
+    || !Number.isSafeInteger(value["backupProjectRevision"])
+    || Number(value["backupProjectRevision"]) < 0
+    || !Number.isSafeInteger(value["backupAuthorityEpoch"])
+    || Number(value["backupAuthorityEpoch"]) < 0) {
+    fail("LEGACY_IMPORT_LIVE_RESTORE_INTENT_CONFLICT", "converge", "active restore intent contains invalid scalar evidence");
+  }
+  const candidateDevice = value["candidateDatabaseDevice"];
+  const candidateInode = value["candidateDatabaseInode"];
+  const candidateAbsent = candidateDevice === null && candidateInode === null;
+  const candidatePresent = typeof candidateDevice === "string"
+    && /^\d+$/.test(candidateDevice)
+    && typeof candidateInode === "string"
+    && /^[1-9]\d*$/.test(candidateInode);
+  if ((!candidateAbsent && !candidatePresent)
+    || (value["stage"] === "claimed" && !candidateAbsent)
+    || (value["stage"] !== "claimed" && !candidatePresent)) {
+    fail("LEGACY_IMPORT_LIVE_RESTORE_INTENT_CONFLICT", "converge", "active restore intent candidate evidence is inconsistent");
+  }
+  let lineage: unknown;
+  try { lineage = JSON.parse(String(value["erasedLineageJson"])); } catch { lineage = null; }
+  if (!isPlainRecord(lineage)
+    || canonicalLegacyImportJson(lineage) !== value["erasedLineageJson"]
+    || hashLegacyImportValue(lineage) !== value["erasedLineageHash"]
+    || lineage["schemaVersion"] !== 1
+    || lineage["applicationOperationId"] !== value["applicationOperationId"]
+    || lineage["applicationIdentityHash"] !== value["applicationIdentityHash"]
+    || lineage["applicationResultingProjectRevision"] !== Number(value["backupProjectRevision"]) + 1
+    || lineage["applicationResultingAuthorityEpoch"] !== value["backupAuthorityEpoch"]) {
+    fail("LEGACY_IMPORT_LIVE_RESTORE_INTENT_CONFLICT", "converge", "active restore intent erased lineage is inconsistent");
+  }
+  return deepFreeze(value as unknown as RestoreIntent);
+}
+
+function ensureRecoveryDirectory(path: string): void {
+  mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
+  mkdirSync(path, { recursive: true, mode: 0o700 });
+  const stat = lstatSync(path, { bigint: true });
+  if (realpathSync(path) !== path || !stat.isDirectory() || stat.isSymbolicLink()) {
+    fail("LEGACY_IMPORT_LIVE_RESTORE_PATH_INVALID", "stage", "restore recovery directory is invalid");
+  }
+}
+
+function cleanupRecoveryDirectory(
+  path: string,
+  expectedIntent: RestoreIntent,
+  syncDir: (path: string) => void,
+): void {
+  if (!existsSync(path)) return;
+  const active = readIntent(join(path, INTENT_FILE));
+  if (active === null) {
+    fail("LEGACY_IMPORT_LIVE_RESTORE_INTENT_CONFLICT", "converge", "restore cleanup requires its active intent");
+  }
+  requireMatchingIntent(active, expectedIntent);
+  requireSameIntentOwner(active, expectedIntent);
+  const stat = lstatSync(path, { bigint: true });
+  if (realpathSync(path) !== path || !stat.isDirectory() || stat.isSymbolicLink()) {
+    fail("LEGACY_IMPORT_LIVE_RESTORE_CONVERGENCE_FAILED", "converge", "restore recovery directory ownership changed");
+  }
+  const allowed = new Set([INTENT_FILE, CANDIDATE_FILE]);
+  for (const entry of readdirSync(path)) {
+    if (!allowed.has(entry) && !entry.startsWith(`${INTENT_FILE}.tmp-`)) {
+      fail("LEGACY_IMPORT_LIVE_RESTORE_CONVERGENCE_FAILED", "converge", "restore recovery directory contains an unknown entry");
+    }
+    const entryPath = join(path, entry);
+    const entryStat = lstatSync(entryPath, { bigint: true });
+    if (!entryStat.isFile() || entryStat.isSymbolicLink()) {
+      fail("LEGACY_IMPORT_LIVE_RESTORE_CONVERGENCE_FAILED", "converge", "restore recovery entry changed kind");
+    }
+    unlinkSync(entryPath);
+  }
+  rmdirSync(path);
+  syncDir(dirname(path));
+}
+
+function removeLiveSidecars(databasePath: string): void {
+  for (const suffix of ["-wal", "-shm", "-journal"]) {
+    const path = `${databasePath}${suffix}`;
+    let stat;
+    try {
+      stat = lstatSync(path, { bigint: true });
+    } catch (error) {
+      if (systemErrorCode(error) === "ENOENT") continue;
+      fail("LEGACY_IMPORT_LIVE_RESTORE_PATH_INVALID", "publish", "cannot inspect live SQLite sidecar", false, {}, error);
+    }
+    if (stat.isSymbolicLink()) {
+      unlinkSync(path);
+      continue;
+    }
+    if (!stat.isFile()) {
+      fail("LEGACY_IMPORT_LIVE_RESTORE_PATH_INVALID", "publish", "live SQLite sidecar is not a regular owned file");
+    }
+    unlinkSync(path);
+  }
+}
+
+function requireFreshEligibleAssessment(input: RestoreInputSnapshot): void {
+  const fresh = assessLegacyImportRestore({
+    applicationIdentityHash: input.applicationIdentityHash,
+    backup: input.backup,
+    consent: input.consent,
+  });
+  if (fresh.decision !== "restore-eligible") {
+    fail(
+      "LEGACY_IMPORT_LIVE_RESTORE_NOT_ELIGIBLE",
+      "recheck",
+      "live restore requires a fresh eligible assessment",
+      fresh.retryable,
+      { decision: fresh.decision, reasonCode: fresh.reasonCode },
+    );
+  }
+  if (canonicalLegacyImportJson(fresh) !== canonicalLegacyImportJson(input.assessment)) {
+    fail("LEGACY_IMPORT_LIVE_RESTORE_ASSESSMENT_CHANGED", "recheck", "supplied eligible assessment is stale or changed", true);
+  }
+}
+
+function verifyCandidate(
+  input: RestoreInputSnapshot,
+  application: LegacyImportApplicationEvidence,
+  candidatePath: string,
+): void {
+  requireRegularFile(candidatePath, input.backup.backup_byte_size);
+  if (hashFile(candidatePath) !== input.backup.backup_sha256) {
+    fail("LEGACY_IMPORT_LIVE_RESTORE_STAGE_FAILED", "stage", "staged candidate bytes do not match the verified backup");
+  }
+  const base = backupBase(candidatePath);
+  verifyLegacyImportBackupArtifact({
+    backup: { ...input.backup, backup_ref: candidatePath },
+    preview: application.preview,
+    base,
+  });
+}
+
+function verifyOpenDatabaseIntegrity(): LegacyImportBaseSnapshot {
+  const db = getDb();
+  const exactlyOk = (pragma: "quick_check" | "integrity_check"): void => {
+    const rows = db.prepare(`PRAGMA ${pragma}`).all();
+    if (rows.length !== 1 || rows[0]?.[pragma] !== "ok") {
+      fail("LEGACY_IMPORT_LIVE_RESTORE_VERIFICATION_FAILED", "verify", `installed database failed ${pragma}`);
+    }
+  };
+  exactlyOk("quick_check");
+  exactlyOk("integrity_check");
+  if (db.prepare("PRAGMA foreign_key_check").all().length !== 0) {
+    fail("LEGACY_IMPORT_LIVE_RESTORE_VERIFICATION_FAILED", "verify", "installed database has foreign-key violations");
+  }
+  return captureCurrentLegacyImportBaseSnapshot();
+}
+
+function verificationForBase(
+  base: LegacyImportBaseSnapshot,
+  installedDatabaseSha256: string,
+): LegacyImportLiveRestoreVerification {
+  const representativeRows = base.rows.filter((row) => (
+    row.row_set === "milestones" || row.row_set === "slices" || row.row_set === "tasks"
+  ));
+  return deepFreeze({
+    verificationSchemaVersion: 1,
+    installedDatabaseSha256,
+    relevantRowsHash: base.relevant_rows_hash,
+    representativeRowsHash: hashLegacyImportValue(representativeRows),
+    quickCheck: "ok",
+    integrityCheck: "ok",
+    foreignKeyViolations: 0,
+  });
+}
+
+function verifyPublishedDatabaseFile(input: RestoreInputSnapshot, databasePath: string): string {
+  requireRegularFile(databasePath, input.backup.backup_byte_size);
+  for (const suffix of ["-wal", "-shm", "-journal"]) {
+    const sidecarPath = `${databasePath}${suffix}`;
+    try {
+      lstatSync(sidecarPath);
+      fail("LEGACY_IMPORT_LIVE_RESTORE_VERIFICATION_FAILED", "verify", "published database has an unexpected SQLite sidecar");
+    } catch (error) {
+      if (error instanceof LegacyImportLiveRestoreError) throw error;
+      if (systemErrorCode(error) !== "ENOENT") {
+        fail("LEGACY_IMPORT_LIVE_RESTORE_PATH_INVALID", "verify", "cannot inspect published SQLite sidecar", false, {}, error);
+      }
+    }
+  }
+  const installedDatabaseSha256 = hashFile(databasePath);
+  if (installedDatabaseSha256 !== input.backup.backup_sha256) {
+    fail("LEGACY_IMPORT_LIVE_RESTORE_VERIFICATION_FAILED", "verify", "published database bytes do not match the approved backup");
+  }
+  return installedDatabaseSha256;
+}
+
+function verifyInstalledDatabase(
+  input: RestoreInputSnapshot,
+  installedDatabaseSha256: string,
+): LegacyImportLiveRestoreVerification {
+  const base = verifyOpenDatabaseIntegrity();
+  if (
+    base.authority.project_id !== input.backup.project_id
+    || base.authority.project_root_realpath !== input.backup.project_root_realpath
+    || base.authority.revision !== input.backup.base_project_revision
+    || base.authority.authority_epoch !== input.backup.base_authority_epoch
+    || base.database_schema_version !== input.backup.backup_database_schema_version
+    || base.relevant_rows_hash !== input.backup.relevant_rows_hash
+    || installedDatabaseSha256 !== input.backup.backup_sha256
+  ) {
+    fail("LEGACY_IMPORT_LIVE_RESTORE_VERIFICATION_FAILED", "verify", "installed database does not match the approved backup base");
+  }
+  return verificationForBase(base, installedDatabaseSha256);
+}
+
+function strictCheckpointAfterReceipt(): void {
+  const row = getDb().prepare("PRAGMA wal_checkpoint(TRUNCATE)").get();
+  const busy = Number(row?.["busy"] ?? -1);
+  const log = Number(row?.["log"] ?? Number.NaN);
+  const checkpointed = Number(row?.["checkpointed"] ?? Number.NaN);
+  if (busy !== 0 || !Number.isSafeInteger(log) || !Number.isSafeInteger(checkpointed)
+    || !((log === -1 && checkpointed === -1) || (log >= 0 && checkpointed === log))) {
+    fail("LEGACY_IMPORT_LIVE_RESTORE_CHECKPOINT_FAILED", "checkpoint", "restore receipt checkpoint did not complete", true);
+  }
+}
+
+function loadStoredResult(
+  input: RestoreInputSnapshot,
+  verification: LegacyImportLiveRestoreVerification,
+  status: "committed" | "replayed",
+): LegacyImportLiveRestoreResult {
+  const row = getDb().prepare(`
+    SELECT receipt.*, operation.operation_type
+    FROM workflow_import_restores receipt
+    JOIN workflow_operations operation USING (operation_id)
+    WHERE receipt.application_identity_hash = :identity
+  `).get({ ":identity": input.applicationIdentityHash });
+  if (!row || row["operation_type"] !== "import.restore") {
+    fail("LEGACY_IMPORT_LIVE_RESTORE_RECEIPT_FAILED", "receipt", "durable restore receipt is missing");
+  }
+  const operationId = String(row["operation_id"]);
+  const eventIds = getDb().prepare(`
+    SELECT event_id FROM workflow_domain_events WHERE operation_id = :operation_id ORDER BY event_index
+  `).all({ ":operation_id": operationId }).map((entry) => String(entry["event_id"]));
+  const outboxIds = getDb().prepare(`
+    SELECT outbox_id FROM workflow_outbox WHERE event_id IN (
+      SELECT event_id FROM workflow_domain_events WHERE operation_id = :operation_id
+    ) ORDER BY outbox_id
+  `).all({ ":operation_id": operationId }).map((entry) => Number(entry["outbox_id"]));
+  const projectionWorkIds = getDb().prepare(`
+    SELECT projection_work_id FROM workflow_projection_work
+    WHERE enqueue_operation_id = :operation_id ORDER BY projection_work_id
+  `).all({ ":operation_id": operationId }).map((entry) => String(entry["projection_work_id"]));
+  return deepFreeze({
+    status,
+    operationId,
+    projectId: String(row["project_id"]),
+    applicationOperationId: String(row["application_operation_id"]),
+    applicationIdentityHash: String(row["application_identity_hash"]),
+    backupId: String(row["backup_id"]),
+    backupSha256: String(row["backup_sha256"]),
+    differenceHash: String(row["difference_hash"]),
+    consentHash: String(row["consent_hash"]),
+    verificationHash: String(row["verification_hash"]),
+    installedDatabaseSha256: verification.installedDatabaseSha256,
+    resultingProjectRevision: Number(row["resulting_project_revision"]),
+    resultingAuthorityEpoch: Number(row["resulting_authority_epoch"]),
+    eventIds,
+    outboxIds,
+    projectionWorkIds,
+    verification,
+  });
+}
+
+function recordReceipt(
+  input: RestoreInputSnapshot,
+  intent: RestoreIntent,
+  verification: LegacyImportLiveRestoreVerification,
+  capability: DatabaseReplacementReceiptCapability,
+  ops: LiveRestoreDependencies,
+): LegacyImportLiveRestoreResult {
+  const verificationHash = hashLegacyImportValue(verification);
+  const receiptPayload = {
+    applicationOperationId: intent.applicationOperationId,
+    applicationIdentityHash: intent.applicationIdentityHash,
+    applicationResultingProjectRevision: input.assessment.facts.applicationResultingProjectRevision!,
+    applicationResultingAuthorityEpoch: input.assessment.facts.applicationResultingAuthorityEpoch!,
+    erasedLineageHash: intent.erasedLineageHash,
+    erasedLineageJson: intent.erasedLineageJson,
+    previewId: input.backup.preview_id,
+    previewHash: input.backup.preview_hash,
+    backupId: input.backup.backup_id,
+    backupSha256: input.backup.backup_sha256,
+    backupByteSize: input.backup.backup_byte_size,
+    backupSchemaVersion: input.backup.backup_database_schema_version,
+    backupProjectRevision: input.backup.base_project_revision,
+    backupAuthorityEpoch: input.backup.base_authority_epoch,
+    differenceHash: intent.differenceHash,
+    consentHash: intent.consentHash,
+    verificationHash,
+  };
+  const operation = _executeImportRestoreDomainOperation(capability, {
+    operationType: "import.restore",
+    idempotencyKey: `import.restore/${intent.requestHash.slice("sha256:".length)}`,
+    expectedRevision: input.backup.base_project_revision,
+    expectedAuthorityEpoch: input.backup.base_authority_epoch,
+    actorType: input.invocation.actorType,
+    actorId: input.invocation.actorId,
+    sourceTransport: input.invocation.sourceTransport,
+    traceId: input.invocation.traceId,
+    turnId: input.invocation.turnId,
+    payload: receiptPayload,
+  }, (context) => {
+    insertImportRestoreReceipt(context, receiptPayload);
+    ops.boundary?.("before-receipt-commit", { requestHash: intent.requestHash });
+    return {
+      events: [{
+        eventType: "legacy-import.restored",
+        entityType: "legacy-import",
+        entityId: input.backup.preview_id,
+        payload: receiptPayload,
+        destinations: ["projection"],
+      }],
+      projections: [{
+        projectionKey: "legacy-import/restore",
+        projectionKind: "markdown",
+        rendererVersion: "v1",
+      }],
+    };
+  });
+  return loadStoredResult(input, verification, operation.status);
+}
+
+function existingTerminalResult(input: RestoreInputSnapshot): LegacyImportLiveRestoreResult | null {
+  const assessment = assessLegacyImportRestore({
+    applicationIdentityHash: input.applicationIdentityHash,
+    backup: input.backup,
+  });
+  if (assessment.decision !== "already-restored") return null;
+  const base = verifyOpenDatabaseIntegrity();
+  if (
+    base.authority.project_id !== input.backup.project_id
+    || base.authority.revision !== input.backup.base_project_revision + 1
+    || base.authority.authority_epoch !== input.backup.base_authority_epoch
+    || base.relevant_rows_hash !== input.backup.relevant_rows_hash
+  ) {
+    fail("LEGACY_IMPORT_LIVE_RESTORE_VERIFICATION_FAILED", "verify", "recorded restore authority does not match the approved backup successor");
+  }
+  const verification = verificationForBase(base, input.backup.backup_sha256);
+  return loadStoredResult(input, verification, "replayed");
+}
+
+function convergePublished(
+  input: RestoreInputSnapshot,
+  intent: RestoreIntent,
+  databasePath: string,
+  recoveryDirectory: string,
+  activeIntentPath: string,
+  ops: LiveRestoreDependencies,
+  installedDatabaseSha256: string,
+  capability: DatabaseReplacementReceiptCapability,
+): LegacyImportLiveRestoreResult {
+  const verification = verifyInstalledDatabase(input, installedDatabaseSha256);
+  const result = recordReceipt(input, intent, verification, capability, ops);
+  ops.boundary?.("after-receipt", { operationId: result.operationId });
+  const receiptRecorded = { ...intent, stage: "receipt-recorded" as const };
+  writeIntent(activeIntentPath, receiptRecorded, ops.syncDirectory);
+  strictCheckpointAfterReceipt();
+  ops.syncFile(databasePath);
+  ops.syncDirectory(dirname(databasePath));
+  const terminal = assessLegacyImportRestore({
+    applicationIdentityHash: input.applicationIdentityHash,
+    backup: input.backup,
+  });
+  if (terminal.decision !== "already-restored") {
+    fail("LEGACY_IMPORT_LIVE_RESTORE_RECEIPT_FAILED", "receipt", "restore receipt did not pass strict terminal validation");
+  }
+  cleanupRecoveryDirectory(recoveryDirectory, intent, ops.syncDirectory);
+  ops.boundary?.("after-cleanup");
+  return result;
+}
+
+function convergeRecoveredPublication(
+  input: RestoreInputSnapshot,
+  intent: RestoreIntent,
+  databasePath: string,
+  recoveryDirectory: string,
+  activeIntentPath: string,
+  ops: LiveRestoreDependencies,
+): LegacyImportLiveRestoreResult {
+  const publishedIntent = intent.stage === "staged"
+    ? { ...intent, stage: "published" as const }
+    : intent;
+  if (intent.stage === "staged") {
+    writeIntent(activeIntentPath, publishedIntent, ops.syncDirectory);
+  }
+  const candidateIdentity = intentCandidateFileIdentity(publishedIntent);
+  if (candidateIdentity === null) {
+    fail("LEGACY_IMPORT_LIVE_RESTORE_CONVERGENCE_FAILED", "converge", "published recovery lacks candidate file identity");
+  }
+  let detached: DatabaseReplacementToken | undefined;
+  try {
+    detached = detachActiveDatabaseForReplacement(databasePath);
+    removeLiveSidecars(databasePath);
+    requireRegularFile(input.backup.backup_ref, input.backup.backup_byte_size);
+    if (hashFile(input.backup.backup_ref) !== input.backup.backup_sha256) {
+      fail("LEGACY_IMPORT_LIVE_RESTORE_VERIFICATION_FAILED", "verify", "recovery backup bytes changed before convergence");
+    }
+    copyFileSync(input.backup.backup_ref, databasePath);
+    chmodSync(databasePath, 0o600);
+    ops.syncFile(databasePath);
+    ops.syncDirectory(dirname(databasePath));
+    const installedDatabaseSha256 = verifyPublishedDatabaseFile(input, databasePath);
+    const activeIntentIdentity = fileIdentity(activeIntentPath, "active restore intent");
+    const capability = reopenDatabaseAfterReplacement(detached, {
+      expectedPublishedSha256: installedDatabaseSha256,
+      persistedOriginalFileIdentity: intentOriginalFileIdentity(publishedIntent),
+      expectedPublishedFileIdentity: candidateIdentity,
+      expectedActiveIntentFileIdentity: activeIntentIdentity,
+      expectedActiveIntentSha256: hashIntent(publishedIntent),
+    });
+    detached = undefined;
+    if (capability === null) {
+      fail("LEGACY_IMPORT_LIVE_RESTORE_REOPEN_FAILED", "reopen", "recovered publication did not produce a receipt capability", true);
+    }
+    return convergePublished(
+      input,
+      publishedIntent,
+      databasePath,
+      recoveryDirectory,
+      activeIntentPath,
+      ops,
+      installedDatabaseSha256,
+      capability,
+    );
+  } catch (error) {
+    if (detached !== undefined) {
+      try { reopenDatabaseAfterReplacement(detached); } catch (reopenError) {
+        fail(
+          "LEGACY_IMPORT_LIVE_RESTORE_REOPEN_FAILED",
+          "reopen",
+          "recovery verification could not reopen the published database",
+          true,
+          { requestHash: intent.requestHash },
+          reopenError,
+        );
+      }
+    }
+    if (error instanceof LegacyImportLiveRestoreError) throw error;
+    fail(
+      "LEGACY_IMPORT_LIVE_RESTORE_CONVERGENCE_FAILED",
+      "converge",
+      "published restore requires exact retry convergence",
+      true,
+      { requestHash: intent.requestHash },
+      error,
+    );
+  }
+}
+
+export function _restoreLegacyImportLiveForTest(
+  value: unknown,
+  overrides: Partial<LiveRestoreDependencies> = {},
+): LegacyImportLiveRestoreResult {
+  const input = snapshotInput(value);
+  const ops = defaultDependencies(overrides);
+  const databasePath = requireDatabasePath();
+  const paths = getDatabaseReplacementPaths(databasePath);
+  const recoveryDirectory = paths.recoveryDirectory;
+  const activeIntentPath = paths.activeIntentPath;
+  const candidatePath = join(recoveryDirectory, CANDIDATE_FILE);
+  const hash = requestHash(input);
+  const lineage = erasedLineage(input);
+  const intent = intentFor(input, hash, lineage, fileIdentity(databasePath, "active database"));
+
+  const active = readIntent(activeIntentPath);
+  if (active !== null) requireMatchingIntent(active, intent);
+  const terminal = existingTerminalResult(input);
+  if (terminal !== null) {
+    if (active !== null) {
+      if (intentOwnerIsActive(active)) {
+        fail(
+          "LEGACY_IMPORT_LIVE_RESTORE_INTENT_CONFLICT",
+          "converge",
+          "the matching restore owner is still active",
+          true,
+          { requestHash: hash, stage: active.stage },
+        );
+      }
+      strictCheckpointAfterReceipt();
+      ops.syncFile(databasePath);
+      ops.syncDirectory(dirname(databasePath));
+      const durable = assessLegacyImportRestore({
+        applicationIdentityHash: input.applicationIdentityHash,
+        backup: input.backup,
+      });
+      if (durable.decision !== "already-restored") {
+        fail("LEGACY_IMPORT_LIVE_RESTORE_RECEIPT_FAILED", "receipt", "terminal restore could not complete durable convergence");
+      }
+      cleanupRecoveryDirectory(recoveryDirectory, active, ops.syncDirectory);
+    }
+    return terminal;
+  }
+
+  if (active !== null) {
+    if (intentOwnerIsActive(active)) {
+      fail(
+        "LEGACY_IMPORT_LIVE_RESTORE_INTENT_CONFLICT",
+        "converge",
+        "the matching restore owner is still active",
+        true,
+        { requestHash: hash, stage: active.stage },
+      );
+    }
+    const current = captureCurrentLegacyImportBaseSnapshot();
+    const installedBackup = current.authority.project_id === input.backup.project_id
+      && current.authority.revision === input.backup.base_project_revision
+      && current.authority.authority_epoch === input.backup.base_authority_epoch
+      && current.relevant_rows_hash === input.backup.relevant_rows_hash;
+    const currentIdentity = fileIdentity(databasePath, "active recovery database");
+    const originalIdentity = intentOriginalFileIdentity(active);
+    const candidateIdentity = intentCandidateFileIdentity(active);
+    if (sameFileIdentity(currentIdentity, originalIdentity)
+      && (active.stage === "claimed" || active.stage === "staged")) {
+      cleanupRecoveryDirectory(recoveryDirectory, active, ops.syncDirectory);
+      return _restoreLegacyImportLiveForTest(input, overrides);
+    }
+    if (installedBackup
+      && candidateIdentity !== null
+      && sameFileIdentity(currentIdentity, candidateIdentity)
+      && active.stage !== "claimed"
+      && !pathEntryExists(candidatePath)) {
+      return convergeRecoveredPublication(
+        input,
+        active,
+        databasePath,
+        recoveryDirectory,
+        activeIntentPath,
+        ops,
+      );
+    }
+    fail(
+      "LEGACY_IMPORT_LIVE_RESTORE_INTENT_CONFLICT",
+      "converge",
+      "the same restore request is already staged by another owner",
+      true,
+      { requestHash: hash, stage: active.stage },
+    );
+  }
+
+  requireFreshEligibleAssessment(input);
+  const applicationOperationId = input.assessment.facts.applicationOperationId;
+  if (typeof applicationOperationId !== "string") {
+    fail("LEGACY_IMPORT_LIVE_RESTORE_NOT_ELIGIBLE", "recheck", "eligible assessment lacks the Application operation identity");
+  }
+  const application = inspectLegacyImportApplicationEvidence(applicationOperationId);
+  if (application.applicationIdentityHash !== input.applicationIdentityHash) {
+    fail("LEGACY_IMPORT_LIVE_RESTORE_NOT_ELIGIBLE", "recheck", "Application identity changed before restore");
+  }
+  if (application.operationId !== lineage.applicationOperationId
+    || application.resultingProjectRevision !== lineage.applicationResultingProjectRevision
+    || application.resultingAuthorityEpoch !== lineage.applicationResultingAuthorityEpoch
+    || application.backupId !== input.backup.backup_id
+    || application.preview.preview.preview_id !== input.backup.preview_id
+    || application.preview.preview_hash !== input.backup.preview_hash) {
+    fail("LEGACY_IMPORT_LIVE_RESTORE_NOT_ELIGIBLE", "recheck", "Application evidence changed before restore");
+  }
+
+  let detached: DatabaseReplacementToken | undefined;
+  let published = false;
+  let ownsIntent = false;
+  try {
+    ensureRecoveryDirectory(recoveryDirectory);
+    ownsIntent = claimIntent(activeIntentPath, intent, ops.syncDirectory);
+    if (!ownsIntent) {
+      const competing = readIntent(activeIntentPath);
+      if (competing !== null) requireMatchingIntent(competing, intent);
+      fail(
+        "LEGACY_IMPORT_LIVE_RESTORE_INTENT_CONFLICT",
+        "converge",
+        "the same restore request acquired the replacement fence first",
+        true,
+        { requestHash: hash },
+      );
+    }
+    activeRestoreOwners.add(intent.ownerNonce);
+    ops.boundary?.("after-intent", { requestHash: hash });
+    ops.copyFile(input.backup.backup_ref, candidatePath);
+    ops.syncFile(candidatePath);
+    verifyCandidate(input, application, candidatePath);
+    const candidateIdentity = fileIdentity(candidatePath, "staged restore candidate");
+    const stagedIntent: RestoreIntent = {
+      ...intent,
+      stage: "staged",
+      candidateDatabaseDevice: candidateIdentity.device,
+      candidateDatabaseInode: candidateIdentity.inode,
+    };
+    writeIntent(activeIntentPath, stagedIntent, ops.syncDirectory);
+    ops.boundary?.("after-stage", { candidatePath });
+
+    requireFreshEligibleAssessment(input);
+    detached = detachActiveDatabaseForReplacement(databasePath);
+    removeLiveSidecars(databasePath);
+    ops.boundary?.("after-detach");
+    ops.publish(candidatePath, databasePath);
+    published = true;
+    ops.boundary?.("after-database-publish", { databasePath });
+    ops.syncDirectory(dirname(databasePath));
+    const installedDatabaseSha256 = verifyPublishedDatabaseFile(input, databasePath);
+    const publishedIntent = { ...stagedIntent, stage: "published" as const };
+    writeIntent(activeIntentPath, publishedIntent, ops.syncDirectory);
+    ops.boundary?.("after-publish", { databasePath });
+
+    const activeIntentIdentity = fileIdentity(activeIntentPath, "active restore intent");
+    const receiptCapability = reopenDatabaseAfterReplacement(detached, {
+      expectedPublishedSha256: installedDatabaseSha256,
+      persistedOriginalFileIdentity: intentOriginalFileIdentity(publishedIntent),
+      expectedPublishedFileIdentity: candidateIdentity,
+      expectedActiveIntentFileIdentity: activeIntentIdentity,
+      expectedActiveIntentSha256: hashIntent(publishedIntent),
+    });
+    if (receiptCapability === null) {
+      fail(
+        "LEGACY_IMPORT_LIVE_RESTORE_REOPEN_FAILED",
+        "reopen",
+        "published restore reopened the original database file",
+        true,
+        { requestHash: hash },
+      );
+    }
+    detached = undefined;
+    ops.boundary?.("after-reopen", { databasePath });
+    return convergePublished(
+      input,
+      publishedIntent,
+      databasePath,
+      recoveryDirectory,
+      activeIntentPath,
+      ops,
+      installedDatabaseSha256,
+      receiptCapability,
+    );
+  } catch (error) {
+    if (detached !== undefined) {
+      try {
+        if (published) {
+          removeLiveSidecars(databasePath);
+          const recoveryIntent = readIntent(activeIntentPath);
+          if (recoveryIntent === null) {
+            fail("LEGACY_IMPORT_LIVE_RESTORE_INTENT_CONFLICT", "converge", "published restore lost its active intent");
+          }
+          requireMatchingIntent(recoveryIntent, intent);
+          requireSameIntentOwner(recoveryIntent, intent);
+          const candidateIdentity = intentCandidateFileIdentity(recoveryIntent);
+          if (candidateIdentity === null) {
+            fail("LEGACY_IMPORT_LIVE_RESTORE_CONVERGENCE_FAILED", "converge", "published restore lost its candidate identity");
+          }
+          reopenDatabaseAfterReplacement(detached, {
+            expectedPublishedSha256: input.backup.backup_sha256,
+            persistedOriginalFileIdentity: intentOriginalFileIdentity(recoveryIntent),
+            expectedPublishedFileIdentity: candidateIdentity,
+            expectedActiveIntentFileIdentity: fileIdentity(activeIntentPath, "active restore intent"),
+            expectedActiveIntentSha256: hashIntent(recoveryIntent),
+          });
+        } else {
+          reopenDatabaseAfterReplacement(detached);
+        }
+        detached = undefined;
+      } catch (reopenError) {
+        fail(
+          "LEGACY_IMPORT_LIVE_RESTORE_REOPEN_FAILED",
+          "reopen",
+          published
+            ? "published restore could not reopen for deterministic convergence"
+            : "original database could not reopen after pre-publication failure",
+          published,
+          { requestHash: hash },
+          reopenError,
+        );
+      }
+    }
+    if (!published && ownsIntent) {
+      try { cleanupRecoveryDirectory(recoveryDirectory, intent, ops.syncDirectory); } catch { /* surface original */ }
+    }
+    if (error instanceof LegacyImportLiveRestoreError) throw error;
+    fail(
+      published
+        ? "LEGACY_IMPORT_LIVE_RESTORE_CONVERGENCE_FAILED"
+        : "LEGACY_IMPORT_LIVE_RESTORE_STAGE_FAILED",
+      published ? "converge" : "stage",
+      published
+        ? "published restore requires exact retry convergence"
+        : "live restore failed before publication",
+      published,
+      { requestHash: hash },
+      error,
+    );
+  } finally {
+    activeRestoreOwners.delete(intent.ownerNonce);
+  }
+}
+
+export function restoreLegacyImportLive(value: unknown): LegacyImportLiveRestoreResult {
+  return _restoreLegacyImportLiveForTest(value);
+}

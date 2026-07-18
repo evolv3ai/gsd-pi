@@ -10,11 +10,19 @@ import {
 } from "../errors.js";
 import {
   canonicalLegacyImportJson,
+  hashLegacyImportValue,
   isStrictLegacyImportData,
   isValidLegacyImportPreviewArtifact,
   type LegacyImportPreviewArtifact,
 } from "../legacy-import-preview.js";
-import { getDb, immediateTransaction, isInTransaction } from "./engine.js";
+import {
+  assertDatabaseReplacementReceiptIntent,
+  getDb,
+  immediateTransaction,
+  isInTransaction,
+  withDatabaseReplacementWriteBypass,
+  type DatabaseReplacementReceiptCapability,
+} from "./engine.js";
 
 export type DomainJsonValue =
   | null
@@ -52,11 +60,59 @@ export type AuthorityCutoverDomainOperationRequest = Omit<
   operationType: "authority.cutover";
 };
 
+export interface ImportRestoreReceiptContract {
+  readonly applicationOperationId: string;
+  readonly applicationIdentityHash: string;
+  readonly applicationResultingProjectRevision: number;
+  readonly applicationResultingAuthorityEpoch: number;
+  readonly erasedLineageHash: string;
+  readonly erasedLineageJson: string;
+  readonly previewId: string;
+  readonly previewHash: string;
+  readonly backupId: string;
+  readonly backupSha256: string;
+  readonly backupByteSize: number;
+  readonly backupSchemaVersion: number;
+  readonly backupProjectRevision: number;
+  readonly backupAuthorityEpoch: number;
+  readonly differenceHash: string;
+  readonly consentHash: string;
+  readonly verificationHash: string;
+}
+
+export type ImportRestoreDomainOperationRequest = Omit<
+  DomainOperationRequest,
+  "operationType" | "payload"
+> & {
+  operationType: "import.restore";
+  payload: ImportRestoreReceiptContract;
+};
+
 interface AuthorityCutoverReceiptContract {
   readonly authorityContractVersion: number;
   readonly evidenceHash: string;
   readonly consentHash: string;
 }
+
+const IMPORT_RESTORE_RECEIPT_KEYS = [
+  "applicationOperationId",
+  "applicationIdentityHash",
+  "applicationResultingProjectRevision",
+  "applicationResultingAuthorityEpoch",
+  "erasedLineageHash",
+  "erasedLineageJson",
+  "previewId",
+  "previewHash",
+  "backupId",
+  "backupSha256",
+  "backupByteSize",
+  "backupSchemaVersion",
+  "backupProjectRevision",
+  "backupAuthorityEpoch",
+  "differenceHash",
+  "consentHash",
+  "verificationHash",
+] as const satisfies readonly (keyof ImportRestoreReceiptContract)[];
 
 type DomainOperationRequestIdentity = Omit<DomainOperationRequest, "payload">;
 
@@ -190,6 +246,110 @@ function snapshotAuthorityCutoverReceiptContract(payload: unknown): AuthorityCut
     evidenceHash,
     consentHash,
   });
+}
+
+function snapshotImportRestoreReceiptContract(payload: unknown): ImportRestoreReceiptContract {
+  if (payload === null || typeof payload !== "object" || Array.isArray(payload)) {
+    throw new Error("import restore payload must be the exact receipt contract");
+  }
+  const descriptors = Object.getOwnPropertyDescriptors(payload);
+  const keys = Object.keys(descriptors);
+  if (
+    Object.getPrototypeOf(payload) !== Object.prototype
+    || Object.getOwnPropertySymbols(payload).length !== 0
+    || keys.length !== IMPORT_RESTORE_RECEIPT_KEYS.length
+    || !IMPORT_RESTORE_RECEIPT_KEYS.every((key) => (
+      Object.hasOwn(descriptors, key)
+      && Object.hasOwn(descriptors[key] ?? {}, "value")
+      && descriptors[key]?.enumerable === true
+    ))
+  ) {
+    throw new Error("import restore payload must be the exact receipt contract");
+  }
+
+  const value = Object.fromEntries(IMPORT_RESTORE_RECEIPT_KEYS.map((key) => [
+    key,
+    descriptors[key]?.value,
+  ])) as unknown as ImportRestoreReceiptContract;
+  requireNonBlank(value.applicationOperationId, "applicationOperationId");
+  requireNonBlank(value.previewId, "previewId");
+  for (const field of [
+    "applicationIdentityHash",
+    "erasedLineageHash",
+    "previewHash",
+    "backupId",
+    "backupSha256",
+    "differenceHash",
+    "consentHash",
+    "verificationHash",
+  ] as const) {
+    if (typeof value[field] !== "string" || !/^sha256:[0-9a-f]{64}$/.test(value[field])) {
+      throw new Error(`${field} must be a canonical SHA-256 digest`);
+    }
+  }
+  requireNonNegativeSafeInteger(
+    value.applicationResultingProjectRevision,
+    "applicationResultingProjectRevision",
+  );
+  if (value.applicationResultingProjectRevision === 0) {
+    throw new Error("applicationResultingProjectRevision must be positive");
+  }
+  requireNonNegativeSafeInteger(
+    value.applicationResultingAuthorityEpoch,
+    "applicationResultingAuthorityEpoch",
+  );
+  requireNonNegativeSafeInteger(value.backupByteSize, "backupByteSize");
+  if (value.backupByteSize === 0) throw new Error("backupByteSize must be positive");
+  requireNonNegativeSafeInteger(value.backupSchemaVersion, "backupSchemaVersion");
+  if (value.backupSchemaVersion === 0) throw new Error("backupSchemaVersion must be positive");
+  requireNonNegativeSafeInteger(value.backupProjectRevision, "backupProjectRevision");
+  requireNonNegativeSafeInteger(value.backupAuthorityEpoch, "backupAuthorityEpoch");
+  if (
+    value.applicationResultingProjectRevision !== value.backupProjectRevision + 1
+    || value.applicationResultingAuthorityEpoch !== value.backupAuthorityEpoch
+  ) {
+    throw new Error("import restore Application authority must match the backup successor");
+  }
+
+  let lineage: unknown;
+  try {
+    lineage = JSON.parse(value.erasedLineageJson);
+  } catch {
+    throw new Error("erasedLineageJson must be canonical JSON");
+  }
+  if (
+    lineage === null
+    || typeof lineage !== "object"
+    || Array.isArray(lineage)
+    || Object.getPrototypeOf(lineage) !== Object.prototype
+    || canonicalLegacyImportJson(lineage) !== value.erasedLineageJson
+    || hashLegacyImportValue(lineage) !== value.erasedLineageHash
+  ) {
+    throw new Error("erased import lineage must be canonical and hash-bound");
+  }
+  const lineageRecord = lineage as Record<string, unknown>;
+  const lineageKeys = Object.keys(lineageRecord);
+  const expectedLineageKeys = [
+    "applicationIdentityHash",
+    "applicationOperationId",
+    "applicationResultingAuthorityEpoch",
+    "applicationResultingProjectRevision",
+    "schemaVersion",
+  ];
+  if (
+    lineageKeys.length !== expectedLineageKeys.length
+    || !expectedLineageKeys.every((key) => Object.hasOwn(lineageRecord, key))
+    || lineageRecord["schemaVersion"] !== 1
+    || lineageRecord["applicationOperationId"] !== value.applicationOperationId
+    || lineageRecord["applicationIdentityHash"] !== value.applicationIdentityHash
+    || lineageRecord["applicationResultingProjectRevision"]
+      !== value.applicationResultingProjectRevision
+    || lineageRecord["applicationResultingAuthorityEpoch"]
+      !== value.applicationResultingAuthorityEpoch
+  ) {
+    throw new Error("erased import lineage must exactly match the receipt contract");
+  }
+  return Object.freeze({ ...value });
 }
 
 function requiredRequestDataProperty(request: object, field: string): unknown {
@@ -541,6 +701,64 @@ function requireMatchingAuthorityCutover(
   }
 }
 
+function requireMatchingImportRestore(
+  operation: OperationRow,
+  contract: Readonly<ImportRestoreReceiptContract>,
+): void {
+  const row = getDb().prepare(`
+    SELECT COUNT(*) AS count
+    FROM workflow_import_restores
+    WHERE operation_id = :operation_id
+      AND project_id = :project_id
+      AND application_operation_id = :application_operation_id
+      AND application_identity_hash = :application_identity_hash
+      AND application_resulting_project_revision = :application_resulting_project_revision
+      AND application_resulting_authority_epoch = :application_resulting_authority_epoch
+      AND erased_lineage_hash = :erased_lineage_hash
+      AND erased_lineage_json = :erased_lineage_json
+      AND preview_id = :preview_id
+      AND preview_hash = :preview_hash
+      AND backup_id = :backup_id
+      AND backup_sha256 = :backup_sha256
+      AND backup_byte_size = :backup_byte_size
+      AND backup_schema_version = :backup_schema_version
+      AND backup_project_revision = :backup_project_revision
+      AND backup_authority_epoch = :backup_authority_epoch
+      AND difference_hash = :difference_hash
+      AND consent_hash = :consent_hash
+      AND verification_hash = :verification_hash
+      AND restored_at = :restored_at
+      AND resulting_project_revision = :resulting_project_revision
+      AND resulting_authority_epoch = :resulting_authority_epoch
+  `).get({
+    ":operation_id": operation.operation_id,
+    ":project_id": operation.project_id,
+    ":application_operation_id": contract.applicationOperationId,
+    ":application_identity_hash": contract.applicationIdentityHash,
+    ":application_resulting_project_revision": contract.applicationResultingProjectRevision,
+    ":application_resulting_authority_epoch": contract.applicationResultingAuthorityEpoch,
+    ":erased_lineage_hash": contract.erasedLineageHash,
+    ":erased_lineage_json": contract.erasedLineageJson,
+    ":preview_id": contract.previewId,
+    ":preview_hash": contract.previewHash,
+    ":backup_id": contract.backupId,
+    ":backup_sha256": contract.backupSha256,
+    ":backup_byte_size": contract.backupByteSize,
+    ":backup_schema_version": contract.backupSchemaVersion,
+    ":backup_project_revision": contract.backupProjectRevision,
+    ":backup_authority_epoch": contract.backupAuthorityEpoch,
+    ":difference_hash": contract.differenceHash,
+    ":consent_hash": contract.consentHash,
+    ":verification_hash": contract.verificationHash,
+    ":restored_at": operation.created_at,
+    ":resulting_project_revision": operation.resulting_revision,
+    ":resulting_authority_epoch": operation.resulting_authority_epoch,
+  });
+  if (row?.["count"] !== 1) {
+    throw new Error("import restore Domain Operation requires one exact receipt");
+  }
+}
+
 function staleAuthority(request: DomainOperationRequestIdentity, authority: AuthorityRow): never {
   if (authority.revision !== request.expectedRevision) {
     throw new GSDError(
@@ -580,7 +798,9 @@ function executeDomainOperationCore(
   hash: string,
   importPreview: LegacyImportPreviewArtifact | null,
   authorityCutover: Readonly<AuthorityCutoverReceiptContract> | null,
+  importRestore: Readonly<ImportRestoreReceiptContract> | null,
   mutate: (context: Readonly<DomainOperationContext>) => DomainOperationMutation,
+  preCommit: (() => void) | null = null,
 ): DomainOperationResult {
   const result = runDomainOperationTransaction((): DomainOperationResult => {
     const db = getDb();
@@ -608,6 +828,8 @@ function executeDomainOperationCore(
       requireReplayMatch(existing, request, hash);
       if (importPreview) requireMatchingImportApplication(existing, importPreview);
       if (authorityCutover) requireMatchingAuthorityCutover(existing, authorityCutover);
+      if (importRestore) requireMatchingImportRestore(existing, importRestore);
+      preCommit?.();
       return loadReceipt(existing, "replayed");
     }
 
@@ -763,6 +985,7 @@ function executeDomainOperationCore(
     hitFault("after-projections");
     if (importPreview) requireMatchingImportApplication(storedOperation, importPreview);
     if (authorityCutover) requireMatchingAuthorityCutover(storedOperation, authorityCutover);
+    if (importRestore) requireMatchingImportRestore(storedOperation, importRestore);
     hitFault("before-cas");
 
     const update = db.prepare(`
@@ -790,6 +1013,7 @@ function executeDomainOperationCore(
       throw new GSDError(GSD_REVISION_CONFLICT, "domain operation authority CAS failed");
     }
 
+    preCommit?.();
     return loadReceipt(storedOperation, "committed");
   });
 
@@ -814,6 +1038,9 @@ export function executeDomainOperation(
   if (snapshot.identity.operationType === "authority.cutover") {
     throw new Error("authority.cutover requires the typed authority cutover operation");
   }
+  if (snapshot.identity.operationType === "import.restore") {
+    throw new Error("import.restore requires the typed import restore operation");
+  }
   if (isInTransaction()) {
     throw new Error("Domain Operation must own the outer transaction");
   }
@@ -824,6 +1051,7 @@ export function executeDomainOperation(
   return executeDomainOperationCore(
     snapshot.identity,
     requestHash(stableRequest),
+    null,
     null,
     null,
     mutate,
@@ -855,7 +1083,7 @@ export function executeImportDomainOperation(
   if (isInTransaction()) {
     throw new Error("Domain Operation must own the outer transaction");
   }
-  return executeDomainOperationCore(snapshot.identity, preview.preview_hash, preview, null, mutate);
+  return executeDomainOperationCore(snapshot.identity, preview.preview_hash, preview, null, null, mutate);
 }
 
 /**
@@ -888,6 +1116,50 @@ export function _executeAuthorityCutoverDomainOperation(
     requestHash(stableRequest, true),
     null,
     receipt,
+    null,
     mutate,
+  );
+}
+
+/**
+ * Private receipt-bound seam for live restore. Public callers must first
+ * replace and verify the database file, then use this seam to record the exact
+ * erased Application lineage in the restored database.
+ */
+export function _executeImportRestoreDomainOperation(
+  capability: DatabaseReplacementReceiptCapability,
+  request: ImportRestoreDomainOperationRequest,
+  mutate: (context: Readonly<DomainOperationContext>) => DomainOperationMutation,
+): DomainOperationResult {
+  const snapshot = snapshotDomainOperationRequest(request);
+  validateRequestScalars(snapshot.identity);
+  if (snapshot.identity.operationType !== "import.restore") {
+    throw new Error("typed import restore requires operationType import.restore");
+  }
+  const receipt = snapshotImportRestoreReceiptContract(snapshot.payload);
+  if (
+    snapshot.identity.expectedRevision !== receipt.backupProjectRevision
+    || snapshot.identity.expectedAuthorityEpoch !== receipt.backupAuthorityEpoch
+  ) {
+    throw new Error("import.restore authority fence must match the restored backup");
+  }
+  if (isInTransaction()) {
+    throw new Error("Domain Operation must own the outer transaction");
+  }
+  const stableRequest = {
+    ...snapshot.identity,
+    payload: receipt as unknown as DomainJsonValue,
+  };
+  return withDatabaseReplacementWriteBypass(
+    capability,
+    () => executeDomainOperationCore(
+      snapshot.identity,
+      requestHash(stableRequest),
+      null,
+      null,
+      receipt,
+      mutate,
+      () => assertDatabaseReplacementReceiptIntent(capability),
+    ),
   );
 }

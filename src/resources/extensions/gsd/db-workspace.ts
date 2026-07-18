@@ -39,6 +39,11 @@ import {
   type LegacyImportPreviewCreateInput,
 } from "./legacy-import-preview.js";
 import { drillLegacyImportBackupRestore } from "./legacy-import-restore-drill.js";
+export {
+  restoreLegacyImportLive,
+  type LegacyImportLiveRestoreInput,
+  type LegacyImportLiveRestoreResult,
+} from "./legacy-import-live-restore.js";
 import { resolveGsdPathContract, gsdRoot } from "./paths.js";
 import { logWarning, setLogBasePath } from "./workflow-logger.js";
 

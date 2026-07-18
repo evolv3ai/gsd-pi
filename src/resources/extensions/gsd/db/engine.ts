@@ -9,8 +9,19 @@
 // allowlisted in tests/single-writer-invariant.test.ts alongside the explicit
 // writer layer.
 import { createRequire } from "node:module";
-import { existsSync, copyFileSync, realpathSync } from "node:fs";
-import { resolve } from "node:path";
+import { createHash } from "node:crypto";
+import {
+  closeSync,
+  constants,
+  copyFileSync,
+  existsSync,
+  fstatSync,
+  lstatSync,
+  openSync,
+  readFileSync,
+  realpathSync,
+} from "node:fs";
+import { basename, dirname, join, resolve } from "node:path";
 import { GSDError, GSD_STALE_STATE } from "../errors.js";
 import type { GsdWorkspace, MilestoneScope } from "../workspace.js";
 import { logError, logWarning } from "../workflow-logger.js";
@@ -540,6 +551,549 @@ let _currentIdentityKey: string | null = null;
  * callers switch between known workspaces via openDatabaseByWorkspace().
  */
 const _dbCache = createDbConnectionCache();
+const _isolatedDatabases = new Map<DbAdapter, string>();
+
+export interface DatabaseReplacementPaths {
+  readonly recoveryDirectory: string;
+  readonly activeIntentPath: string;
+}
+
+export interface DatabaseReplacementToken {
+  readonly kind: "gsd-database-replacement-token";
+}
+
+export interface DatabaseReplacementReceiptCapability {
+  readonly kind: "gsd-database-replacement-receipt-capability";
+}
+
+export interface DatabaseReplacementFileIdentity {
+  readonly device: string;
+  readonly inode: string;
+}
+
+export interface DatabaseReplacementReopenEvidence {
+  readonly expectedPublishedSha256?: string;
+  readonly persistedOriginalFileIdentity?: DatabaseReplacementFileIdentity;
+  readonly expectedPublishedFileIdentity?: DatabaseReplacementFileIdentity;
+  readonly expectedActiveIntentFileIdentity?: DatabaseReplacementFileIdentity;
+  readonly expectedActiveIntentSha256?: string;
+}
+
+interface FileIdentity {
+  readonly device: bigint;
+  readonly inode: bigint;
+}
+
+interface DatabaseReplacementTokenState {
+  readonly databasePath: string;
+  readonly activeIntentPath: string;
+  readonly originalFileIdentity: FileIdentity;
+  readonly activeIdentityKey: string | null;
+  readonly cacheEntries: readonly {
+    readonly key: string;
+    readonly dbPath: string;
+  }[];
+}
+
+const _databaseReplacementTokenStates = new WeakMap<
+  DatabaseReplacementToken,
+  DatabaseReplacementTokenState
+>();
+interface DatabaseReplacementReceiptCapabilityState {
+  readonly databasePath: string;
+  readonly activeIntentPath: string;
+  readonly activeIntentFileIdentity: FileIdentity;
+  readonly activeIntentSha256: string;
+  readonly database: DbAdapter;
+  readonly reopenedFileIdentity: FileIdentity;
+  readonly postOpenDatabaseSha256: string;
+}
+
+const _databaseReplacementReceiptCapabilityStates = new WeakMap<
+  DatabaseReplacementReceiptCapability,
+  DatabaseReplacementReceiptCapabilityState
+>();
+let _databaseReplacementWriteBypassDepth = 0;
+
+/** Deterministic same-directory paths owned by live database replacement. */
+export function getDatabaseReplacementPaths(databasePath: string): DatabaseReplacementPaths {
+  if (typeof databasePath !== "string" || databasePath.length === 0 || databasePath === ":memory:") {
+    throw new GSDError(GSD_STALE_STATE, "gsd-db: Database replacement requires a file-backed database path");
+  }
+  const resolvedPath = resolve(databasePath);
+  const recoveryDirectory = join(dirname(resolvedPath), `${basename(resolvedPath)}.recovery`);
+  return Object.freeze({
+    recoveryDirectory,
+    activeIntentPath: join(recoveryDirectory, "active.json"),
+  });
+}
+
+function pathExistsFailClosed(path: string): boolean {
+  try {
+    lstatSync(path);
+    return true;
+  } catch (error) {
+    if ((error as { code?: unknown }).code === "ENOENT") return false;
+    throw new GSDError(
+      GSD_STALE_STATE,
+      `gsd-db: Cannot inspect database replacement fence at ${path}`,
+      { cause: error },
+    );
+  }
+}
+
+function strictFileIdentity(path: string, label: string): FileIdentity {
+  let file;
+  try {
+    file = lstatSync(path, { bigint: true });
+  } catch (error) {
+    throw new GSDError(GSD_STALE_STATE, `gsd-db: Cannot inspect ${label} at ${path}`, { cause: error });
+  }
+  if (file.isSymbolicLink() || !file.isFile()) {
+    throw new GSDError(GSD_STALE_STATE, `gsd-db: ${label} must be a real regular file`);
+  }
+  return Object.freeze({ device: file.dev, inode: file.ino });
+}
+
+function sameFileIdentity(left: FileIdentity, right: FileIdentity): boolean {
+  return left.device === right.device && left.inode === right.inode;
+}
+
+function strictFileProof(path: string, label: string): {
+  readonly identity: FileIdentity;
+  readonly sha256: string;
+} {
+  let fileDescriptor: number | undefined;
+  try {
+    fileDescriptor = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW);
+    const before = fstatSync(fileDescriptor, { bigint: true });
+    if (!before.isFile()) {
+      throw new GSDError(GSD_STALE_STATE, `gsd-db: ${label} must be a real regular file`);
+    }
+    const content = readFileSync(fileDescriptor);
+    const after = fstatSync(fileDescriptor, { bigint: true });
+    const beforeIdentity = Object.freeze({ device: before.dev, inode: before.ino });
+    const afterIdentity = Object.freeze({ device: after.dev, inode: after.ino });
+    if (!sameFileIdentity(beforeIdentity, afterIdentity) || before.size !== after.size || before.mtimeNs !== after.mtimeNs) {
+      throw new GSDError(GSD_STALE_STATE, `gsd-db: ${label} changed while it was inspected`);
+    }
+    return Object.freeze({
+      identity: beforeIdentity,
+      sha256: `sha256:${createHash("sha256").update(content).digest("hex")}`,
+    });
+  } catch (error) {
+    if (error instanceof GSDError) throw error;
+    throw new GSDError(GSD_STALE_STATE, `gsd-db: Cannot inspect ${label} at ${path}`, { cause: error });
+  } finally {
+    if (fileDescriptor !== undefined) closeSync(fileDescriptor);
+  }
+}
+
+function requireExactFileProof(
+  path: string,
+  label: string,
+  expectedIdentity: FileIdentity,
+  expectedSha256: string,
+): void {
+  const proof = strictFileProof(path, label);
+  if (!sameFileIdentity(proof.identity, expectedIdentity) || proof.sha256 !== expectedSha256) {
+    throw new GSDError(GSD_STALE_STATE, `gsd-db: ${label} does not match the replacement proof`);
+  }
+}
+
+function parseFileIdentity(value: DatabaseReplacementFileIdentity, label: string): FileIdentity {
+  try {
+    if (!/^(?:0|[1-9][0-9]*)$/.test(value.device) || !/^(?:0|[1-9][0-9]*)$/.test(value.inode)) {
+      throw new Error("invalid identity");
+    }
+    return Object.freeze({ device: BigInt(value.device), inode: BigInt(value.inode) });
+  } catch (error) {
+    throw new GSDError(GSD_STALE_STATE, `gsd-db: Invalid ${label}`, { cause: error });
+  }
+}
+
+function requireExpectedSha256(value: string | undefined, label: string): string {
+  if (typeof value !== "string" || !/^sha256:[a-f0-9]{64}$/.test(value)) {
+    throw new GSDError(GSD_STALE_STATE, `gsd-db: Replacement reopen requires an exact ${label} SHA-256`);
+  }
+  return value;
+}
+
+function assertDatabaseReplacementFenceAllowsWrite(): void {
+  if (_databaseReplacementWriteBypassDepth > 0 || !currentPath || currentPath === ":memory:") return;
+  const { activeIntentPath } = getDatabaseReplacementPaths(currentPath);
+  if (pathExistsFailClosed(activeIntentPath)) {
+    throw new GSDError(
+      GSD_STALE_STATE,
+      `gsd-db: Database writes are fenced while replacement intent exists at ${activeIntentPath}`,
+    );
+  }
+}
+
+/**
+ * Permit the live-restore owner to record its receipt while its write fence is
+ * present. The callback is deliberately synchronous so the bypass cannot leak
+ * into unrelated event-loop work.
+ */
+export function withDatabaseReplacementWriteBypass<T>(
+  capability: DatabaseReplacementReceiptCapability,
+  fn: () => T,
+): T {
+  const state = _databaseReplacementReceiptCapabilityStates.get(capability);
+  if (!state) {
+    throw new GSDError(GSD_STALE_STATE, "gsd-db: Invalid or consumed database replacement receipt capability");
+  }
+  if (_databaseReplacementWriteBypassDepth !== 0) {
+    throw new GSDError(GSD_STALE_STATE, "gsd-db: Database replacement receipt capability is already in use");
+  }
+  if (
+    currentDb !== state.database
+    || !currentPath
+    || resolve(currentPath) !== state.databasePath
+  ) {
+    throw new GSDError(GSD_STALE_STATE, "gsd-db: Database replacement receipt capability does not match the active database");
+  }
+  const currentDatabaseProof = strictFileProof(state.databasePath, "replacement database");
+  if (
+    !sameFileIdentity(currentDatabaseProof.identity, state.reopenedFileIdentity)
+    || currentDatabaseProof.sha256 !== state.postOpenDatabaseSha256
+  ) {
+    throw new GSDError(GSD_STALE_STATE, "gsd-db: Replacement database changed before its receipt transaction");
+  }
+  requireExactFileProof(
+    state.activeIntentPath,
+    "database replacement intent",
+    state.activeIntentFileIdentity,
+    state.activeIntentSha256,
+  );
+
+  _databaseReplacementWriteBypassDepth++;
+  try {
+    const result = fn();
+    if (result instanceof Promise) {
+      throw new GSDError(GSD_STALE_STATE, "gsd-db: Database replacement bypass callback must be synchronous");
+    }
+    requireExactFileProof(
+      state.activeIntentPath,
+      "database replacement intent",
+      state.activeIntentFileIdentity,
+      state.activeIntentSha256,
+    );
+    if (
+      currentDb !== state.database
+      || !currentPath
+      || resolve(currentPath) !== state.databasePath
+      || !sameFileIdentity(
+        strictFileIdentity(state.databasePath, "replacement database"),
+        state.reopenedFileIdentity,
+      )
+    ) {
+      throw new GSDError(GSD_STALE_STATE, "gsd-db: Database replacement changed while recording its receipt");
+    }
+    _databaseReplacementReceiptCapabilityStates.delete(capability);
+    return result;
+  } finally {
+    _databaseReplacementWriteBypassDepth--;
+  }
+}
+
+/** Revalidate the exact recovery intent from inside the receipt transaction. */
+export function assertDatabaseReplacementReceiptIntent(
+  capability: DatabaseReplacementReceiptCapability,
+): void {
+  const state = _databaseReplacementReceiptCapabilityStates.get(capability);
+  if (!state) {
+    throw new GSDError(GSD_STALE_STATE, "gsd-db: Invalid or consumed database replacement receipt capability");
+  }
+  requireExactFileProof(
+    state.activeIntentPath,
+    "database replacement intent",
+    state.activeIntentFileIdentity,
+    state.activeIntentSha256,
+  );
+}
+
+function strictRealDatabasePath(path: string, label: string): string {
+  if (typeof path !== "string" || path.length === 0 || path === ":memory:") {
+    throw new GSDError(GSD_STALE_STATE, `gsd-db: ${label} must be a file-backed database path`);
+  }
+  const resolvedPath = resolve(path);
+  strictFileIdentity(resolvedPath, label);
+  return realpathSync(resolvedPath);
+}
+
+function ownDataValue(row: Record<string, unknown>, key: string): unknown {
+  const descriptor = Object.getOwnPropertyDescriptor(row, key);
+  if (!descriptor || !("value" in descriptor)) {
+    throw new GSDError(GSD_STALE_STATE, `gsd-db: Invalid ${key} value from SQLite replacement preflight`);
+  }
+  return descriptor.value;
+}
+
+function assertActiveDatabaseList(db: DbAdapter, expectedRealPath: string): void {
+  const rows = db.prepare("PRAGMA database_list").all();
+  const row = rows.find((entry) => ownDataValue(entry, "name") === "main");
+  if (!row || rows.some((entry) => {
+    const name = ownDataValue(entry, "name");
+    const file = ownDataValue(entry, "file");
+    return name !== "main" && !(name === "temp" && file === "");
+  })) {
+    throw new GSDError(GSD_STALE_STATE, "gsd-db: Database replacement requires one main database and no attached files");
+  }
+  const seq = ownDataValue(row, "seq");
+  const name = ownDataValue(row, "name");
+  const file = ownDataValue(row, "file");
+  if (seq !== 0 || name !== "main" || typeof file !== "string" || realpathSync(file) !== expectedRealPath) {
+    throw new GSDError(GSD_STALE_STATE, "gsd-db: Active SQLite database does not match the replacement target");
+  }
+}
+
+function checkpointForDatabaseReplacement(db: DbAdapter): void {
+  const rows = db.prepare("PRAGMA wal_checkpoint(TRUNCATE)").all();
+  if (rows.length !== 1) {
+    throw new GSDError(GSD_STALE_STATE, "gsd-db: Database replacement checkpoint returned an invalid result");
+  }
+  const row = rows[0]!;
+  const busy = ownDataValue(row, "busy");
+  const log = ownDataValue(row, "log");
+  const checkpointed = ownDataValue(row, "checkpointed");
+  const completed = busy === 0
+    && Number.isSafeInteger(log)
+    && Number.isSafeInteger(checkpointed)
+    && ((log === -1 && checkpointed === -1) || (typeof log === "number" && log >= 0 && checkpointed === log));
+  if (!completed) {
+    throw new GSDError(
+      GSD_STALE_STATE,
+      `gsd-db: Database replacement requires a complete TRUNCATE checkpoint; observed ${String(busy)}/${String(log)}/${String(checkpointed)}`,
+    );
+  }
+}
+
+/**
+ * Strictly detach every in-process handle for the active replacement target.
+ * The returned token is accepted only by reopenDatabaseAfterReplacement().
+ */
+export function detachActiveDatabaseForReplacement(expectedPath: string): DatabaseReplacementToken {
+  if (!currentDb || !currentPath) {
+    throw new GSDError(GSD_STALE_STATE, "gsd-db: No active database to detach for replacement");
+  }
+  if (_transactionRunner.isInTransaction()) {
+    throw new GSDError(GSD_STALE_STATE, "gsd-db: Cannot detach the database during an active transaction");
+  }
+
+  const expectedResolvedPath = resolve(expectedPath);
+  const databasePath = strictRealDatabasePath(expectedResolvedPath, "replacement target");
+  if (strictRealDatabasePath(currentPath, "active database") !== databasePath) {
+    throw new GSDError(GSD_STALE_STATE, "gsd-db: Active database path does not match the replacement target");
+  }
+  const activeIntentPath = getDatabaseReplacementPaths(databasePath).activeIntentPath;
+  strictFileIdentity(activeIntentPath, "database replacement intent");
+  const originalFileIdentity = strictFileIdentity(databasePath, "replacement target");
+  assertActiveDatabaseList(currentDb, databasePath);
+
+  const targetCacheEntries: { key: string; dbPath: string; db: DbAdapter }[] = [];
+  for (const [key, entry] of _dbCache.asReadonlyMap()) {
+    let matchesTarget = entry.db === currentDb || resolve(entry.dbPath) === expectedResolvedPath;
+    if (!matchesTarget) {
+      try {
+        matchesTarget = realpathSync(entry.dbPath) === databasePath;
+      } catch {
+        matchesTarget = false;
+      }
+    }
+    if (matchesTarget) targetCacheEntries.push({ key, ...entry });
+  }
+
+  for (const [database, isolatedPath] of [..._isolatedDatabases]) {
+    if (isolatedPath === databasePath) database.close();
+  }
+  const adapters = new Set(targetCacheEntries.map((entry) => entry.db));
+  adapters.delete(currentDb);
+  for (const adapter of adapters) adapter.close();
+  for (const { key, db } of targetCacheEntries) {
+    if (db !== currentDb) _dbCache.delete(key);
+  }
+  checkpointForDatabaseReplacement(currentDb);
+  const journalMode = currentDb.prepare("PRAGMA journal_mode=DELETE").get()?.["journal_mode"];
+  if (journalMode !== "delete") {
+    throw new GSDError(
+      GSD_STALE_STATE,
+      `gsd-db: Database replacement requires DELETE journal mode before detach; observed ${String(journalMode)}`,
+    );
+  }
+
+  currentDb.close();
+
+  const tokenState: DatabaseReplacementTokenState = {
+    databasePath,
+    activeIntentPath,
+    originalFileIdentity,
+    activeIdentityKey: _currentIdentityKey,
+    cacheEntries: targetCacheEntries.map(({ key, dbPath }) => ({ key, dbPath })),
+  };
+  for (const { key } of targetCacheEntries) _dbCache.delete(key);
+  currentDb = null;
+  currentPath = null;
+  currentPid = 0;
+  _currentIdentityKey = null;
+  _dbOpenState.reset();
+
+  const token: DatabaseReplacementToken = Object.freeze({ kind: "gsd-database-replacement-token" });
+  _databaseReplacementTokenStates.set(token, tokenState);
+  return token;
+}
+
+function createDatabaseReplacementReceiptCapability(
+  state: DatabaseReplacementReceiptCapabilityState,
+): DatabaseReplacementReceiptCapability {
+  const capability: DatabaseReplacementReceiptCapability = Object.freeze({
+    kind: "gsd-database-replacement-receipt-capability",
+  });
+  _databaseReplacementReceiptCapabilityStates.set(capability, state);
+  return capability;
+}
+
+function abandonFailedReplacementReopen(error: unknown): never {
+  const database = currentDb;
+  currentDb = null;
+  currentPath = null;
+  currentPid = 0;
+  _currentIdentityKey = null;
+  _dbOpenState.reset();
+  try {
+    database?.close();
+  } catch (closeError) {
+    throw new GSDError(
+      GSD_STALE_STATE,
+      "gsd-db: Replacement database proof failed and its reopened connection could not be closed",
+      { cause: closeError },
+    );
+  }
+  throw error;
+}
+
+/**
+ * Reopen a successfully detached database and restore its workspace identity.
+ * A changed inode plus exact publication evidence returns a single-use receipt
+ * capability. A same-inode reopen normally restores the original connection;
+ * persisted evidence can additionally prove that the process detached an
+ * already-published file while converging a prior interrupted receipt.
+ */
+export function reopenDatabaseAfterReplacement(
+  token: DatabaseReplacementToken,
+  evidence: DatabaseReplacementReopenEvidence = {},
+): DatabaseReplacementReceiptCapability | null {
+  const tokenState = _databaseReplacementTokenStates.get(token);
+  if (!tokenState) {
+    throw new GSDError(GSD_STALE_STATE, "gsd-db: Invalid or consumed database replacement token");
+  }
+  if (currentDb) {
+    throw new GSDError(GSD_STALE_STATE, "gsd-db: Cannot reopen replacement while another database is active");
+  }
+  strictRealDatabasePath(tokenState.databasePath, "replacement database");
+  const preOpenDatabaseProof = strictFileProof(tokenState.databasePath, "replacement database");
+  const reopenedFileIdentity = preOpenDatabaseProof.identity;
+  const replacementWasPublished = !sameFileIdentity(
+    tokenState.originalFileIdentity,
+    reopenedFileIdentity,
+  );
+  let receiptAuthorized = replacementWasPublished;
+  let authorizedIntentProof: {
+    readonly identity: FileIdentity;
+    readonly sha256: string;
+  } | null = null;
+  if (replacementWasPublished) {
+    const expectedSha256 = requireExpectedSha256(evidence.expectedPublishedSha256, "published database");
+    if (preOpenDatabaseProof.sha256 !== expectedSha256) {
+      throw new GSDError(GSD_STALE_STATE, "gsd-db: Published replacement does not match its expected SHA-256");
+    }
+    if (evidence.persistedOriginalFileIdentity) {
+      const persistedOriginal = parseFileIdentity(evidence.persistedOriginalFileIdentity, "persisted original database identity");
+      if (!sameFileIdentity(persistedOriginal, tokenState.originalFileIdentity)) {
+        throw new GSDError(GSD_STALE_STATE, "gsd-db: Persisted original database identity does not match the detached database");
+      }
+    }
+    if (evidence.expectedPublishedFileIdentity) {
+      const expectedPublished = parseFileIdentity(evidence.expectedPublishedFileIdentity, "expected published database identity");
+      if (!sameFileIdentity(expectedPublished, reopenedFileIdentity)) {
+        throw new GSDError(GSD_STALE_STATE, "gsd-db: Published replacement does not match its expected file identity");
+      }
+    }
+  } else if (
+    evidence.persistedOriginalFileIdentity
+    && evidence.expectedPublishedFileIdentity
+    && evidence.expectedPublishedSha256
+  ) {
+    const persistedOriginal = parseFileIdentity(evidence.persistedOriginalFileIdentity, "persisted original database identity");
+    const expectedPublished = parseFileIdentity(evidence.expectedPublishedFileIdentity, "expected published database identity");
+    const expectedSha256 = requireExpectedSha256(evidence.expectedPublishedSha256, "published database");
+    receiptAuthorized = !sameFileIdentity(persistedOriginal, reopenedFileIdentity)
+      && sameFileIdentity(expectedPublished, reopenedFileIdentity)
+      && preOpenDatabaseProof.sha256 === expectedSha256;
+    if (!receiptAuthorized) {
+      throw new GSDError(GSD_STALE_STATE, "gsd-db: Same-inode recovery does not match the persisted publication proof");
+    }
+  } else if (
+    evidence.expectedPublishedSha256
+    || evidence.persistedOriginalFileIdentity
+    || evidence.expectedPublishedFileIdentity
+    || evidence.expectedActiveIntentFileIdentity
+    || evidence.expectedActiveIntentSha256
+  ) {
+    throw new GSDError(GSD_STALE_STATE, "gsd-db: Same-inode recovery evidence is incomplete");
+  }
+  if (receiptAuthorized) {
+    if (!evidence.expectedActiveIntentFileIdentity) {
+      throw new GSDError(GSD_STALE_STATE, "gsd-db: Replacement reopen requires the published intent file identity");
+    }
+    const expectedIntentIdentity = parseFileIdentity(
+      evidence.expectedActiveIntentFileIdentity,
+      "expected active intent identity",
+    );
+    const expectedIntentSha256 = requireExpectedSha256(
+      evidence.expectedActiveIntentSha256,
+      "active intent",
+    );
+    requireExactFileProof(
+      tokenState.activeIntentPath,
+      "database replacement intent",
+      expectedIntentIdentity,
+      expectedIntentSha256,
+    );
+    authorizedIntentProof = Object.freeze({ identity: expectedIntentIdentity, sha256: expectedIntentSha256 });
+  }
+  if (!openDatabase(tokenState.databasePath) || !currentDb) {
+    throw new GSDError(GSD_STALE_STATE, "gsd-db: Replacement database did not reopen");
+  }
+  let postOpenDatabaseProof;
+  try {
+    postOpenDatabaseProof = strictFileProof(tokenState.databasePath, "replacement database");
+    if (!sameFileIdentity(postOpenDatabaseProof.identity, reopenedFileIdentity)) {
+      throw new GSDError(GSD_STALE_STATE, "gsd-db: Replacement database file changed while it reopened");
+    }
+  } catch (error) {
+    abandonFailedReplacementReopen(error);
+  }
+
+  for (const entry of tokenState.cacheEntries) {
+    _dbCache.set(entry.key, { dbPath: entry.dbPath, db: currentDb });
+  }
+  _currentIdentityKey = tokenState.activeIdentityKey;
+  _databaseReplacementTokenStates.delete(token);
+  if (!receiptAuthorized) return null;
+  if (!authorizedIntentProof) {
+    throw new GSDError(GSD_STALE_STATE, "gsd-db: Replacement receipt authorization proof is missing");
+  }
+  return createDatabaseReplacementReceiptCapability({
+    databasePath: tokenState.databasePath,
+    activeIntentPath: tokenState.activeIntentPath,
+    activeIntentFileIdentity: authorizedIntentProof.identity,
+    activeIntentSha256: authorizedIntentProof.sha256,
+    database: currentDb,
+    reopenedFileIdentity,
+    postOpenDatabaseSha256: postOpenDatabaseProof.sha256,
+  });
+}
 
 /** Test helper: expose the internal cache for inspection. Not for production use. */
 export function _getDbCache(): ReadonlyMap<string, DbConnectionCacheEntry> {
@@ -573,6 +1127,7 @@ function closeCachedConnection(entry: DbConnectionCacheEntry, source: "all" | "w
  * closeDatabaseByWorkspace() instead.
  */
 export function closeAllDatabases(): void {
+  for (const database of [..._isolatedDatabases.keys()]) database.close();
   // Close all non-active cached connections first.
   _dbCache.closeNonActive(currentDb, (entry) => closeCachedConnection(entry, "all"));
   closeDatabase();
@@ -846,19 +1401,35 @@ export function closeDatabase(): void {
  * connection. Returns null if the connection cannot be opened.
  */
 export function openIsolatedDatabase(path: string): DbAdapter | null {
+  let adapter: DbAdapter | undefined;
   try {
     const rawDb = providerLoader.openRaw(path);
     if (!rawDb) return null;
-    const adapter = createDbAdapter(rawDb);
-    // Minimal pragmas for a short-lived read-only observer connection.
+    adapter = createDbAdapter(rawDb);
+    // Minimal pragmas for a short-lived isolated connection.
     // Apply the wait policy before WAL negotiation so concurrent observers do
     // not fail immediately while another connection is opening the same DB.
     adapter.exec("PRAGMA busy_timeout = 5000");
     // WAL mode is already set file-wide by the primary connection; repeating
     // it here is a no-op on an existing WAL file and safe to issue.
     adapter.exec("PRAGMA journal_mode=WAL");
-    return adapter;
+    const databasePath = realpathSync(path);
+    const openedAdapter = adapter;
+    let closed = false;
+    const tracked: DbAdapter = {
+      exec: (sql) => openedAdapter.exec(sql),
+      prepare: (sql) => openedAdapter.prepare(sql),
+      close() {
+        if (closed) return;
+        openedAdapter.close();
+        closed = true;
+        _isolatedDatabases.delete(tracked);
+      },
+    };
+    _isolatedDatabases.set(tracked, databasePath);
+    return tracked;
   } catch {
+    try { adapter?.close(); } catch { /* opening already failed */ }
     return null;
   }
 }
@@ -945,6 +1516,7 @@ export function isInTransaction(): boolean {
 
 export function transaction<T>(fn: () => T): T {
   if (!currentDb) throw new GSDError(GSD_STALE_STATE, "gsd-db: No database open");
+  if (!_transactionRunner.isInTransaction()) assertDatabaseReplacementFenceAllowsWrite();
   return _transactionRunner.transaction(createTransactionControls(currentDb), fn);
 }
 
@@ -955,6 +1527,7 @@ export function transaction<T>(fn: () => T): T {
  */
 export function immediateTransaction<T>(fn: () => T): T {
   if (!currentDb) throw new GSDError(GSD_STALE_STATE, "gsd-db: No database open");
+  if (!_transactionRunner.isInTransaction()) assertDatabaseReplacementFenceAllowsWrite();
   return _transactionRunner.immediateTransaction(createTransactionControls(currentDb), fn);
 }
 

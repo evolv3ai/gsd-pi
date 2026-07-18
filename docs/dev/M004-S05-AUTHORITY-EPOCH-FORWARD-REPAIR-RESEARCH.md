@@ -393,3 +393,56 @@ legacy-corpus V45/V46 boundaries are executable tests.
    convergence.
 6. T07 builds three-way import Forward Repair against current canonical state.
 7. T08 seals public routes and the complete corpus across journal modes.
+
+### T05 reconciled implementation research
+
+Three independent code reviews converged on a smaller and stricter live
+replacement boundary:
+
+- The existing best-effort checkpoint, close-all, and refresh helpers cannot
+  prove a safe replacement because they suppress checkpoint or close failures
+  and the workspace cache can retain target adapters. T05 therefore adds one
+  engine-owned strict detach/reopen token that pins the active file path,
+  requires an exact completed checkpoint tuple, strictly closes every cached
+  alias, preserves workspace identity, and fails before publication on any
+  lifecycle error.
+- One content-addressed intent directory beside the live database owns a
+  same-filesystem candidate, safe request/lineage hashes, and the convergence
+  stage. It is a recovery authorization for the already-approved request, not
+  workflow authority. The V45 `workflow_import_restores` row remains the only
+  terminal canonical receipt; no new authority table or schema version is
+  needed.
+- A presence-only sidecar check is insufficient because an already-open
+  writer could commit through the replaced inode. The shared transaction
+  entry points must honor a cooperative replacement fence. The restore owner
+  holds the only scoped bypass across final assessment, strict detach,
+  publication, reopen verification, and the typed `import.restore` receipt.
+  A strict checkpoint drains transactions that began before the fence.
+- `import.restore` is reserved from generic Domain Operation callers. Its
+  typed private seam requires one exact matching receipt inside the same
+  operation/event/outbox/projection/authority transaction on both commit and
+  replay.
+- The public request carries the invocation, supplied eligible assessment,
+  original Application identity, verified backup, and the exact destructive
+  Consent. The restore owner recomputes the assessment and requires exact
+  equality, rather than trusting caller-selected eligibility or reconstructing
+  Consent from an output hash.
+- T05 implements the replacement as an exclusive, content-addressed intent
+  with durable original/candidate file identities and an owner liveness
+  fence. Abandoned pre-publication claims clean and restart only after the
+  owner is inactive. A rename that survives before the next intent update is
+  recovered from the staged candidate inode rather than stranded.
+- The engine issues a single-use receipt capability only after it has closed
+  every tracked handle, normalized the database to rollback-journal mode,
+  measured the exact approved bytes immediately before reopen, and bound the
+  reopened database to the exact active-intent inode and content. Restart
+  convergence recopies and flushes the verified backup onto the proven
+  candidate inode before repeating those checks; there is no presence-only
+  adoption route.
+- T05 acceptance covers the real-file happy path and erased lineage, strict
+  input/final recheck, exact replay, competing owners, abandoned claims,
+  pre-publication reopen, the rename/intent crash window, post-publication
+  convergence, installed-byte tampering, intent inode replacement, unsafe
+  intent paths, sidecar links, and unsupported directory durability. T06
+  retains the exhaustive boundary-fault, real SIGKILL, startup,
+  stale-validator, and multi-process contention matrices.

@@ -487,3 +487,54 @@ test("terminal Forward Repair is re-read during assessment and malformed receipt
   assert.equal(result.decision, "refused");
   assert.equal(result.reasonCode, "APPLICATION_EVIDENCE_INVALID");
 });
+
+test("terminal recovery requires exactly its route-bound projection identity", () => {
+  const prepared = prepareCase();
+  seedForwardRepair(prepared);
+  db().exec(`
+    DROP TRIGGER trg_workflow_projection_identity_immutable;
+    DROP TRIGGER trg_workflow_projection_delivery_transition;
+  `);
+
+  const operationId = String(row(
+    "SELECT operation_id FROM workflow_import_forward_repairs",
+  ).operation_id);
+  function assertRefused(): void {
+    const result = assessLegacyImportRestore(assessmentInput(prepared));
+    assert.equal(result.decision, "refused");
+    assert.equal(result.reasonCode, "APPLICATION_EVIDENCE_INVALID");
+  }
+
+  db().prepare(`
+    UPDATE workflow_projection_work SET projection_key = 'legacy-import/wrong'
+    WHERE enqueue_operation_id = :operation_id
+  `).run({ ":operation_id": operationId });
+  assertRefused();
+  db().prepare(`
+    UPDATE workflow_projection_work SET projection_key = 'legacy-import/forward-repair'
+    WHERE enqueue_operation_id = :operation_id
+  `).run({ ":operation_id": operationId });
+
+  db().prepare(`
+    UPDATE workflow_projection_work SET renderer_version = 'v2'
+    WHERE enqueue_operation_id = :operation_id
+  `).run({ ":operation_id": operationId });
+  assertRefused();
+  db().prepare(`
+    UPDATE workflow_projection_work SET renderer_version = 'v1'
+    WHERE enqueue_operation_id = :operation_id
+  `).run({ ":operation_id": operationId });
+
+  db().prepare(`
+    INSERT INTO workflow_projection_work (
+      projection_work_id, project_id, projection_key, projection_kind,
+      supersedes_projection_work_id, source_project_revision, source_authority_epoch,
+      renderer_version, enqueue_operation_id, created_at, updated_at
+    )
+    SELECT projection_work_id || ':tampered', project_id, 'legacy-import/unexpected',
+           projection_kind, NULL, source_project_revision, source_authority_epoch,
+           renderer_version, enqueue_operation_id, created_at, updated_at
+    FROM workflow_projection_work WHERE enqueue_operation_id = :operation_id
+  `).run({ ":operation_id": operationId });
+  assertRefused();
+});

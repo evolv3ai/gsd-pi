@@ -421,7 +421,7 @@ function terminalReceipt(identityHash: string): TerminalReceipt | null {
     }
     const events = getDb().prepare(`
       SELECT event_id, event_index, project_id, project_revision, authority_epoch,
-             event_type, entity_type, entity_id, caused_by_event_id, created_at
+             event_type, entity_type, entity_id, caused_by_event_id, payload_json, created_at
       FROM workflow_domain_events WHERE operation_id = :operation_id
       ORDER BY event_index
     `).all({ ":operation_id": row["operation_id"] });
@@ -432,12 +432,37 @@ function terminalReceipt(identityHash: string): TerminalReceipt | null {
       ) ORDER BY outbox_id
     `).all({ ":operation_id": row["operation_id"] });
     const projections = getDb().prepare(`
-      SELECT project_id, projection_kind, source_project_revision,
-             source_authority_epoch, enqueue_operation_id, created_at
+      SELECT project_id, projection_key, projection_kind, source_project_revision,
+             source_authority_epoch, renderer_version, enqueue_operation_id, created_at
       FROM workflow_projection_work WHERE enqueue_operation_id = :operation_id
       ORDER BY projection_work_id
     `).all({ ":operation_id": row["operation_id"] });
     const event = events[0];
+    const projection = projections[0];
+    const expectedProjectionKey = row["route"] === "restore"
+      ? "legacy-import/restore"
+      : "legacy-import/forward-repair";
+    const expectedEventPayload = row["route"] === "restore"
+      ? canonicalLegacyImportJson({
+        applicationOperationId: row["application_operation_id"],
+        applicationIdentityHash: identityHash,
+        applicationResultingProjectRevision: row["application_resulting_project_revision"],
+        applicationResultingAuthorityEpoch: row["application_resulting_authority_epoch"],
+        erasedLineageHash: row["erased_lineage_hash"],
+        erasedLineageJson: row["erased_lineage_json"],
+        previewId: row["preview_id"],
+        previewHash: row["preview_hash"],
+        backupId: row["backup_id"],
+        backupSha256: row["backup_sha256"],
+        backupByteSize: row["backup_byte_size"],
+        backupSchemaVersion: row["backup_schema_version"],
+        backupProjectRevision: row["backup_project_revision"],
+        backupAuthorityEpoch: row["backup_authority_epoch"],
+        differenceHash: row["difference_hash"],
+        consentHash: row["consent_hash"],
+        verificationHash: row["verification_hash"],
+      })
+      : row["plan_json"];
     const deliveryMatches = events.length === 1
       && event?.["event_index"] === 0
       && event["project_id"] === row["project_id"]
@@ -449,19 +474,20 @@ function terminalReceipt(identityHash: string): TerminalReceipt | null {
       && event["entity_type"] === "legacy-import"
       && event["entity_id"] === row["preview_id"]
       && event["caused_by_event_id"] === null
+      && event["payload_json"] === expectedEventPayload
       && event["created_at"] === row["terminal_at"]
       && outbox.length === 1
       && outbox[0]?.["event_id"] === event["event_id"]
       && outbox[0]?.["destination"] === "projection"
-      && projections.length > 0
-      && projections.every((projection) => (
-        projection["project_id"] === row["project_id"]
-        && projection["projection_kind"] === "markdown"
-        && projection["source_project_revision"] === row["resulting_project_revision"]
-        && projection["source_authority_epoch"] === row["resulting_authority_epoch"]
-        && projection["enqueue_operation_id"] === row["operation_id"]
-        && projection["created_at"] === row["terminal_at"]
-      ));
+      && projections.length === 1
+      && projection?.["project_id"] === row["project_id"]
+      && projection["projection_key"] === expectedProjectionKey
+      && projection["projection_kind"] === "markdown"
+      && projection["source_project_revision"] === row["resulting_project_revision"]
+      && projection["source_authority_epoch"] === row["resulting_authority_epoch"]
+      && projection["renderer_version"] === "v1"
+      && projection["enqueue_operation_id"] === row["operation_id"]
+      && projection["created_at"] === row["terminal_at"];
     if (!commonMatches || !routeMatches || !deliveryMatches) {
       throw new LegacyImportApplicationEvidenceError("Import recovery receipt is inconsistent");
     }
