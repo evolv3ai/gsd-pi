@@ -88,6 +88,13 @@ export type ImportRestoreDomainOperationRequest = Omit<
   payload: ImportRestoreReceiptContract;
 };
 
+export type ImportForwardRepairDomainOperationRequest = Omit<
+  DomainOperationRequest,
+  "operationType"
+> & {
+  operationType: "import.forward_repair";
+};
+
 interface AuthorityCutoverReceiptContract {
   readonly authorityContractVersion: number;
   readonly evidenceHash: string;
@@ -1041,6 +1048,9 @@ export function executeDomainOperation(
   if (snapshot.identity.operationType === "import.restore") {
     throw new Error("import.restore requires the typed import restore operation");
   }
+  if (snapshot.identity.operationType === "import.forward_repair") {
+    throw new Error("import.forward_repair requires the typed Forward Repair operation");
+  }
   if (isInTransaction()) {
     throw new Error("Domain Operation must own the outer transaction");
   }
@@ -1161,5 +1171,35 @@ export function _executeImportRestoreDomainOperation(
       mutate,
       () => assertDatabaseReplacementReceiptIntent(capability),
     ),
+  );
+}
+
+/** Private transaction seam for the strict Import Forward Repair aggregate. */
+export function _executeImportForwardRepairDomainOperation(
+  request: ImportForwardRepairDomainOperationRequest,
+  mutate: (context: Readonly<DomainOperationContext>) => DomainOperationMutation,
+): DomainOperationResult {
+  const snapshot = snapshotDomainOperationRequest(request);
+  validateRequestScalars(snapshot.identity);
+  if (snapshot.identity.operationType !== "import.forward_repair") {
+    throw new Error("typed Forward Repair requires operationType import.forward_repair");
+  }
+  if (!isStrictLegacyImportData(snapshot.payload)) {
+    throw new Error("import.forward_repair plan must contain strict data without accessors");
+  }
+  if (isInTransaction()) {
+    throw new Error("Domain Operation must own the outer transaction");
+  }
+  const stableRequest = {
+    ...snapshot.identity,
+    payload: snapshot.payload as DomainJsonValue,
+  };
+  return executeDomainOperationCore(
+    snapshot.identity,
+    requestHash(stableRequest),
+    null,
+    null,
+    null,
+    mutate,
   );
 }

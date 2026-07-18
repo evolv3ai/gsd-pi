@@ -33,7 +33,10 @@ import {
   LEGACY_IMPORT_RESTORE_ASSESSMENT_CONSENT_SCHEMA_VERSION,
   type LegacyImportRestoreAssessmentInput,
 } from "../legacy-import-restore-assessment.ts";
-import { executeDomainOperation } from "../db/domain-operation.ts";
+import {
+  _executeImportForwardRepairDomainOperation,
+  executeDomainOperation,
+} from "../db/domain-operation.ts";
 import { _getAdapter, closeDatabase, openDatabase } from "../gsd-db.ts";
 import {
   cutoverProjectAuthority,
@@ -163,7 +166,7 @@ function seedForwardRepair(prepared: PreparedCase): void {
     rejectedCount: 0,
     unresolvedCount: 0,
   };
-  executeDomainOperation({
+  _executeImportForwardRepairDomainOperation({
     operationType: "import.forward_repair",
     idempotencyKey: "restore-assessment/terminal-forward-repair",
     expectedRevision: 1,
