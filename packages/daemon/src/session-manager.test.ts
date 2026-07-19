@@ -981,6 +981,67 @@ describe('SessionManager', () => {
     assert.equal(cancelled.projectName, 'cancel-emit');
   });
 
+  // ---- Evicting a paused session emits session:cancelled (bridge teardown) ----
+
+  it('evicting a paused session emits session:cancelled so the bridge tears down', async () => {
+    const { manager } = createManager();
+
+    let cancelled: Record<string, unknown> | undefined;
+    manager.on('session:cancelled', (data: Record<string, unknown>) => { cancelled = data; });
+
+    const sessionId = await manager.startSession({ projectDir: '/tmp/evict-paused' });
+    const resolvedDir = resolve('/tmp/evict-paused');
+
+    // Drive the session into 'paused'. A paused session deliberately keeps its
+    // EventBridge state (channel mapping, batcher, collectors) alive for
+    // "type to interact", so it is the only terminal state that still needs
+    // bridge teardown when evicted.
+    manager.lastClient!.emitEvent({
+      type: 'extension_ui_request',
+      method: 'notify',
+      message: 'Auto-mode paused (Escape). Type to interact, or /gsd auto to resume.',
+    });
+    assert.equal(manager.getSessionByDir(resolvedDir)!.status, 'paused');
+
+    // Evicting the paused session (e.g. a fresh startSession for the same dir)
+    // must notify the EventBridge so its stale state on the old sessionId is
+    // torn down instead of stranded.
+    (manager as unknown as { evictSession(dir: string): void }).evictSession(resolvedDir);
+
+    assert.ok(cancelled, 'evicting a paused session should emit session:cancelled');
+    assert.equal(cancelled.sessionId, sessionId);
+    assert.ok(String(cancelled.projectDir).endsWith('evict-paused'));
+    assert.equal(cancelled.projectName, 'evict-paused');
+    // Session is removed from tracking and its child process reclaimed.
+    assert.equal(manager.getSessionByDir(resolvedDir), undefined);
+    assert.ok(manager.lastClient!.stopped);
+  });
+
+  // ---- Evicting a non-paused terminal session does not re-emit teardown ----
+
+  it('evicting a completed session does not emit session:cancelled (already torn down)', async () => {
+    const { manager } = createManager();
+
+    const sessionId = await manager.startSession({ projectDir: '/tmp/evict-completed' });
+    const resolvedDir = resolve('/tmp/evict-completed');
+
+    manager.lastClient!.emitEvent({
+      type: 'extension_ui_request',
+      id: 'n1',
+      method: 'notify',
+      message: 'Auto-mode stopped: completed all tasks',
+    });
+    assert.equal(manager.getSessionByDir(resolvedDir)!.status, 'completed');
+
+    let cancelled = false;
+    manager.on('session:cancelled', () => { cancelled = true; });
+
+    (manager as unknown as { evictSession(dir: string): void }).evictSession(resolvedDir);
+
+    assert.equal(cancelled, false, 'completed sessions already tore down their bridge state on completion');
+    assert.equal(manager.getSessionByDir(resolvedDir), undefined);
+  });
+
   // ---- cleanup empties the sessions map (no retained references) ----
 
   it('cleanup clears the sessions map', async () => {

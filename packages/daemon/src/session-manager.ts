@@ -395,6 +395,20 @@ export class SessionManager extends EventEmitter {
     if (session) {
       session.unsubscribe?.();
       session.unsubscribe = undefined;
+      // A paused session deliberately keeps its EventBridge state alive (channel
+      // mapping, batcher, blocker collectors) so "type to interact" keeps working.
+      // Evicting it silently would strand that state on the old sessionId while a
+      // fresh start claims a new channel, so emit the teardown event here. The
+      // other terminal states already tore their bridge state down on
+      // completed/cancelled/error, so only 'paused' needs it (and the bridge's
+      // cleanup is idempotent regardless).
+      if (session.status === 'paused') {
+        this.emit('session:cancelled', {
+          sessionId: session.sessionId,
+          projectDir: session.projectDir,
+          projectName: session.projectName,
+        });
+      }
       // The agent child process may still be alive (e.g. a completed session
       // kept for follow-up relay) — reclaim it on eviction.
       void session.client.stop().catch(() => { /* swallow */ });
