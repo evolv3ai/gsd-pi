@@ -220,6 +220,30 @@ test("execute-task DB lag branch — summary without checked plan still fails", 
   );
 });
 
+test("#1500: execute-task accepts SUMMARY in stale sibling flat-phase dir", (t) => {
+  closeDatabase();
+  const base = mkdtempSync(join(tmpdir(), "gsd-stale-sibling-phase-"));
+  t.after(() => {
+    closeDatabase();
+    rmSync(base, { recursive: true, force: true });
+  });
+
+  const phasesDir = join(base, ".gsd", "phases");
+  const staleDir = join(phasesDir, "09-obg27g-m009-obg27g-web-api");
+  const activeDir = join(phasesDir, "09-m009-obg27g-m009-obg27g-web-api");
+  mkdirSync(staleDir, { recursive: true });
+  mkdirSync(activeDir, { recursive: true });
+
+  writeFileSync(join(activeDir, "09-04-PLAN.md"), "# S04 plan\n\n- [x] **T02: Build endpoint**\n");
+  writeFileSync(join(staleDir, "S04-T02-SUMMARY.md"), "# T02 summary\n");
+
+  assert.equal(
+    verifyExpectedArtifact("execute-task", "M009/S04/T02", base),
+    true,
+    "verification must accept the summary from a same-number sibling phase dir",
+  );
+});
+
 // ── #852 follow-up: worktree→project-root artifact fallback ──────────────────
 //
 // A milestone running in a worktree may not have its CONTEXT projected into the
