@@ -412,6 +412,14 @@ export class SessionManager extends EventEmitter {
       // The agent child process may still be alive (e.g. a completed session
       // kept for follow-up relay) — reclaim it on eviction.
       void session.client.stop().catch(() => { /* swallow */ });
+
+      // Paused sessions keep EventBridge channel mappings alive; notify listeners
+      // so batchers, collectors, and channel maps are torn down before restart.
+      this.emit('session:cancelled', {
+        sessionId: session.sessionId,
+        projectDir: session.projectDir,
+        projectName: session.projectName,
+      });
     }
   }
 
