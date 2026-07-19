@@ -50,7 +50,12 @@ const TERMINAL_PREFIXES = [
 function isTerminalNotification(event: Record<string, unknown>): boolean {
   if (event.type !== 'extension_ui_request' || event.method !== 'notify') return false;
   const message = String(event.message ?? '').toLowerCase();
-  return TERMINAL_PREFIXES.some((prefix) => message.startsWith(prefix));
+  if (TERMINAL_PREFIXES.some((prefix) => message.startsWith(prefix))) return true;
+  return PAUSED_PREFIXES.some((prefix) => message.startsWith(prefix)) && isNonBlockingPauseNotice(message);
+}
+
+function isNonBlockingPauseNotice(message: string): boolean {
+  return message.includes('idempotent advance: unit already active');
 }
 
 function isOrchestratorPausedEvent(event: Record<string, unknown>): boolean {
@@ -58,17 +63,21 @@ function isOrchestratorPausedEvent(event: Record<string, unknown>): boolean {
   const eventType = String(event.eventType ?? '');
   const name = String(data?.name ?? '');
   const reason = String(data?.reason ?? '').toLowerCase();
-  return (
-    eventType === 'orchestrator-guard-block' && name === 'advance-paused'
-  ) || (
-    eventType === 'orchestrator-terminal' && name === 'stop' && reason === 'pause'
-  );
+  return eventType === 'orchestrator-terminal' && name === 'stop' && reason === 'pause';
+}
+
+function isOrchestratorBlockedEvent(event: Record<string, unknown>): boolean {
+  const data = event.data as Record<string, unknown> | undefined;
+  const eventType = String(event.eventType ?? '');
+  const name = String(data?.name ?? '');
+  return eventType === 'orchestrator-guard-block' && name === 'advance-paused';
 }
 
 function isPausedEvent(event: Record<string, unknown>): boolean {
   if (isOrchestratorPausedEvent(event)) return true;
   if (event.type !== 'extension_ui_request' || event.method !== 'notify') return false;
   const message = String(event.message ?? '').toLowerCase();
+  if (isNonBlockingPauseNotice(message)) return false;
   return PAUSED_PREFIXES.some((prefix) => message.startsWith(prefix));
 }
 
@@ -436,6 +445,25 @@ export class SessionManager extends EventEmitter {
       }
     }
 
+    // Orchestrator guard blocks need operator intervention (headless: blocked).
+    if (isOrchestratorBlockedEvent(event as Record<string, unknown>)) {
+      session.status = 'blocked';
+      session.pendingBlocker = extractOrchestratorBlocker(event as Record<string, unknown>);
+      this.logger.info('session blocked', {
+        sessionId: session.sessionId,
+        projectDir: session.projectDir,
+        blockerId: session.pendingBlocker.id,
+        blockerMethod: session.pendingBlocker.method,
+      });
+      this.emit('session:blocked', {
+        sessionId: session.sessionId,
+        projectDir: session.projectDir,
+        projectName: session.projectName,
+        blocker: session.pendingBlocker,
+      });
+      return;
+    }
+
     // Paused detection — pauseAuto() is resumable and must not leave the
     // session looking active, or duplicate-start prevention will deadlock.
     if (isPausedEvent(event as Record<string, unknown>)) {
@@ -523,4 +551,19 @@ function extractBlocker(event: SdkAgentEvent): PendingBlocker {
     message: String((uiEvent as Record<string, unknown>).title ?? (uiEvent as Record<string, unknown>).message ?? ''),
     event: uiEvent,
   };
+}
+
+function extractOrchestratorBlocker(event: Record<string, unknown>): PendingBlocker {
+  const data = event.data as Record<string, unknown> | undefined;
+  const name = String(data?.name ?? 'advance-paused');
+  const reason = String(data?.reason ?? '');
+  const id = `orchestrator:${name}`;
+  const message = reason || name;
+  const notifyEvent: RpcExtensionUIRequest = {
+    type: 'extension_ui_request',
+    id,
+    method: 'notify',
+    message,
+  };
+  return { id, method: 'notify', message, event: notifyEvent };
 }
