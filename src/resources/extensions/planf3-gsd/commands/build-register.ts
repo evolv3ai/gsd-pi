@@ -19,7 +19,11 @@ export function formatPrefsLine(prefs: PrefsSummary): string {
 export function formatBuildSummary(result: BuildResult): string {
   const prefsLine = formatPrefsLine(result.prefs);
   const chainLine = result.autoChain === "not-applicable" ? "" : `\nauto=${result.autoChain}`;
-  return `Built milestone ${result.milestoneId ?? "(unknown id)"}\nphase=${result.status.phase}${chainLine}\n${prefsLine}\nspec=${result.specPath}\nmanifest=${result.manifestPath}`;
+  const syncLine =
+    result.postSync === null ? ""
+    : result.postSync.ran ? `\nsync=${result.postSync.kind}`
+    : `\nsync=failed — run /planf3-gsd-sync`;
+  return `Built milestone ${result.milestoneId ?? "(unknown id)"}\nphase=${result.status.phase}${chainLine}\n${prefsLine}${syncLine}\nspec=${result.specPath}\nmanifest=${result.manifestPath}`;
 }
 
 export function registerBuildCommand(pi: ExtensionAPI): void {
@@ -39,6 +43,9 @@ export function registerBuildCommand(pi: ExtensionAPI): void {
       try {
         const result = await runBuild(htmlPath, { auto, applyPrefs, allowUnsafeStep, force });
         emit(ctx, formatBuildSummary(result), "info");
+        if (result.postSync !== null && result.postSync.ran === false) {
+          emit(ctx, `post-build sync failed: ${result.postSync.error} — markers unchanged; run /planf3-gsd-sync`, "warning");
+        }
       } catch (err) {
         emit(ctx, friendlyError(err), "error");
       }
