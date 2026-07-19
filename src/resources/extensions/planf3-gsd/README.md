@@ -267,7 +267,10 @@ holds custody of the loop and drives it explicitly:
    the result onto the plan.
 3. `/planf3-gsd-status` nudges when it detects markers have fallen behind
    the live snapshot (completed work the plan still shows as `[]`):
-   `markers behind live state — run /planf3-gsd-sync`.
+   `markers behind live state — run /planf3-gsd-sync`. The nudge only
+   fires while the plan still shows **zero** done markers — once a single
+   marker has painted, silence no longer means the rest are current; it
+   just means this particular check stopped looking.
 
 ### Steer, pause, resume, stop
 
@@ -289,7 +292,7 @@ tool catalog; they're not a separate user surface).
 | Tool | Parameters | Returns (`details`) |
 | --- | --- | --- |
 | `planf3_gsd_export` | `htmlPath: string`, `mode?: "auto" \| "step"`, `userPrompt?: string` | `{ phaseCount, taskCount, specPath, manifestPath }` |
-| `planf3_gsd_status` | none | `BridgeStatus` (see [Status output](#status-output)) |
+| `planf3_gsd_status` | none | `{ status: BridgeStatus, nudge: string \| null }` (see [Status output](#status-output)) |
 | `planf3_gsd_build` | `htmlPath: string`, `auto?: boolean` (default true), `applyPrefs?: boolean` (default true), `force?: boolean`, `allowUnsafeStep?: boolean` | `{ milestoneId, phase, autoChain, specPath, manifestPath, presets }` |
 | `planf3_gsd_sync` | `htmlPath?: string`, `dryRun?: boolean` | `SyncOutcome` (`{ kind, message, applied, unmatched }`) |
 
@@ -410,8 +413,21 @@ validation and this ladder exist to say out loud.
 
 ## Status output
 
-The `BridgeStatus` shape returned by `planf3_gsd_status` and rendered by
-`/planf3-gsd-status`:
+`planf3_gsd_status` returns a `StatusReport` in `details`:
+
+```ts
+interface StatusReport {
+  status: BridgeStatus;
+  nudge: string | null;                         // M4 staleness nudge, or null
+}
+```
+
+**Changed in 0.6.0**: fields that used to sit at the top level of
+`details` (`phase`, `activeMilestone`, `progress`, ...) now live under
+`details.status`; `details.nudge` is new. `/planf3-gsd-status` (the
+slash command) is unaffected — it renders the same text either way.
+
+`status` is the `BridgeStatus` shape:
 
 ```ts
 interface BridgeStatus {
@@ -431,6 +447,11 @@ interface BridgeStatus {
   sessionId: string | null;
 }
 ```
+
+`nudge` is the M4 staleness nudge (see [The sync loop](#the-sync-loop-custody-pattern)):
+either `"markers behind live state — run /planf3-gsd-sync"` or `null`.
+It only fires while the plan still shows zero done markers, so `null`
+means "not detected as behind," not "confirmed current."
 
 The mapper is tolerant of missing keys — anything absent comes back as
 `null`/`0`/`'unknown'` rather than throwing. If GSD ever renames a
