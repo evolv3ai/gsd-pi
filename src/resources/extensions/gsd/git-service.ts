@@ -1359,6 +1359,12 @@ function classifyTurnGitActionFailure(action: TurnGitActionMode, err: unknown): 
   const stderr = errorWithStreams.stderr?.trim() ?? "";
   const message = errorWithStreams.message ?? getErrorMessage(err);
   const combined = `${stderr}\n${message}`;
+  // A clean exit-1 is git's canonical "a hook rejected the commit" signal, but the
+  // numeric status can be missing or rewritten (wrapped errors, signal kills). When
+  // status is absent, fall back to output shape: git announces its own commit
+  // failures with a leading `fatal:`/`error:` diagnostic, whereas hooks emit
+  // arbitrary stderr. This keeps hook rejections whose status was dropped routing
+  // into bounded git-commit remediation instead of silently pausing as `unknown`.
   const status = errorWithStreams.status;
   const isCommitHookRejection =
     action === "commit" &&

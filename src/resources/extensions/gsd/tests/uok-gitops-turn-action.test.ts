@@ -231,6 +231,30 @@ test("uok gitops turn action classifies hook rejection with lock-like output as 
   assert.equal(result.failureClass, "hook-content");
 });
 
+test("uok gitops turn action classifies hook rejection with missing exit status as hook-content", () => {
+  // A hook aborts the commit but the numeric exit status is dropped or rewritten
+  // (wrapped error, signal kill). Non-git-owned stderr must still route into
+  // bounded git-commit remediation rather than pausing as `unknown`.
+  const missingStatus = Object.assign(new Error("git commit failed: blocked by lint hook"), {
+    stderr: "blocked by lint hook\nrun `pnpm lint --fix` and retry",
+  });
+
+  const missingResult = handleTurnGitActionError("commit", missingStatus);
+  assert.equal(missingResult.status, "failed");
+  assert.equal(missingResult.failureClass, "hook-content");
+
+  // Signal-killed hook: status is null rather than 1.
+  const signalKilled = Object.assign(new Error("git commit failed: pre-commit terminated"), {
+    stderr: "pre-commit checks did not pass",
+    status: null,
+    signal: "SIGTERM",
+  });
+
+  const signalResult = handleTurnGitActionError("commit", signalKilled);
+  assert.equal(signalResult.status, "failed");
+  assert.equal(signalResult.failureClass, "hook-content");
+});
+
 test("uok gitops turn action classifies exit-1 git lock output as transient", () => {
   const err = Object.assign(new Error("git commit failed: fatal: Unable to create '.git/index.lock'"), {
     stderr: [
