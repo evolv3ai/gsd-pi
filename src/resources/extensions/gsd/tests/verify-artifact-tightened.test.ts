@@ -244,6 +244,71 @@ test("#1500: execute-task accepts SUMMARY in stale sibling flat-phase dir", (t) 
   );
 });
 
+test("#1500: plan-milestone does NOT borrow a roadmap from a team-suffix sibling projection", (t) => {
+  closeDatabase();
+  const base = mkdtempSync(join(tmpdir(), "gsd-sibling-plan-milestone-"));
+  t.after(() => {
+    closeDatabase();
+    rmSync(base, { recursive: true, force: true });
+  });
+
+  const phasesDir = join(base, ".gsd", "phases");
+  // Canonical (non-team-suffix) phase dir the resolver picks lacks the roadmap;
+  // only a deprioritized team-suffix projection dir carries a valid roadmap.
+  const canonicalDir = join(phasesDir, "09-web-api");
+  const teamSuffixDir = join(phasesDir, "09-obg27g-web-api");
+  mkdirSync(canonicalDir, { recursive: true });
+  mkdirSync(teamSuffixDir, { recursive: true });
+
+  writeFileSync(
+    join(teamSuffixDir, "09-ROADMAP.md"),
+    [
+      "# M009: Roadmap",
+      "",
+      "## Slices",
+      "",
+      "- [ ] **S01: First slice** `risk:low` `depends:[]`",
+      "  > After this: a real slice exists.",
+      "",
+    ].join("\n"),
+  );
+
+  // The team-suffix fallback is reserved for execute-task recovery; plan-milestone
+  // must not pass verification off a stale team-suffix projection's roadmap.
+  assert.equal(
+    verifyExpectedArtifact("plan-milestone", "M009", base),
+    false,
+    "plan-milestone must not accept a roadmap from a team-suffix sibling projection",
+  );
+});
+
+test("#1500: execute-task does NOT borrow a summary from a different-milestone same-phase dir", (t) => {
+  closeDatabase();
+  const base = mkdtempSync(join(tmpdir(), "gsd-sibling-foreign-milestone-"));
+  t.after(() => {
+    closeDatabase();
+    rmSync(base, { recursive: true, force: true });
+  });
+
+  const phasesDir = join(base, ".gsd", "phases");
+  // M009-abc123's own phase dir has the checked plan but no summary; only a
+  // DIFFERENT milestone (M009-def456) that merely shares the padded phase number
+  // carries the summary.
+  const ownDir = join(phasesDir, "09-abc123-web-api");
+  const foreignDir = join(phasesDir, "09-def456-web-api");
+  mkdirSync(ownDir, { recursive: true });
+  mkdirSync(foreignDir, { recursive: true });
+
+  writeFileSync(join(ownDir, "09-04-PLAN.md"), "# S04 plan\n\n- [x] **T02: Build endpoint**\n");
+  writeFileSync(join(foreignDir, "S04-T02-SUMMARY.md"), "# T02 summary\n");
+
+  assert.equal(
+    verifyExpectedArtifact("execute-task", "M009-abc123/S04/T02", base),
+    false,
+    "verification must not borrow a summary from a different team-suffix milestone sharing the phase number",
+  );
+});
+
 // ── #852 follow-up: worktree→project-root artifact fallback ──────────────────
 //
 // A milestone running in a worktree may not have its CONTEXT projected into the
