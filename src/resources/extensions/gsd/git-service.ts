@@ -1359,7 +1359,12 @@ function classifyTurnGitActionFailure(action: TurnGitActionMode, err: unknown): 
   const stderr = errorWithStreams.stderr?.trim() ?? "";
   const message = errorWithStreams.message ?? getErrorMessage(err);
   const combined = `${stderr}\n${message}`;
-  if (action === "commit" && stderr !== "" && errorWithStreams.status === 1) {
+  const status = errorWithStreams.status;
+  const isCommitHookRejection =
+    action === "commit" &&
+    stderr !== "" &&
+    (status === 1 || (status == null && !/(?:^|\n)(?:fatal|error):/i.test(stderr)));
+  if (isCommitHookRejection) {
     if (GIT_OWNED_TRANSIENT_GIT_FAILURE_PATTERNS.some((pattern) => pattern.test(stderr))) {
       return "transient";
     }
