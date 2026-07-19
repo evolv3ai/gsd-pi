@@ -2,12 +2,22 @@ import { describe, test } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtemp, mkdir, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, basename } from "node:path";
 import { locateSyncTarget, manifestPathFor } from "./locate.js";
 
 async function project(): Promise<string> {
   const tmp = await mkdtemp(join(tmpdir(), "planf3-gsd-locate-"));
   await mkdir(join(tmp, "specs"), { recursive: true });
+  return tmp;
+}
+
+async function makeDirWithManifests(entries: { name: string; htmlPath: string; milestoneId: string }[]): Promise<string> {
+  const tmp = await mkdtemp(join(tmpdir(), "planf3-gsd-locate-"));
+  await mkdir(join(tmp, "specs"), { recursive: true });
+  for (const e of entries) {
+    await writeFile(join(tmp, "specs", basename(e.htmlPath)), "<html></html>", "utf8");
+    await writeFile(join(tmp, "specs", e.name), JSON.stringify({ planf3: { htmlPath: e.htmlPath }, gsd: { milestoneId: e.milestoneId } }), "utf8");
+  }
   return tmp;
 }
 
@@ -120,5 +130,38 @@ describe("locateSyncTarget — inference (no path)", () => {
     assert.equal(r.ok, true);
     if (!r.ok) return;
     assert.equal(r.target.milestoneId, "M003");
+  });
+
+  test("multi-candidate: pre-filters to the manifest whose milestone is active", async () => {
+    // two manifests: M1 (inactive) and M2 (active)
+    const tmp = await makeDirWithManifests([
+      { name: "a.manifest.json", htmlPath: "specs/a.html", milestoneId: "M1" },
+      { name: "b.manifest.json", htmlPath: "specs/b.html", milestoneId: "M2" },
+    ]);
+    const r = await locateSyncTarget(tmp, null, { activeIds: async () => ["M2"] });
+    assert.equal(r.ok, true);
+    if (r.ok) assert.equal(r.target.milestoneId, "M2");
+  });
+
+  test("multi-candidate: filter that narrows to >1 (or 0) still lists candidates", async () => {
+    const tmp = await makeDirWithManifests([
+      { name: "a.manifest.json", htmlPath: "specs/a.html", milestoneId: "M1" },
+      { name: "b.manifest.json", htmlPath: "specs/b.html", milestoneId: "M2" },
+    ]);
+    const none = await locateSyncTarget(tmp, null, { activeIds: async () => ["M9"] });
+    assert.equal(none.ok, false);
+    if (!none.ok) assert.match(none.message, /multiple bridge manifests/);
+    const both = await locateSyncTarget(tmp, null, { activeIds: async () => ["M1", "M2"] });
+    assert.equal(both.ok, false);
+  });
+
+  test("multi-candidate: a throwing activeIds provider degrades to today's listing", async () => {
+    const tmp = await makeDirWithManifests([
+      { name: "a.manifest.json", htmlPath: "specs/a.html", milestoneId: "M1" },
+      { name: "b.manifest.json", htmlPath: "specs/b.html", milestoneId: "M2" },
+    ]);
+    const r = await locateSyncTarget(tmp, null, { activeIds: async () => { throw new Error("query down"); } });
+    assert.equal(r.ok, false);
+    if (!r.ok) assert.match(r.message, /multiple bridge manifests/);
   });
 });

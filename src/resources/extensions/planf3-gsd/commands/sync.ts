@@ -101,7 +101,8 @@ export async function runSync(htmlPathArg: string | null, dryRun: boolean, opts:
   const cwd = opts.cwd ?? process.cwd();
   const none: AppliedChange[] = [];
 
-  const located = await locateSyncTarget(cwd, htmlPathArg);
+  const runner = new GsdRunner({ binary: opts.binary, cwd, spawn: opts.spawn ?? realSpawner });
+  const located = await locateSyncTarget(cwd, htmlPathArg, { activeIds: activeIdsOf(runner) });
   if (!located.ok) return { kind: "not-located", message: located.message, applied: none, unmatched: [], bound: [] };
   const { htmlPath, manifestPath, milestoneId } = located.target;
 
@@ -123,7 +124,6 @@ export async function runSync(htmlPathArg: string | null, dryRun: boolean, opts:
     manifest = null;
   }
 
-  const runner = new GsdRunner({ binary: opts.binary, cwd, spawn: opts.spawn ?? realSpawner });
   let snapshot: unknown;
   try {
     snapshot = (await runner.query()).json;
