@@ -9,7 +9,7 @@ GSD spec markdown + bridge manifest beside it, then shells out to
 
 - **Tier:** bundled (ships inside `@opengsd/gsd-pi`)
 - **Platform requirement:** `gsd-pi >= 2.29.0`
-- **Version:** 0.5.2 (M0+M1+M2 complete — plan/run/build/preflight; + M3 sync; + F-4.2 CLI-provider fallback; + F5.1-2 sign-off token hardening; see [Out of scope](#out-of-scope) for the road from here)
+- **Version:** 0.6.0 (M0+M1+M2 complete — plan/run/build/preflight; + M3 sync; + M4 loop/steer; + F-4.2 CLI-provider fallback; + F5.1-2 sign-off token hardening; see [Out of scope](#out-of-scope) for the road from here)
 
 ## Quickstart
 
@@ -215,6 +215,72 @@ Not synced yet (no documented headless source): commit SHAs and
 validation-evidence summaries — deferred until upstream exposes a
 ledger/artifact query.
 
+### Correlation ladder
+
+`/planf3-gsd-sync` maps a live GSD active-slice/active-task snapshot back
+onto a plan phase/item through a fixed ladder — the first rung that
+produces a **unique** answer wins:
+
+1. **Persisted binding** — a stored `gsdSlice`/`gsdTask` mapping from an
+   earlier sync. Stored bindings win outright; nothing re-matches.
+2. **PF3 tag** — a `PF3-P<n>` / `PF3-P<n>-T<m>` tag on the GSD-minted
+   title (see [Stable-ID planner tags](#stable-id-planner-tags) below).
+   Exactly one distinct tag required.
+3. **Title rules** — normalized-equality then unique-substring matching
+   against phase/checklist-item/task-heading text (unchanged since M3).
+4. **Singleton ordinal** — **slice level only**: exactly one phase in the
+   plan and exactly one slice total. There is deliberately no task-level
+   ordinal rung.
+5. **Unmatched** — nothing painted; the title is listed in the sync
+   summary as `unmatched:`.
+
+A successful match at rungs 2–4 is persisted into the manifest so the
+next sync short-circuits at rung 1. Re-running `/planf3-gsd-export`
+regenerates the manifest from scratch and therefore **clears all
+bindings** — expected, since a re-export implies the plan (and its PF3
+IDs) may have changed.
+
+### Stable-ID planner tags
+
+Every exported spec (`/planf3-gsd-export`, `/planf3-gsd-build`, `/planf3-gsd-run`)
+carries this instruction so the planning agent tags the slices/tasks it
+creates with the source phase/task IDs:
+
+> **Unit tags:** When decomposing this spec into slices and tasks, include the source tag
+> (e.g. `[PF3-P1]`) verbatim at the end of the corresponding slice/task titles.
+> Do not invent tags for units with no source phase.
+
+`PF3-P<n>` addresses the plan phase at document index `n-1`; `PF3-P<n>-T<m>`
+addresses task `m-1` within it. IDs are a pure function of the parsed plan,
+so the same plan always yields the same tags.
+
+### The sync loop (custody pattern)
+
+There is no daemon or background poller — a human or orchestrating agent
+holds custody of the loop and drives it explicitly:
+
+1. `/planf3-gsd-build <plan.html> --auto` paints the first live state onto
+   the plan automatically when it returns (a "build-return sync" — no
+   separate `/planf3-gsd-sync` call needed for that first snapshot).
+2. Each subsequent custody round is two calls: `gsd headless auto` (or
+   `gsd headless next` in step mode), then `/planf3-gsd-sync` to paint
+   the result onto the plan.
+3. `/planf3-gsd-status` nudges when it detects markers have fallen behind
+   the live snapshot (completed work the plan still shows as `[]`):
+   `markers behind live state — run /planf3-gsd-sync`.
+
+### Steer, pause, resume, stop
+
+Thin passthroughs to the documented `gsd headless <cmd>` surface —
+they never read `.gsd/` internals.
+
+| Command | What it does |
+| --- | --- |
+| `/planf3-gsd-steer "<instruction>"` | Sends one steering instruction into the running headless build (`gsd headless steer`). **Eval-logged** — it redirects paid work in progress. Empty/whitespace instruction is refused with usage, nothing spawned. |
+| `/planf3-gsd-pause` | Pauses the running headless build (`gsd headless pause`). Flow control only — no eval row. |
+| `/planf3-gsd-resume [path]` | Resumes a paused build with **one bounded round**: reads the manifest's `gsd.mode` and runs `gsd headless auto` when mode is `auto`, or `gsd headless next` when mode is `step`. Always prints the custody reminder to run `/planf3-gsd-sync` after the round — long runs stay under orchestrator custody, not inside a single resume call. |
+| `/planf3-gsd-stop` | Stops the running headless build (`gsd headless stop`). **Eval-logged** — it abandons work in progress. |
+
 ## ExtensionAPI tools
 
 For agent/LLM callers (the LLM picks these up automatically from the
@@ -397,15 +463,17 @@ extension's compatibility brief in `gsd-pi/CLAUDE.md` tracks this.
 ## Out of scope (deferred to later milestones)
 
 The current release covers **M0 (parser + spec exporter)**,
-**M1 (manifest + headless bridge)**, **M2 (preflight + plan/run)**, and
-**M3 (`/planf3-gsd-sync`)**. The following slash commands and
-features are intentionally not implemented yet — see
+**M1 (manifest + headless bridge)**, **M2 (preflight + plan/run)**,
+**M3 (`/planf3-gsd-sync`)**, and **M4 (custody sync loop, PF3
+stable-ID correlation ladder, steer/pause/resume/stop)**. The
+following remains intentionally not implemented — see
 `/home/wsladmin/dev/planf3-gsd/docs/superpowers/plans/2026-06-22-planf3-gsd-mvp.md`
 for the full PRD coverage map:
 
-- Continuous sync during builds (FR-8's "after each completed GSD unit" loop) + steer / pause / stop + the blocker-flow UI — M4
-- Commit-SHA list + validation-evidence in plan metadata — blocked on upstream exposing a ledger/artifact query
-- Lore / RAC promotion — M5
+- FR-8 deferred fields — GSD session id / commit-SHA list / validation-evidence
+  summaries in plan metadata — blocked on upstream exposing a documented
+  headless ledger/artifact query (same named follow-up since M3)
+- Lore / RAC promotion — M5 (optional, v1+)
 
 ## Where things live
 
