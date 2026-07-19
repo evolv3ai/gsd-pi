@@ -549,6 +549,8 @@ describe('SessionManager', () => {
   it('detects paused from auto-mode paused notification and permits restart', async () => {
     const { manager, spy } = createManager();
     const dir = '/tmp/paused-terminal-test';
+    let paused: Record<string, unknown> | undefined;
+    manager.on('session:paused', (data: Record<string, unknown>) => { paused = data; });
 
     const sessionId = await manager.startSession({ projectDir: dir });
     const session = manager.getSession(sessionId)!;
@@ -564,11 +566,42 @@ describe('SessionManager', () => {
     assert.equal(session.status, 'paused');
     assert.equal(session.pendingBlocker, null);
     assert.equal(spy.findCalls('info', 'session paused').length, 1);
+    assert.ok(paused, 'pause notification should emit session:paused');
+    assert.equal(paused.sessionId, sessionId);
+    assert.equal(paused.projectName, 'paused-terminal-test');
 
     const nextSessionId = await manager.startSession({ projectDir: dir });
     assert.notEqual(nextSessionId, sessionId);
     assert.ok(firstClient.stopped);
     assert.equal(manager.getSession(nextSessionId)!.status, 'running');
+    assert.equal(manager.getSessionByDir(dir)!.sessionId, nextSessionId);
+  });
+
+  it('detects paused from structured orchestrator terminal pause event', async () => {
+    const { manager } = createManager();
+    const dir = '/tmp/structured-paused-terminal-test';
+    let paused: Record<string, unknown> | undefined;
+    manager.on('session:paused', (data: Record<string, unknown>) => { paused = data; });
+
+    const sessionId = await manager.startSession({ projectDir: dir });
+    const session = manager.getSession(sessionId)!;
+
+    manager.lastClient!.emitEvent({
+      eventType: 'orchestrator-terminal',
+      data: {
+        source: 'auto-orchestrator',
+        name: 'stop',
+        reason: 'pause',
+      },
+    });
+
+    assert.equal(session.status, 'paused');
+    assert.equal(session.pendingBlocker, null);
+    assert.ok(paused, 'structured orchestrator pause should emit session:paused');
+    assert.equal(paused.sessionId, sessionId);
+
+    const nextSessionId = await manager.startSession({ projectDir: dir });
+    assert.notEqual(nextSessionId, sessionId);
     assert.equal(manager.getSessionByDir(dir)!.sessionId, nextSessionId);
   });
 

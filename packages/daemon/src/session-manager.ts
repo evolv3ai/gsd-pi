@@ -53,7 +53,20 @@ function isTerminalNotification(event: Record<string, unknown>): boolean {
   return TERMINAL_PREFIXES.some((prefix) => message.startsWith(prefix));
 }
 
-function isPausedNotification(event: Record<string, unknown>): boolean {
+function isOrchestratorPausedEvent(event: Record<string, unknown>): boolean {
+  const data = event.data as Record<string, unknown> | undefined;
+  const eventType = String(event.eventType ?? '');
+  const name = String(data?.name ?? '');
+  const reason = String(data?.reason ?? '').toLowerCase();
+  return (
+    eventType === 'orchestrator-guard-block' && name === 'advance-paused'
+  ) || (
+    eventType === 'orchestrator-terminal' && name === 'stop' && reason === 'pause'
+  );
+}
+
+function isPausedEvent(event: Record<string, unknown>): boolean {
+  if (isOrchestratorPausedEvent(event)) return true;
   if (event.type !== 'extension_ui_request' || event.method !== 'notify') return false;
   const message = String(event.message ?? '').toLowerCase();
   return PAUSED_PREFIXES.some((prefix) => message.startsWith(prefix));
@@ -425,12 +438,17 @@ export class SessionManager extends EventEmitter {
 
     // Paused detection — pauseAuto() is resumable and must not leave the
     // session looking active, or duplicate-start prevention will deadlock.
-    if (isPausedNotification(event as Record<string, unknown>)) {
+    if (isPausedEvent(event as Record<string, unknown>)) {
       session.status = 'paused';
       session.pendingBlocker = null;
       session.unsubscribe?.();
       session.unsubscribe = undefined;
       this.logger.info('session paused', { sessionId: session.sessionId, projectDir: session.projectDir });
+      this.emit('session:paused', {
+        sessionId: session.sessionId,
+        projectDir: session.projectDir,
+        projectName: session.projectName,
+      });
       this.markTerminal(session.projectDir);
       return;
     }

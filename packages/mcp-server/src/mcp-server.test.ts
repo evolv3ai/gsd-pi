@@ -616,6 +616,29 @@ describe('SessionManager', () => {
     assert.equal(sm.getSession(nextSessionId)!.status, 'running');
   });
 
+  it('pause detection: structured orchestrator terminal pause sets status to paused', async () => {
+    const dir = '/tmp/structured-terminal-paused';
+    const sessionId = await sm.startSession(dir, { cliPath: '/usr/bin/gsd' });
+    const client = sm.lastClient!;
+
+    client.emitEvent({
+      eventType: 'orchestrator-terminal',
+      data: {
+        source: 'auto-orchestrator',
+        name: 'stop',
+        reason: 'pause',
+      },
+    });
+
+    const session = sm.getSession(sessionId)!;
+    assert.equal(session.status, 'paused');
+    assert.equal(session.pendingBlocker, null);
+
+    const nextSessionId = await sm.startSession(dir, { cliPath: '/usr/bin/gsd' });
+    assert.notEqual(nextSessionId, sessionId);
+    assert.equal(sm.getSessionByDir(dir)!.sessionId, nextSessionId);
+  });
+
   it('terminal detection with blocked: message sets status to blocked', async () => {
     const sessionId = await sm.startSession('/tmp/terminal-blocked', { cliPath: '/usr/bin/gsd' });
     const client = sm.lastClient!;
