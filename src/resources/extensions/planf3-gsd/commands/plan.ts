@@ -60,21 +60,15 @@ export interface PlanPromptOptions {
  * bridge-less global npm binary. Pin the CURRENT host's invocation instead:
  * the running node + the loader script this process was started with.
  */
-export function hostInvocation(
-  execPath?: string,
-  scriptPath?: string | undefined,
-): string {
-  const exec = execPath ?? process.execPath;
-  // Distinguish between "scriptPath not provided" and "scriptPath explicitly undefined"
-  let script: string | undefined;
-  if (arguments.length > 1) {
-    // Second argument was explicitly provided (could be undefined or a string)
-    script = scriptPath;
-  } else {
-    // Second argument was not provided, use process.argv[1] as default
-    script = process.argv[1];
-  }
-  return script !== undefined && script.length > 0 ? `"${exec}" "${script}"` : `"${exec}"`;
+export function hostInvocation(...args: [string?, (string | undefined)?]): string {
+  // Two-arg calls take the given scriptPath verbatim — even an explicit
+  // undefined (meaning "no loader script": degrade to the bare exec path).
+  // A default parameter can't express that: explicit undefined would
+  // substitute process.argv[1] and break the no-script degradation case
+  // pinned in plan.test.ts ("no script path degrades to the quoted exec path").
+  const execPath = args[0] ?? process.execPath;
+  const scriptPath = args.length >= 2 ? args[1] : process.argv[1];
+  return scriptPath !== undefined && scriptPath.length > 0 ? `"${execPath}" "${scriptPath}"` : `"${execPath}"`;
 }
 
 /** The prompt injected into the host session (spec: six required elements).
