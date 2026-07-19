@@ -1264,7 +1264,21 @@ test("deterministic repair abort resumes after restart and is consumed by one su
     repairSummary: "Recreated the missing worktree root and verified GSD can resolve it.",
     evidence: { command: "gsd doctor", exitCode: 0, verdict: "PASS" },
   });
+  const replayedResume = resumeTaskRecovery({
+    invocation: invocation("recovery/deterministic/resume"),
+    recoveryActionId: second.recoveryActionId,
+    repairSummary: "Recreated the missing worktree root and verified GSD can resolve it.",
+    evidence: { command: "gsd doctor", exitCode: 0, verdict: "PASS" },
+  });
   assert.equal(resumed.status, "committed");
+  assert.equal(replayedResume.status, "replayed");
+  assert.equal(replayedResume.operationId, resumed.operationId);
+  assert.equal(Number(row(`
+    SELECT COUNT(*) AS count
+    FROM workflow_domain_events
+    WHERE event_type = 'task.recovery.resumed'
+      AND json_extract(payload_json, '$.recoveryActionId') = :recovery_action_id
+  `, { ":recovery_action_id": second.recoveryActionId }).count), 1);
 
   closeDatabase();
   assert.equal(openDatabase(firstFailure.dbPath), true);
@@ -1291,6 +1305,17 @@ test("deterministic repair abort resumes after restart and is consumed by one su
     sliceId: "S01",
     taskId: "T01",
   }), null);
+  assert.throws(() => resumeTaskRecovery({
+    invocation: invocation("recovery/deterministic/stale-resume"),
+    recoveryActionId: second.recoveryActionId,
+    repairSummary: "Try to reuse a consumed repaired-abort authorization.",
+    evidence: { command: "gsd doctor", exitCode: 0, verdict: "PASS" },
+  }), /current agent-owned abort/i);
+  assert.equal(Number(row(`
+    SELECT COUNT(*) AS count
+    FROM workflow_execution_attempts
+    WHERE retry_of_attempt_id = :attempt_id
+  `, { ":attempt_id": secondFailure.attemptId }).count), 1);
 });
 
 test("a pre-commit fault leaves no recovery residue and the same request retries cleanly", () => {
