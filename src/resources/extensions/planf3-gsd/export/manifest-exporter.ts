@@ -1,13 +1,16 @@
 import type { ParsedPlan, PlanPhase, PlanTier, GsdModelPhaseKey } from "../parser/types.js";
 import { GENERATOR_VERSION } from "../version.js";
+import { pf3PhaseId, pf3TaskId } from "./pf3-id.js";
 
-export interface TaskMapping { title: string; tier: PlanTier | null; gsdTask: string | null; }
+export interface TaskMapping { title: string; tier: PlanTier | null; pf3Id: string; /** GSD task id — populated by sync when observed (M4); null until then. */ gsdTask: string | null; }
 export interface PhaseMapping {
   planf3Selector: string;
   title: string;
+  pf3Id: string;
   tier: PlanTier | null;
   checks: string[];
   gsdMilestone: string | null;
+  /** GSD slice id — populated by sync when observed (M4); null until then. */
   gsdSlice: string | null;
   tasks: TaskMapping[];
 }
@@ -71,11 +74,12 @@ export function buildManifest(plan: ParsedPlan, paths: ManifestPaths, prov: Mani
       phases: plan.phases.map((phase, i) => ({
         planf3Selector: `section#phases > div.phase:nth-of-type(${i + 1})`,
         title: phase.title,
+        pf3Id: pf3PhaseId(i),
         tier: phase.tier,
         checks: phaseChecks(phase),
         gsdMilestone: null,
         gsdSlice: null,
-        tasks: phase.tasks.map((t) => ({ title: t.title, tier: t.tier, gsdTask: null })),
+        tasks: phase.tasks.map((t, j) => ({ title: t.title, tier: t.tier, pf3Id: pf3TaskId(i, j), gsdTask: null })),
       })),
     },
     routing: { modelPolicy: plan.modelPolicy },

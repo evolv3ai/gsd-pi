@@ -79,4 +79,25 @@ describe("buildManifest", () => {
     const manifest = buildManifest(plan, paths, prov, { path: "specs/PRESETS.md", approvalHash: "abc123" });
     assert.deepEqual(manifest.presets, { path: "specs/PRESETS.md", approvalHash: "abc123" });
   });
+
+  test("mapping carries deterministic pf3Ids; re-export is stable", () => {
+    const plan = parsePlanf3Html(minimal);
+    const paths = {
+      htmlPath: "specs/minimal.html",
+      specPath: "specs/minimal.gsd.md",
+      projectRoot: ".",
+    };
+    const prov = { userPrompt: "Test the bridge", mode: "step" as const };
+    const a = buildManifest(plan, paths, prov);
+    const b = buildManifest(plan, paths, prov);
+    assert.equal(a.mapping.phases[0].pf3Id, "PF3-P1");
+    assert.equal(a.mapping.phases[0].tasks[0].pf3Id, "PF3-P1-T1");
+    assert.deepEqual(
+      a.mapping.phases.map((p) => [p.pf3Id, p.tasks.map((t) => t.pf3Id)]),
+      b.mapping.phases.map((p) => [p.pf3Id, p.tasks.map((t) => t.pf3Id)]),
+    );
+    // re-export resets bindings: a fresh manifest never carries gsdSlice/gsdTask
+    assert.equal(a.mapping.phases[0].gsdSlice, null);
+    assert.equal(a.mapping.phases[0].tasks[0].gsdTask, null);
+  });
 });
