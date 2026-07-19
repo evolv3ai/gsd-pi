@@ -13,7 +13,11 @@
       "planf3-gsd-run",
       "planf3-gsd-status",
       "planf3-gsd-preflight",
-      "planf3-gsd-sync"
+      "planf3-gsd-sync",
+      "planf3-gsd-steer",
+      "planf3-gsd-pause",
+      "planf3-gsd-resume",
+      "planf3-gsd-stop"
     ],
     "tools": [
       "planf3_gsd_export",
