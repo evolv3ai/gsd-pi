@@ -1,10 +1,11 @@
 import { readdir, readFile } from "node:fs/promises";
-import { join } from "node:path";
+import { isAbsolute, join } from "node:path";
 import { GsdRunner, type Spawner } from "../gsd/headless-runner.js";
 import { realSpawner } from "../gsd/real-spawner.js";
 import { mapQuerySnapshot, type BridgeStatus } from "../gsd/status-mapper.js";
 import { buildEvalRow, appendEvalRow, hasStatusRowFor } from "../gsd/eval-log.js";
 import { friendlyError } from "./error-message.js";
+import { parsePlanf3Html } from "../parser/planf3-html-parser.js";
 
 export interface StatusOptions {
   binary?: string;
@@ -92,4 +93,43 @@ export async function runStatus(opts: StatusOptions = {}): Promise<BridgeStatus>
   }
   await backfillCompletionRow(cwd, status, opts.now ?? (() => new Date().toISOString()));
   return status;
+}
+
+export interface StatusReport {
+  status: BridgeStatus;
+  /** Non-null when live progress implies work the plan's markers don't show (M4). */
+  nudge: string | null;
+}
+
+export const STALE_NUDGE = "markers behind live state — run /planf3-gsd-sync";
+
+/**
+ * Staleness nudge (M4 loop touchpoint c). Status stays read-only: this only
+ * READS the plan HTML the bridge manifest points at. Fires when the active
+ * milestone has completed slices/tasks but the plan shows zero done markers.
+ * Every failure degrades to null — a nudge must never break a status call.
+ */
+async function computeStaleNudge(cwd: string, status: BridgeStatus): Promise<string | null> {
+  try {
+    const active = status.activeMilestone;
+    const progress = status.progress;
+    if (active === null || progress === null) return null;
+    if (progress.slices.done + progress.tasks.done === 0) return null;
+    const manifest = await findBridgeManifest(cwd, active.id);
+    if (manifest === null || manifest.htmlPath.length === 0) return null;
+    const htmlPath = isAbsolute(manifest.htmlPath) ? manifest.htmlPath : join(cwd, manifest.htmlPath);
+    const plan = parsePlanf3Html(await readFile(htmlPath, "utf8"));
+    const doneMarkers =
+      plan.phases.filter((p) => p.status === "done").length +
+      plan.phases.reduce((acc, p) => acc + p.tasks.reduce((a, t) => a + t.checklist.filter((i) => i.status === "done").length, 0), 0);
+    return doneMarkers === 0 ? STALE_NUDGE : null;
+  } catch {
+    return null;
+  }
+}
+
+export async function runStatusReport(opts: StatusOptions = {}): Promise<StatusReport> {
+  const cwd = opts.cwd ?? process.cwd();
+  const status = await runStatus(opts);
+  return { status, nudge: await computeStaleNudge(cwd, status) };
 }
