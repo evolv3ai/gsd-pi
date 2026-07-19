@@ -4,7 +4,7 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import { parsePlanf3Html } from "../parser/planf3-html-parser.js";
-import { exportGsdSpec } from "./gsd-spec-exporter.js";
+import { exportGsdSpec, PF3_TAG_INSTRUCTION } from "./gsd-spec-exporter.js";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const minimal = readFileSync(
@@ -36,9 +36,9 @@ describe("exportGsdSpec", () => {
 
   test("emits implementation phases with task checklists", () => {
     const md = exportGsdSpec(parsePlanf3Html(minimal), CTX);
-    assert.match(md, /### Phase 1: Setup \[wip\] \[tier: mechanical\]\n\nStand up the skeleton\./);
-    assert.match(md, /#### 1\. Scaffolding \[tier: complex\]\n- \[x\] Create the dir\.\n- \[ \] Add the file\./);
-    assert.match(md, /### Phase 2: Wire-up \[ \]/);
+    assert.match(md, /### Phase 1: Setup \[wip\] \[tier: mechanical\] \[PF3-P1\]\n\nStand up the skeleton\./);
+    assert.match(md, /#### 1\. Scaffolding \[tier: complex\] \[PF3-P1-T1\]\n- \[x\] Create the dir\.\n- \[ \] Add the file\./);
+    assert.match(md, /### Phase 2: Wire-up \[ \] \[PF3-P2\]/);
   });
 
   test("emits a tier legend when any tier chip is present", () => {
@@ -61,5 +61,19 @@ describe("exportGsdSpec", () => {
     const planA = parsePlanf3Html(minimal);
     const planB = parsePlanf3Html(minimal);
     assert.equal(exportGsdSpec(planA, CTX), exportGsdSpec(planB, CTX));
+  });
+
+  test("phase and task headings carry trailing PF3 tags", () => {
+    const out = exportGsdSpec(parsePlanf3Html(minimal), CTX);
+    // order pinned: title, marker, optional tier, PF3 tag LAST
+    assert.match(out, /^### .+ \[PF3-P1\]$/m);
+    assert.match(out, /^#### .+ \[PF3-P1-T1\]$/m);
+  });
+
+  test("instruction block appears once, near the top, with pinned wording", () => {
+    const out = exportGsdSpec(parsePlanf3Html(minimal), CTX);
+    assert.ok(out.includes(PF3_TAG_INSTRUCTION));
+    assert.ok(out.indexOf(PF3_TAG_INSTRUCTION) < out.indexOf("## Objective"));
+    assert.equal(out.split("Do not invent tags").length, 2); // exactly once
   });
 });
