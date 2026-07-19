@@ -60,7 +60,50 @@ export function buildEvalRow(input: {
   };
 }
 
-export async function appendEvalRow(projectRoot: string, row: EvalRow): Promise<void> {
+/** M4 control rows: steer redirects paid work and stop abandons it — both
+ *  belong in the eval ledger for cost attribution. Pause/resume do not
+ *  (flow control, no spend consequence). cost is 0 structurally
+ *  (claude-code), or the observed cost when the runner reports one — the
+ *  v0.3.3 convention. */
+export interface ControlEvalRow {
+  loggedAt: string;
+  event: "steer" | "stop";
+  htmlPath: string | null;
+  specPath: string | null;
+  milestoneId: string | null;
+  /** steer only: the instruction, verbatim. */
+  steerText?: string;
+  exitCode: number;
+  cost: number;
+  generator: "planf3-gsd-pi";
+  generatorVersion: string;
+}
+
+export function buildControlEvalRow(input: {
+  loggedAt: string;
+  event: "steer" | "stop";
+  htmlPath: string | null;
+  specPath: string | null;
+  milestoneId: string | null;
+  steerText?: string;
+  exitCode: number;
+  cost?: number;
+}): ControlEvalRow {
+  return {
+    loggedAt: input.loggedAt,
+    event: input.event,
+    htmlPath: input.htmlPath,
+    specPath: input.specPath,
+    milestoneId: input.milestoneId,
+    ...(input.steerText !== undefined ? { steerText: input.steerText } : {}),
+    exitCode: input.exitCode,
+    cost: input.cost ?? 0,
+    generator: "planf3-gsd-pi",
+    generatorVersion: GENERATOR_VERSION,
+  };
+}
+
+export async function appendEvalRow(projectRoot: string, row: EvalRow | ControlEvalRow): Promise<void> {
   const dir = join(projectRoot, ".gsd");
   await mkdir(dir, { recursive: true });
   await appendFile(join(dir, "planf3-gsd-evals.jsonl"), JSON.stringify(row) + "\n", "utf8");

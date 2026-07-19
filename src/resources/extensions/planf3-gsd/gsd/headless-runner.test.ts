@@ -152,3 +152,35 @@ describe("parseJsonLines", () => {
     assert.deepEqual(result[1], line3);
   });
 });
+
+describe("control subcommands (M4)", () => {
+  const capture = (): { spawn: Spawner; calls: string[][] } => {
+    const calls: string[][] = [];
+    const spawn: Spawner = async (_cmd, args) => {
+      calls.push(args);
+      return { exitCode: 0, stdout: "{}", stderr: "" };
+    };
+    return { spawn, calls };
+  };
+
+  test("steer passes the instruction as one argv token", async () => {
+    const { spawn, calls } = capture();
+    await new GsdRunner({ cwd: "/tmp", spawn }).steer("focus on the parser tests");
+    assert.deepEqual(calls[0], ["headless", "--output-format", "json", "steer", "focus on the parser tests"]);
+  });
+
+  test("pause and stop are bare subcommands", async () => {
+    const { spawn, calls } = capture();
+    const r = new GsdRunner({ cwd: "/tmp", spawn });
+    await r.pause();
+    await r.stop();
+    assert.deepEqual(calls[0], ["headless", "--output-format", "json", "pause"]);
+    assert.deepEqual(calls[1], ["headless", "--output-format", "json", "stop"]);
+  });
+
+  test("next uses the long-run prefix (carries --timeout when configured)", async () => {
+    const { spawn, calls } = capture();
+    await new GsdRunner({ cwd: "/tmp", spawn, timeoutSeconds: 0 }).next();
+    assert.deepEqual(calls[0], ["headless", "--output-format", "json", "--timeout", "0", "next"]);
+  });
+});
