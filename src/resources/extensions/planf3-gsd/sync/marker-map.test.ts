@@ -6,9 +6,15 @@ import { fileURLToPath } from "node:url";
 import { parsePlanf3Html } from "../parser/planf3-html-parser.js";
 import type { BridgeStatus } from "../gsd/status-mapper.js";
 import { computeSync, normalizeTitle, matchIndex, type MarkerUpdate } from "./marker-map.js";
+import { correlate } from "./correlate.js";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const plan = parsePlanf3Html(readFileSync(join(here, "..", "fixtures", "minimal-plan.html"), "utf8"));
+
+// M4: title resolution moved to correlate.ts; these tests exercise the same
+// M3 behavior through the composed path with an empty (legacy) mapping.
+const run = (status: BridgeStatus, milestoneId: string) =>
+  computeSync(plan, status, milestoneId, correlate(plan, [], status));
 
 const BASE: BridgeStatus = {
   phase: "executing",
@@ -57,7 +63,7 @@ describe("computeSync — completion sweep (rule 1)", () => {
   const status: BridgeStatus = { ...BASE, phase: "idle", lastCompletedMilestone: { id: "M042", title: "Minimal Plan" } };
 
   test("every marker below done rises to [x]; already-[x] untouched; [f] upgraded", () => {
-    const r = computeSync(plan, status, "M042");
+    const r = run(status, "M042");
     assert.equal(r.observable, true);
     assert.equal(r.completed, true);
     assert.equal(r.expectedMarkerCount, 9);
@@ -73,7 +79,7 @@ describe("computeSync — completion sweep (rule 1)", () => {
   });
 
   test("wrong milestone id -> not observable, zero updates", () => {
-    const r = computeSync(plan, status, "M999");
+    const r = run(status, "M999");
     assert.equal(r.observable, false);
     assert.deepEqual(r.updates, []);
   });
@@ -87,7 +93,7 @@ describe("computeSync — active rules (2-4)", () => {
   });
 
   test("activeSlice matches phase heading -> phase marker [wip]", () => {
-    const r = computeSync(plan, active({ activeSlice: { id: "S2", title: "Wire-up" } }), "M042");
+    const r = run(active({ activeSlice: { id: "S2", title: "Wire-up" } }), "M042");
     assert.equal(r.observable, true);
     const m = byOcc(r.updates);
     assert.deepEqual(m.get(4), { occurrence: 4, from: "[]", to: "[wip]", label: "Phase 2: Wire-up" });
@@ -95,23 +101,22 @@ describe("computeSync — active rules (2-4)", () => {
   });
 
   test("monotonic: phase already [wip] does not re-update (idempotent)", () => {
-    const r = computeSync(plan, active({ activeSlice: { id: "S1", title: "Setup" } }), "M042");
+    const r = run(active({ activeSlice: { id: "S1", title: "Setup" } }), "M042");
     assert.deepEqual(r.updates, []);
   });
 
   test("monotonic: [x] item never demoted to [wip]", () => {
-    const r = computeSync(plan, active({ activeTask: { id: "T1", title: "Create the dir." } }), "M042");
+    const r = run(active({ activeTask: { id: "T1", title: "Create the dir." } }), "M042");
     assert.deepEqual(r.updates, []);
   });
 
   test("monotonic: [f] item never demoted to [wip]", () => {
-    const r = computeSync(plan, active({ activeTask: { id: "T5", title: "First attempt failed." } }), "M042");
+    const r = run(active({ activeTask: { id: "T5", title: "First attempt failed." } }), "M042");
     assert.deepEqual(r.updates, []);
   });
 
   test("blockers -> [f] on the matched unit only", () => {
-    const r = computeSync(
-      plan,
+    const r = run(
       active({ activeSlice: { id: "S2", title: "Wire-up" }, blockers: [{ reason: "stuck" }] }),
       "M042",
     );
@@ -121,8 +126,7 @@ describe("computeSync — active rules (2-4)", () => {
   });
 
   test("blockers upgrade a [wip] phase to [f] (rank 2 > 1)", () => {
-    const r = computeSync(
-      plan,
+    const r = run(
       active({ activeSlice: { id: "S1", title: "Setup" }, blockers: ["x"] }),
       "M042",
     );
@@ -130,20 +134,19 @@ describe("computeSync — active rules (2-4)", () => {
   });
 
   test("activeTask matches checklist item text -> item marker", () => {
-    const r = computeSync(plan, active({ activeTask: { id: "T6", title: "Retry with mocked spawn." } }), "M042");
+    const r = run(active({ activeTask: { id: "T6", title: "Retry with mocked spawn." } }), "M042");
     assert.deepEqual(byOcc(r.updates).get(6), { occurrence: 6, from: "[]", to: "[wip]", label: "Retry with mocked spawn." });
   });
 
   test("activeTask falls back to h4 heading -> containing phase's marker", () => {
     // "Scaffolding" matches no item text but matches h4 "1. Scaffolding" in phase 1;
     // phase 1 is [wip], so only a blocker ([f], rank 2) raises it.
-    const r = computeSync(plan, active({ activeTask: { id: "T0", title: "Scaffolding" }, blockers: ["b"] }), "M042");
+    const r = run(active({ activeTask: { id: "T0", title: "Scaffolding" }, blockers: ["b"] }), "M042");
     assert.deepEqual(byOcc(r.updates).get(0), { occurrence: 0, from: "[wip]", to: "[f]", label: "Phase 1: Setup" });
   });
 
   test("slice and task-fallback landing on the same phase dedupe to one update", () => {
-    const r = computeSync(
-      plan,
+    const r = run(
       active({
         activeSlice: { id: "S1", title: "Setup" },
         activeTask: { id: "T0", title: "Scaffolding" },
@@ -156,8 +159,7 @@ describe("computeSync — active rules (2-4)", () => {
   });
 
   test("unmatched refs change nothing and are reported", () => {
-    const r = computeSync(
-      plan,
+    const r = run(
       active({ activeSlice: { id: "S9", title: "Deployment" }, activeTask: { id: "T9", title: "Ship it" }, blockers: ["b"] }),
       "M042",
     );
@@ -166,8 +168,7 @@ describe("computeSync — active rules (2-4)", () => {
   });
 
   test("foreign activeMilestone -> rules 3-4 gated off, not observable", () => {
-    const r = computeSync(
-      plan,
+    const r = run(
       { ...BASE, activeMilestone: { id: "M777", title: "Other" }, activeSlice: { id: "S", title: "Setup" } },
       "M042",
     );
@@ -176,8 +177,7 @@ describe("computeSync — active rules (2-4)", () => {
   });
 
   test("lastCompleted foreign + active ours -> rules 3-4 still apply (no sweep)", () => {
-    const r = computeSync(
-      plan,
+    const r = run(
       active({ lastCompletedMilestone: { id: "M001", title: "Older" }, activeSlice: { id: "S2", title: "Wire-up" } }),
       "M042",
     );

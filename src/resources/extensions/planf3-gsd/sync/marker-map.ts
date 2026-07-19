@@ -13,10 +13,19 @@
  * a no-op, hand-set [x] survives a [wip] snapshot, and a previously-[f] unit
  * is upgraded to [x] by milestone completion (completion means the retry
  * succeeded).
+ *
+ * M4: which plan unit an active slice/task resolves to is decided by the
+ * five-rung correlation ladder in correlate.ts (persisted binding, PF3 tag,
+ * title rules, singleton ordinal, unmatched) — this module only paints the
+ * resolution it is handed. Rule 1 (completion sweep) and rule 2 (foreign-
+ * milestone gate) are unchanged and still live here.
  */
 import type { ParsedPlan, PlanStatus } from "../parser/types.js";
 import { STATUS_TO_MARKER } from "../parser/types.js";
 import type { BridgeStatus } from "../gsd/status-mapper.js";
+import type { ResolvedActive } from "./correlate.js";
+
+export type { ResolvedActive, TaskTarget } from "./correlate.js";
 
 export const RANK: Record<PlanStatus, number> = { todo: 0, wip: 1, failed: 2, done: 3 };
 
@@ -91,7 +100,7 @@ export function matchIndex(needle: string, haystack: string[]): number | null {
   return contains.length === 1 ? contains[0] : null;
 }
 
-export function computeSync(plan: ParsedPlan, status: BridgeStatus, milestoneId: string): SyncPlanResult {
+export function computeSync(plan: ParsedPlan, status: BridgeStatus, milestoneId: string, resolved: ResolvedActive): SyncPlanResult {
   const sites = enumerateSites(plan);
   const expectedMarkerCount = sites.length;
   const completed = status.lastCompletedMilestone?.id === milestoneId;
@@ -126,33 +135,22 @@ export function computeSync(plan: ParsedPlan, status: BridgeStatus, milestoneId:
     return { observable: false, completed: false, updates: [], unmatched: [], expectedMarkerCount };
   }
 
-  const unmatched: string[] = [];
+  // M4: active-unit resolution happens in correlate.ts (five-rung ladder);
+  // this function only paints what was resolved. Monotonicity, dedupe, and
+  // the completion/gate rules above are unchanged M3 behavior.
+  const unmatched = [...resolved.unmatched];
   const activeStatus: PlanStatus = status.blockers.length > 0 ? "failed" : "wip";
   const phaseSites = sites.filter((s) => s.kind === "phase");
+  const itemSites = sites.filter((s) => s.kind === "item");
 
-  if (status.activeSlice !== null) {
-    // Rule 3: slice title vs phase headings.
-    const i = matchIndex(status.activeSlice.title, phaseSites.map((s) => s.label));
-    if (i === null) unmatched.push(status.activeSlice.title);
-    else raise(phaseSites[i], activeStatus);
+  if (status.activeSlice !== null && resolved.slicePhaseIndex !== null && resolved.slicePhaseIndex < phaseSites.length) {
+    raise(phaseSites[resolved.slicePhaseIndex], activeStatus);
   }
-
-  if (status.activeTask !== null) {
-    // Rule 4a: task title vs checklist-item text.
-    const itemSites = sites.filter((s) => s.kind === "item");
-    const i = matchIndex(status.activeTask.title, itemSites.map((s) => s.label));
-    if (i !== null) {
-      raise(itemSites[i], activeStatus);
-    } else {
-      // Rule 4b: vs <h4> task headings — tasks carry no marker of their own,
-      // so a heading match paints the containing phase's <h3>.
-      const taskTitles: { title: string; phaseIndex: number }[] = [];
-      plan.phases.forEach((phase, pi) => {
-        for (const t of phase.tasks) taskTitles.push({ title: t.title, phaseIndex: pi });
-      });
-      const j = matchIndex(status.activeTask.title, taskTitles.map((t) => t.title));
-      if (j === null) unmatched.push(status.activeTask.title);
-      else raise(phaseSites[taskTitles[j].phaseIndex], activeStatus);
+  if (status.activeTask !== null && resolved.taskTarget !== null) {
+    if (resolved.taskTarget.kind === "item") {
+      if (resolved.taskTarget.itemIndex < itemSites.length) raise(itemSites[resolved.taskTarget.itemIndex], activeStatus);
+    } else if (resolved.taskTarget.phaseIndex < phaseSites.length) {
+      raise(phaseSites[resolved.taskTarget.phaseIndex], activeStatus);
     }
   }
 

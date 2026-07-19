@@ -12,17 +12,22 @@ const here = dirname(fileURLToPath(import.meta.url));
 const FIXTURE = readFileSync(join(here, "..", "fixtures", "minimal-plan.html"), "utf8");
 const NOW = () => "2026-07-11T09:00:00Z";
 
-async function makeProject(milestoneId: string | null = "M042"): Promise<{ tmp: string; htmlPath: string }> {
+async function makeProject(milestoneId: string | null = "M042", mapping?: unknown): Promise<{ tmp: string; htmlPath: string; manifestPath: string }> {
   const tmp = await mkdtemp(join(tmpdir(), "planf3-gsd-sync-"));
   await mkdir(join(tmp, "specs"), { recursive: true });
   const htmlPath = join(tmp, "specs", "minimal.html");
+  const manifestPath = join(tmp, "specs", "minimal.manifest.json");
   await writeFile(htmlPath, FIXTURE, "utf8");
   await writeFile(
-    join(tmp, "specs", "minimal.manifest.json"),
-    JSON.stringify({ planf3: { htmlPath: "specs/minimal.html" }, gsd: { specPath: "specs/minimal.gsd.md", milestoneId, mode: "auto" } }),
+    manifestPath,
+    JSON.stringify({
+      planf3: { htmlPath: "specs/minimal.html" },
+      gsd: { specPath: "specs/minimal.gsd.md", milestoneId, mode: "auto" },
+      ...(mapping !== undefined ? { mapping } : {}),
+    }),
     "utf8",
   );
-  return { tmp, htmlPath };
+  return { tmp, htmlPath, manifestPath };
 }
 
 function snapshotSpawner(state: Record<string, unknown>, sessionId: string | null = null): Spawner {
@@ -134,5 +139,101 @@ describe("runSync", () => {
     const { tmp } = await makeProject();
     const spawn: Spawner = async () => { const e = new Error("spawn gsd ENOENT") as Error & { code?: string; syscall?: string }; e.code = "ENOENT"; e.syscall = "spawn"; throw e; };
     await assert.rejects(() => runSync(null, false, { cwd: tmp, spawn, now: NOW }), /gsd binary not found/);
+  });
+});
+
+const M4_MAPPING = {
+  phases: [
+    { title: "Phase 1: Setup", pf3Id: "PF3-P1", gsdSlice: null, tasks: [{ title: "1. Scaffolding", pf3Id: "PF3-P1-T1", gsdTask: null }] },
+    { title: "Phase 2: Wire-up", pf3Id: "PF3-P2", gsdSlice: null, tasks: [{ title: "2. Hooking up", pf3Id: "PF3-P2-T1", gsdTask: null }] },
+  ],
+};
+
+describe("runSync — M4 correlation + binding persistence", () => {
+  test("tag rung: invented slice title with [PF3-P2] paints phase 2 and persists the binding", async () => {
+    const { tmp, htmlPath, manifestPath } = await makeProject("M042", M4_MAPPING);
+    const spawn = snapshotSpawner({
+      phase: "executing",
+      activeMilestone: { id: "M042", title: "Minimal Plan" },
+      activeSlice: { id: "S7", title: "Invented Slice Name [PF3-P2]" },
+    });
+    const r = await runSync(null, false, { cwd: tmp, spawn, now: NOW });
+    assert.equal(r.kind, "synced");
+    assert.deepEqual(r.bound, ["bound slice PF3-P2 ↔ S7"]);
+    const out = await readFile(htmlPath, "utf8");
+    assert.ok(out.includes('<h3><code class="status">[wip]</code> Phase 2: Wire-up</h3>'));
+    const manifest = JSON.parse(await readFile(manifestPath, "utf8"));
+    assert.equal(manifest.mapping.phases[1].gsdSlice, "S7");
+  });
+
+  test("persisted binding wins on the next run without re-matching or re-persisting", async () => {
+    const boundMapping = {
+      phases: [
+        M4_MAPPING.phases[0],
+        { ...M4_MAPPING.phases[1], gsdSlice: "S7" },
+      ],
+    };
+    const { tmp, manifestPath } = await makeProject("M042", boundMapping);
+    const before = await readFile(manifestPath, "utf8");
+    const spawn = snapshotSpawner({
+      phase: "executing",
+      activeMilestone: { id: "M042", title: "Minimal Plan" },
+      activeSlice: { id: "S7", title: "Renamed Again Completely" },
+    });
+    const r = await runSync(null, false, { cwd: tmp, spawn, now: NOW });
+    assert.equal(r.kind, "synced");
+    assert.deepEqual(r.bound, []);
+    assert.equal(await readFile(manifestPath, "utf8"), before); // no manifest rewrite
+  });
+
+  test("dry-run persists neither HTML nor bindings", async () => {
+    const { tmp, htmlPath, manifestPath } = await makeProject("M042", M4_MAPPING);
+    const before = await readFile(manifestPath, "utf8");
+    const spawn = snapshotSpawner({
+      phase: "executing",
+      activeMilestone: { id: "M042", title: "Minimal Plan" },
+      activeSlice: { id: "S7", title: "Whatever [PF3-P2]" },
+    });
+    const r = await runSync(null, true, { cwd: tmp, spawn, now: NOW });
+    assert.equal(r.kind, "dry-run");
+    assert.equal(await readFile(htmlPath, "utf8"), FIXTURE);
+    assert.equal(await readFile(manifestPath, "utf8"), before);
+  });
+
+  test("binding-only run: markers already correct still persists the new binding (no-change kind)", async () => {
+    const { tmp, manifestPath } = await makeProject("M042", M4_MAPPING);
+    // Warm up the metadata rows first (fresh fixtures have none, so the very
+    // first sync of any project always writes them and reports "synced" —
+    // that's unrelated M3 behavior). No active slice/task here, so nothing
+    // is resolved or bound during warm-up.
+    const warmup = snapshotSpawner({ phase: "executing", activeMilestone: { id: "M042", title: "Minimal Plan" } });
+    const w = await runSync(null, false, { cwd: tmp, spawn: warmup, now: NOW });
+    assert.equal(w.kind, "synced");
+    assert.deepEqual(w.bound, []);
+
+    // Phase 1 is already [wip] in the fixture; slice resolves there via tag.
+    const spawn = snapshotSpawner({
+      phase: "executing",
+      activeMilestone: { id: "M042", title: "Minimal Plan" },
+      activeSlice: { id: "S1", title: "Invented [PF3-P1]" },
+    });
+    const r = await runSync(null, false, { cwd: tmp, spawn, now: NOW });
+    assert.equal(r.kind, "no-change");
+    assert.deepEqual(r.bound, ["bound slice PF3-P1 ↔ S1"]);
+    const manifest = JSON.parse(await readFile(manifestPath, "utf8"));
+    assert.equal(manifest.mapping.phases[0].gsdSlice, "S1");
+  });
+
+  test("title-rung success also persists a binding (rung 3 binds)", async () => {
+    const { tmp, manifestPath } = await makeProject("M042", M4_MAPPING);
+    const spawn = snapshotSpawner({
+      phase: "executing",
+      activeMilestone: { id: "M042", title: "Minimal Plan" },
+      activeSlice: { id: "S2", title: "Wire-up" },
+    });
+    const r = await runSync(null, false, { cwd: tmp, spawn, now: NOW });
+    assert.equal(r.kind, "synced");
+    const manifest = JSON.parse(await readFile(manifestPath, "utf8"));
+    assert.equal(manifest.mapping.phases[1].gsdSlice, "S2");
   });
 });
