@@ -1,11 +1,19 @@
 import type { ParsedPlan, PlanFile, PlanPhase, PlanTier } from "../parser/types.js";
 import { STATUS_TO_MARKER } from "../parser/types.js";
+import { pf3PhaseId, pf3TaskId } from "./pf3-id.js";
 
 export interface ExportCtx {
   htmlPath: string;
   manifestPath: string;
   generatedAt: string;
 }
+
+/** Planner instruction carried in every exported spec (M4 stable-ID contract).
+ *  One constant so tests can pin placement and wording. */
+export const PF3_TAG_INSTRUCTION =
+  "> **Unit tags:** When decomposing this spec into slices and tasks, include the source tag " +
+  "(e.g. `[PF3-P1]`) verbatim at the end of the corresponding slice/task titles. " +
+  "Do not invent tags for units with no source phase.";
 
 function renderFiles(label: string, files: PlanFile[]): string {
   if (files.length === 0) return `### ${label}\n_None._\n`;
@@ -29,13 +37,13 @@ function tierSuffix(tier: PlanTier | null): string {
   return tier ? ` [tier: ${tier}]` : "";
 }
 
-function renderPhase(phase: PlanPhase): string {
+function renderPhase(phase: PlanPhase, phaseIndex: number): string {
   const marker = STATUS_TO_MARKER[phase.status].replace("[]", "[ ]");
-  const head = `### ${phase.title} ${marker}${tierSuffix(phase.tier)}`;
+  const head = `### ${phase.title} ${marker}${tierSuffix(phase.tier)} [${pf3PhaseId(phaseIndex)}]`;
   const desc = phase.description ? `\n\n${phase.description}` : "";
-  const tasks = phase.tasks.map((t) => {
+  const tasks = phase.tasks.map((t, taskIndex) => {
     const body = t.checklist.length === 0 ? "_No checklist._" : renderChecklist(t.checklist);
-    return `#### ${t.title}${tierSuffix(t.tier)}\n${body}`;
+    return `#### ${t.title}${tierSuffix(t.tier)} [${pf3TaskId(phaseIndex, taskIndex)}]\n${body}`;
   });
   return [head + desc, ...tasks].join("\n\n");
 }
@@ -47,6 +55,7 @@ export function exportGsdSpec(plan: ParsedPlan, ctx: ExportCtx): string {
   parts.push(
     `## Source\n\n- Planf3 HTML: ${ctx.htmlPath}\n- Manifest: ${ctx.manifestPath}\n- Generated: ${ctx.generatedAt}`,
   );
+  parts.push(PF3_TAG_INSTRUCTION);
   parts.push(`## Objective\n\n${plan.purpose || "_Not provided._"}`);
   parts.push(`## Problem\n\n${plan.problem || "_Not provided._"}`);
   parts.push(`## Proposed Solution\n\n${plan.solution || "_Not provided._"}`);
@@ -58,7 +67,7 @@ export function exportGsdSpec(plan: ParsedPlan, ctx: ExportCtx): string {
   const tierLegend = hasTiers
     ? "_Tier hints: [tier: mechanical] = simplest capable model, [tier: standard] = default routing, [tier: complex] = strongest available model. Match slice/task complexity to these hints when planning._\n\n"
     : "";
-  parts.push(`## Implementation Phases\n\n${tierLegend}${plan.phases.map(renderPhase).join("\n\n")}`);
+  parts.push(`## Implementation Phases\n\n${tierLegend}${plan.phases.map((p, i) => renderPhase(p, i)).join("\n\n")}`);
   parts.push(
     `## Validation Commands\n${plan.validationCommands.length === 0 ? "_None._" : plan.validationCommands.map((c) => `- ${c}`).join("\n")}`,
   );

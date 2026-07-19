@@ -116,6 +116,25 @@ export class GsdRunner {
     return this.run([...this.longRunArgs(), "auto"], { signal: opts.signal, onStdout: opts.onStdout });
   }
 
+  /** Short control passthroughs (M4): steer/pause/stop return promptly — no
+   *  long-run prefix, no idle machinery. The instruction is ONE argv token. */
+  async steer(instruction: string): Promise<GsdResult> {
+    return this.run(["headless", "--output-format", "json", "steer", instruction], {});
+  }
+
+  async pause(): Promise<GsdResult> {
+    return this.run(["headless", "--output-format", "json", "pause"], {});
+  }
+
+  async stop(): Promise<GsdResult> {
+    return this.run(["headless", "--output-format", "json", "stop"], {});
+  }
+
+  /** Step-mode resume (M4): one bounded `next` round — long-running like auto. */
+  async next(opts: { signal?: AbortSignal; onStdout?: (chunk: string) => void } = {}): Promise<GsdResult> {
+    return this.run([...this.longRunArgs(), "next"], opts);
+  }
+
   /**
    * Extract all JSONL events from a GsdResult's stdout.
    * Use for streaming subcommands that emit line-by-line JSON.

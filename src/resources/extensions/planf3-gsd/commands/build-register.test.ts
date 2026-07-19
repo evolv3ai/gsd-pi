@@ -51,6 +51,7 @@ function makeResult(overrides: Partial<BuildResult>): BuildResult {
     },
     prefs: { applied: false, buckets: [], models: {}, commands: [], warning: null },
     presets: "ok",
+    postSync: null,
     ...overrides,
   };
 }
@@ -68,5 +69,14 @@ describe("formatBuildSummary", () => {
       formatBuildSummary(makeResult({ milestoneId: null, autoChain: "chained" })),
       "Built milestone (unknown id)\nphase=ready\nauto=chained\nprefs=no changes\nspec=/tmp/p.gsd.md\nmanifest=/tmp/p.manifest.json",
     );
+  });
+
+  test("formatBuildSummary carries sync=<kind> when the build-return sync ran", () => {
+    const result = makeResult({ postSync: { ran: true, kind: "synced", message: "synced 8 marker(s)" } });
+    assert.ok(formatBuildSummary(result).includes("sync=synced"));
+  });
+  test("formatBuildSummary points at /planf3-gsd-sync when the sync failed", () => {
+    const result = makeResult({ postSync: { ran: false, error: "boom" } });
+    assert.ok(formatBuildSummary(result).includes("sync=failed — run /planf3-gsd-sync"));
   });
 });

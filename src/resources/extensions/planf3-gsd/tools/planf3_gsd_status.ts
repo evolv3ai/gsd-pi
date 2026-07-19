@@ -1,11 +1,11 @@
 import { Type } from "@sinclair/typebox";
 import type { ExtensionAPI } from "@gsd/pi-coding-agent";
-import { runStatus } from "../commands/status.js";
+import { runStatusReport, type StatusReport } from "../commands/status.js";
 import type { BridgeStatus } from "../gsd/status-mapper.js";
 import { friendlyError } from "../commands/error-message.js";
 import { emit } from "../gsd/notify.js";
 
-export type StatusToolDetails = BridgeStatus;
+export type StatusToolDetails = StatusReport;
 
 function format(status: BridgeStatus): string {
   const am = status.activeMilestone ? `${status.activeMilestone.id} (${status.activeMilestone.title})` : "—";
@@ -36,10 +36,11 @@ export function registerStatusTool(pi: ExtensionAPI): void {
     parameters: Type.Object({}),
     async execute(_toolCallId, _params, _signal, _onUpdate, _ctx) {
       try {
-        const status = await runStatus();
-        const details: StatusToolDetails = status;
+        const report = await runStatusReport();
+        const details: StatusToolDetails = report;
+        const text = format(report.status) + (report.nudge !== null ? `\n${report.nudge}` : "");
         return {
-          content: [{ type: "text" as const, text: format(status) }],
+          content: [{ type: "text" as const, text }],
           details,
         };
       } catch (err) {
@@ -58,8 +59,9 @@ export function registerStatusCommand(pi: ExtensionAPI): void {
     description: "Show GSD build status for this workspace.",
     async handler(_args, ctx) {
       try {
-        const status = await runStatus();
-        emit(ctx, format(status), "info");
+        const report = await runStatusReport();
+        const text = format(report.status) + (report.nudge !== null ? `\n${report.nudge}` : "");
+        emit(ctx, text, "info");
       } catch (err) {
         emit(ctx, friendlyError(err), "error");
       }

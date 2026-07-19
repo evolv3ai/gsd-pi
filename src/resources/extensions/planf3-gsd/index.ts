@@ -8,6 +8,7 @@ import { registerPreflightCommand } from "./commands/preflight-register.js";
 import { registerPreflightTool } from "./tools/planf3_gsd_preflight.js";
 import { registerSyncCommand } from "./commands/sync-register.js";
 import { registerSyncTool } from "./tools/planf3_gsd_sync.js";
+import { registerControlCommands } from "./commands/control-register.js";
 
 export default function planf3Gsd(pi: ExtensionAPI): void {
   registerExportTool(pi);
@@ -22,4 +23,5 @@ export default function planf3Gsd(pi: ExtensionAPI): void {
   registerPreflightTool(pi);
   registerSyncCommand(pi);
   registerSyncTool(pi);
+  registerControlCommands(pi);
 }

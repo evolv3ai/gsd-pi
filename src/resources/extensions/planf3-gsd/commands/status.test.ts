@@ -1,10 +1,23 @@
 import { describe, test } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtemp, mkdir, readFile, writeFile } from "node:fs/promises";
+import { readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { runStatus } from "./status.js";
+import { join, dirname } from "node:path";
+import { fileURLToPath } from "node:url";
+import { runStatus, runStatusReport, STALE_NUDGE } from "./status.js";
 import type { Spawner } from "../gsd/headless-runner.js";
+
+const here = dirname(fileURLToPath(import.meta.url));
+
+function snapshotSpawner(state: Record<string, unknown>, sessionId: string | null = null): Spawner {
+  return async (_cmd, args) => {
+    assert.deepEqual(args, ["headless", "--output-format", "json", "query"]);
+    return { exitCode: 0, stdout: JSON.stringify({ state, sessionId, cost: { total: 1 } }), stderr: "" };
+  };
+}
+
+const NOW = () => "2026-07-11T09:00:00Z";
 
 describe("runStatus", () => {
   test("returns mapped status from query", async () => {
@@ -93,5 +106,65 @@ describe("runStatus", () => {
 
     await assert.rejects(() => readFile(join(tmp, ".gsd", "planf3-gsd-evals.jsonl"), "utf8"));
     await assert.rejects(() => readFile(join(bare, ".gsd", "planf3-gsd-evals.jsonl"), "utf8"));
+  });
+});
+
+const FIXTURE = readFileSync(join(here, "..", "fixtures", "minimal-plan.html"), "utf8");
+// A "pristine" variant: no marker anywhere above todo.
+const PRISTINE = FIXTURE
+  .replaceAll('<code class="status">[x]</code>', '<code class="status">[]</code>')
+  .replaceAll('<code class="status">[wip]</code>', '<code class="status">[]</code>')
+  .replaceAll('<code class="status">[f]</code>', '<code class="status">[]</code>');
+
+async function makeStatusProject(html: string): Promise<string> {
+  const tmp = await mkdtemp(join(tmpdir(), "planf3-gsd-status-"));
+  await mkdir(join(tmp, "specs"), { recursive: true });
+  await writeFile(join(tmp, "specs", "minimal.html"), html, "utf8");
+  await writeFile(
+    join(tmp, "specs", "minimal.manifest.json"),
+    JSON.stringify({ planf3: { htmlPath: "specs/minimal.html" }, gsd: { specPath: "specs/minimal.gsd.md", milestoneId: "M042", mode: "auto" } }),
+    "utf8",
+  );
+  return tmp;
+}
+
+const workingState = {
+  phase: "executing",
+  activeMilestone: { id: "M042", title: "Minimal Plan" },
+  progress: { milestones: { done: 0, total: 1 }, slices: { done: 1, total: 2 }, tasks: { done: 3, total: 6 } },
+};
+
+describe("runStatusReport — staleness nudge (M4)", () => {
+  test("completed units + pristine markers -> nudge", async () => {
+    const tmp = await makeStatusProject(PRISTINE);
+    const r = await runStatusReport({ cwd: tmp, spawn: snapshotSpawner(workingState), now: NOW });
+    assert.equal(r.nudge, STALE_NUDGE);
+  });
+
+  test("markers already show done work -> no nudge", async () => {
+    const tmp = await makeStatusProject(FIXTURE); // fixture has a [x] item
+    const r = await runStatusReport({ cwd: tmp, spawn: snapshotSpawner(workingState), now: NOW });
+    assert.equal(r.nudge, null);
+  });
+
+  test("zero completed units -> no nudge", async () => {
+    const tmp = await makeStatusProject(PRISTINE);
+    const idle = { ...workingState, progress: { milestones: { done: 0, total: 1 }, slices: { done: 0, total: 2 }, tasks: { done: 0, total: 6 } } };
+    const r = await runStatusReport({ cwd: tmp, spawn: snapshotSpawner(idle), now: NOW });
+    assert.equal(r.nudge, null);
+  });
+
+  test("no bridge manifest for the active milestone -> no nudge, no error", async () => {
+    const tmp = await mkdtemp(join(tmpdir(), "planf3-gsd-status-none-"));
+    const r = await runStatusReport({ cwd: tmp, spawn: snapshotSpawner(workingState), now: NOW });
+    assert.equal(r.nudge, null);
+  });
+
+  test("unreadable HTML -> best-effort null, status still returned", async () => {
+    const tmp = await makeStatusProject(PRISTINE);
+    await writeFile(join(tmp, "specs", "minimal.html"), "<not really html", "utf8");
+    const r = await runStatusReport({ cwd: tmp, spawn: snapshotSpawner(workingState), now: NOW });
+    assert.equal(r.status.activeMilestone?.id, "M042");
+    // nudge may be null (parse degraded) — the call must simply not throw
   });
 });

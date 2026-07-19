@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { mkdtemp, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { buildEvalRow, appendEvalRow } from "./eval-log.js";
+import { buildEvalRow, appendEvalRow, buildControlEvalRow } from "./eval-log.js";
 import type { BridgeStatus } from "./status-mapper.js";
 
 const STATUS: BridgeStatus = {
@@ -45,7 +45,7 @@ describe("buildEvalRow", () => {
       appliedBuckets: ["planning", "execution"],
       appliedModels: { planning: "openrouter/anthropic/claude-opus-4.7", execution: "openrouter/x-ai/grok-code-fast-1" },
       generator: "planf3-gsd-pi",
-      generatorVersion: "0.5.2",
+      generatorVersion: "0.6.0",
     });
   });
 });
@@ -71,5 +71,30 @@ describe("appendEvalRow", () => {
     assert.equal(lines.length, 2);
     assert.equal(JSON.parse(lines[0]).event, "build");
     assert.equal(JSON.parse(lines[1]).phase, "done");
+  });
+});
+
+describe("buildControlEvalRow (M4)", () => {
+  test("steer row carries the instruction verbatim + exit code + located paths", () => {
+    const row = buildControlEvalRow({
+      loggedAt: "2026-07-19T10:00:00Z", event: "steer",
+      htmlPath: "specs/p.html", specPath: "specs/p.gsd.md", milestoneId: "M001",
+      steerText: "skip phase 2", exitCode: 0, cost: 0.5,
+    });
+    assert.equal(row.event, "steer");
+    assert.equal(row.steerText, "skip phase 2");
+    assert.equal(row.exitCode, 0);
+    assert.equal(row.cost, 0.5);
+    assert.equal(row.generator, "planf3-gsd-pi");
+  });
+
+  test("stop row with no located manifest carries nulls and cost 0 (claude-code structural)", () => {
+    const row = buildControlEvalRow({
+      loggedAt: "2026-07-19T10:00:00Z", event: "stop",
+      htmlPath: null, specPath: null, milestoneId: null, exitCode: 1,
+    });
+    assert.equal(row.htmlPath, null);
+    assert.equal(row.cost, 0);
+    assert.equal("steerText" in row, false);
   });
 });

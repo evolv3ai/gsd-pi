@@ -148,6 +148,7 @@ describe("rewriteHtml — fixture round-trip with computeSync", () => {
         activeSlice: null, activeTask: null, progress: null, cost: 0, nextAction: null, blockers: [], sessionId: "sess-9",
       },
       "M042",
+      { slicePhaseIndex: null, taskTarget: null, unmatched: [] },
     );
     const r = rewriteHtml(original, computed.updates, computed.expectedMarkerCount, { ...META, gsdSession: "sess-9" });
     assert.equal(r.ok, true);

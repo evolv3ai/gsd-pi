@@ -7,6 +7,7 @@ import { buildEvalRow, appendEvalRow } from "../gsd/eval-log.js";
 import { checkPresetsGate, type PresetsGateResult } from "../preflight/enforce.js";
 import { PRESETS_RELATIVE_PATH } from "../preflight/presets-file.js";
 import { runExport, type ExportResult } from "./export.js";
+import { runSync, type SyncOutcomeKind } from "./sync.js";
 import { friendlyError } from "./error-message.js";
 
 export interface PrefsSummary {
@@ -19,6 +20,14 @@ export interface PrefsSummary {
   warning: string | null;
 }
 
+/** Build-return sync (M4 loop touchpoint a): first-paint with zero user
+ *  action. null = no milestone was stamped, sync not attempted. A sync bug
+ *  must never turn a successful build report into an error. */
+export type PostSyncOutcome =
+  | { ran: true; kind: SyncOutcomeKind; message: string }
+  | { ran: false; error: string }
+  | null;
+
 export interface BuildResult {
   specPath: string;
   manifestPath: string;
@@ -27,6 +36,7 @@ export interface BuildResult {
   status: BridgeStatus;
   prefs: PrefsSummary;
   presets: PresetsGateResult["presets"];
+  postSync: PostSyncOutcome;
 }
 
 export interface BuildOptions {
@@ -452,6 +462,24 @@ export async function runBuild(htmlPath: string, opts: BuildOptions = {}): Promi
     // Eval logging is best-effort; never fail a build over it.
   }
 
+  // Build-return sync (M4): any outcome that stamped a milestone (including
+  // --force) gets an immediate in-process sync of the plan's markers. The
+  // refusal path never reaches here — nothing was stamped there.
+  let postSync: PostSyncOutcome = null;
+  if (milestoneId !== null) {
+    try {
+      const synced = await runSync(htmlPath, false, {
+        cwd,
+        now,
+        ...(opts.binary !== undefined ? { binary: opts.binary } : {}),
+        ...(opts.spawn !== undefined ? { spawn: opts.spawn } : {}),
+      });
+      postSync = { ran: true, kind: synced.kind, message: synced.message };
+    } catch (err) {
+      postSync = { ran: false, error: err instanceof Error ? err.message : String(err) };
+    }
+  }
+
   return {
     specPath: exportResult.specPath,
     manifestPath: exportResult.manifestPath,
@@ -460,5 +488,6 @@ export async function runBuild(htmlPath: string, opts: BuildOptions = {}): Promi
     status,
     prefs,
     presets: gate.presets,
+    postSync,
   };
 }
