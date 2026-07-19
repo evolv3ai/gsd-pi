@@ -26,10 +26,11 @@ import {
   resolveMilestoneFile,
   clearPathCache,
   resolveGsdRootFile,
+  phaseDirMatchesMilestoneId,
 } from "./paths.js";
 import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { execFileSync } from "node:child_process";
-import { LAYOUT_SEGMENTS, milestoneIdToPhaseNum } from "./layout-policy.js";
+import { LAYOUT_SEGMENTS, milestoneIdToPhaseNum, milestoneIdUniqueSuffix } from "./layout-policy.js";
 import { basename, dirname, join, resolve } from "node:path";
 import {
   resolveExpectedArtifactPath,
@@ -162,7 +163,11 @@ function hasLegacyCheckedTaskCompletion(base: string, mid: string, sid: string, 
   return cbRe.test(planContent);
 }
 
-function findExistingSiblingPhaseArtifact(absPath: string, unitId: string): string | null {
+function findExistingSiblingPhaseArtifact(
+  absPath: string,
+  unitId: string,
+  allowTeamSuffixProjections = false,
+): string | null {
   const { milestone } = parseUnitId(unitId);
   if (!MILESTONE_ID_RE.test(milestone)) return null;
 
@@ -172,14 +177,19 @@ function findExistingSiblingPhaseArtifact(absPath: string, unitId: string): stri
 
   const expectedFile = basename(absPath);
   const expectedDirName = basename(expectedDir);
-  const phasePrefix = `${String(milestoneIdToPhaseNum(milestone)).padStart(2, "0")}-`;
+  const phaseNum = milestoneIdToPhaseNum(milestone);
+  const phasePrefix = `${String(phaseNum).padStart(2, "0")}-`;
   if (!expectedDirName.startsWith(phasePrefix)) return null;
 
   try {
     for (const entry of readdirSync(phasesDir, { withFileTypes: true })) {
       if (!entry.isDirectory()) continue;
       if (entry.name === expectedDirName) continue;
-      if (!entry.name.startsWith(phasePrefix)) continue;
+      const matchesPrimary = phaseDirMatchesMilestoneId(entry.name, milestone, phaseNum);
+      const matchesFallback = allowTeamSuffixProjections
+        && !milestoneIdUniqueSuffix(milestone)
+        && phaseDirMatchesMilestoneId(entry.name, milestone, phaseNum, true);
+      if (!matchesPrimary && !matchesFallback) continue;
       const candidate = join(phasesDir, entry.name, expectedFile);
       if (existsSync(candidate)) return candidate;
     }
@@ -371,6 +381,7 @@ export function verifyExpectedArtifact(
   }
 
   const artifactBase = resolveArtifactVerificationBase(unitId, base);
+  const allowSiblingTeamSuffixProjections = unitType === "execute-task";
   let absPath = resolveExpectedArtifactPath(unitType, unitId, artifactBase);
   if (!absPath || !existsSync(absPath)) {
     const projectRoot = resolve(resolveWorktreeProjectRoot(artifactBase));
@@ -379,7 +390,11 @@ export function verifyExpectedArtifact(
       if (projectPath && existsSync(projectPath)) {
         absPath = projectPath;
       } else if (projectPath) {
-        const siblingPath = findExistingSiblingPhaseArtifact(projectPath, unitId);
+        const siblingPath = findExistingSiblingPhaseArtifact(
+          projectPath,
+          unitId,
+          allowSiblingTeamSuffixProjections,
+        );
         if (siblingPath) absPath = siblingPath;
       }
     }
@@ -389,7 +404,11 @@ export function verifyExpectedArtifact(
     return false;
   }
   if (!existsSync(absPath)) {
-    const siblingPath = findExistingSiblingPhaseArtifact(absPath, unitId);
+    const siblingPath = findExistingSiblingPhaseArtifact(
+      absPath,
+      unitId,
+      allowSiblingTeamSuffixProjections,
+    );
     if (siblingPath) absPath = siblingPath;
   }
   if (!existsSync(absPath)) {
