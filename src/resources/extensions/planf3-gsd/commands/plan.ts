@@ -52,11 +52,35 @@ export interface PlanPromptOptions {
   request: string;
   questionable: boolean;
   chain: ChainSpec;
+  invocation?: string;
+}
+
+/**
+ * F5.1-1 / e2e F-4.4: a nested agent resolving bare `gsd` can land on the
+ * bridge-less global npm binary. Pin the CURRENT host's invocation instead:
+ * the running node + the loader script this process was started with.
+ */
+export function hostInvocation(
+  execPath?: string,
+  scriptPath?: string | undefined,
+): string {
+  const exec = execPath ?? process.execPath;
+  // Distinguish between "scriptPath not provided" and "scriptPath explicitly undefined"
+  let script: string | undefined;
+  if (arguments.length > 1) {
+    // Second argument was explicitly provided (could be undefined or a string)
+    script = scriptPath;
+  } else {
+    // Second argument was not provided, use process.argv[1] as default
+    script = process.argv[1];
+  }
+  return script !== undefined && script.length > 0 ? `"${exec}" "${script}"` : `"${exec}"`;
 }
 
 /** The prompt injected into the host session (spec: six required elements).
  *  The agent Reads the SKILL.md itself — the prompt does not inline it. */
 export function buildPlanPrompt(opts: PlanPromptOptions): string {
+  const inv = opts.invocation ?? hostInvocation();
   const lines = [
     `Read the planf3 skill at ${opts.skillPath} and follow its workflow to produce a Planf3 HTML plan for the request below.`,
     ``,
@@ -70,7 +94,7 @@ export function buildPlanPrompt(opts: PlanPromptOptions): string {
   if (opts.chain.target === "export") {
     lines.push(
       `- When the HTML file is written, call the planf3_gsd_export tool with htmlPath set to that file's path.`,
-      `- If the planf3_gsd_export tool is not in your available tools (some hosts, e.g. the Claude Code CLI, do not surface pi-session tools), run the equivalent command via Bash instead: gsd --print '/planf3-gsd-export <path-to-plan.html>' (substitute the real path). Same effect, deterministic, no extra model turns.`,
+      `- If the planf3_gsd_export tool is not in your available tools (some hosts, e.g. the Claude Code CLI, do not surface pi-session tools), run the equivalent command via Bash instead: ${inv} --print '/planf3-gsd-export <path-to-plan.html>' (substitute the real path). Same effect, deterministic, no extra model turns.`,
       `- When the tool returns, report back the plan HTML path and the spec/manifest paths from the tool result.`,
     );
   } else {
@@ -83,7 +107,7 @@ export function buildPlanPrompt(opts: PlanPromptOptions): string {
     ].filter((x): x is string => x !== null).join(" ");
     lines.push(
       `- When the HTML file is written, call the planf3_gsd_build tool with htmlPath set to that file's path and auto=${f.auto}, applyPrefs=${f.applyPrefs}, force=${f.force}, allowUnsafeStep=${f.allowUnsafeStep}.`,
-      `- If the planf3_gsd_build tool is not in your available tools, run the equivalent command via Bash instead: gsd --print '/planf3-gsd-build <path-to-plan.html>${cmdFlags ? " " + cmdFlags : ""}' (substitute the real path). This is the same build path (preflight gate, spec export, milestone creation) as the tool.`,
+      `- If the planf3_gsd_build tool is not in your available tools, run the equivalent command via Bash instead: ${inv} --print '/planf3-gsd-build <path-to-plan.html>${cmdFlags ? " " + cmdFlags : ""}' (substitute the real path). This is the same build path (preflight gate, spec export, milestone creation) as the tool.`,
       `- When the tool returns, report back the plan HTML path, the milestone ID from the tool result, and the spec/manifest paths.`,
     );
   }

@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { mkdtemp, mkdir, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { discoverPlanf3Skill, SKILL_MISSING_GUIDANCE, buildPlanPrompt, runPlan } from "./plan.js";
+import { discoverPlanf3Skill, SKILL_MISSING_GUIDANCE, buildPlanPrompt, runPlan, hostInvocation } from "./plan.js";
 
 async function makeSkillDir(root: string): Promise<string> {
   const dir = join(root, ".claude", "skills", "planf3");
@@ -38,6 +38,45 @@ describe("discoverPlanf3Skill", () => {
   test("guidance names both install locations", () => {
     assert.match(SKILL_MISSING_GUIDANCE, /\.\/\.claude\/skills\/planf3/);
     assert.match(SKILL_MISSING_GUIDANCE, /~\/\.claude\/skills\/planf3/);
+  });
+});
+
+describe("hostInvocation (F5.1-1)", () => {
+  test("quotes node and the loader script", () => {
+    assert.equal(hostInvocation("/usr/bin/node", "/opt/gsd/loader.js"), '"/usr/bin/node" "/opt/gsd/loader.js"');
+  });
+  test("no script path degrades to the quoted exec path", () => {
+    assert.equal(hostInvocation("/usr/bin/node", undefined), '"/usr/bin/node"');
+  });
+});
+
+describe("Bash-fallback lines pin the current host (F5.1-1, e2e F-4.4)", () => {
+  const INV = '"/fake/node" "/fake/loader.js"';
+
+  test("export chain branch", () => {
+    const prompt = buildPlanPrompt({
+      skillPath: "/s/SKILL.md", request: "r", questionable: false,
+      chain: { target: "export" }, invocation: INV,
+    });
+    assert.ok(prompt.includes(`${INV} --print '/planf3-gsd-export`));
+    assert.equal(/(?<!")\bgsd --print/.test(prompt), false); // bare binary never appears
+  });
+
+  test("build chain branch", () => {
+    const prompt = buildPlanPrompt({
+      skillPath: "/s/SKILL.md", request: "r", questionable: false,
+      chain: { target: "build", flags: { auto: true, applyPrefs: true, force: false, allowUnsafeStep: false } },
+      invocation: INV,
+    });
+    assert.ok(prompt.includes(`${INV} --print '/planf3-gsd-build`));
+    assert.equal(/(?<!")\bgsd --print/.test(prompt), false);
+  });
+
+  test("default invocation is the live process", () => {
+    const prompt = buildPlanPrompt({
+      skillPath: "/s/SKILL.md", request: "r", questionable: false, chain: { target: "export" },
+    });
+    assert.ok(prompt.includes(`"${process.execPath}"`));
   });
 });
 
@@ -88,7 +127,9 @@ describe("buildPlanPrompt", () => {
 
   test("export chain: fallback line for hosts that don't surface pi-session tools", () => {
     const prompt = buildPlanPrompt({ ...base, chain: { target: "export" } });
-    assert.ok(prompt.includes("gsd --print '/planf3-gsd-export"));
+    assert.ok(prompt.includes(`--print '/planf3-gsd-export`));
+    assert.ok(prompt.includes(`"${process.execPath}"`));
+    assert.equal(/(?<!")\bgsd --print/.test(prompt), false); // bare binary never appears
     assert.ok(prompt.includes("planf3_gsd_export tool is not in your available tools"));
   });
 
@@ -97,7 +138,9 @@ describe("buildPlanPrompt", () => {
       ...base,
       chain: { target: "build", flags: { auto: true, applyPrefs: true, force: false, allowUnsafeStep: false } },
     });
-    assert.ok(prompt.includes("gsd --print '/planf3-gsd-build <path-to-plan.html> --auto'"));
+    assert.ok(prompt.includes(`--print '/planf3-gsd-build <path-to-plan.html> --auto'`));
+    assert.ok(prompt.includes(`"${process.execPath}"`));
+    assert.equal(/(?<!")\bgsd --print/.test(prompt), false);
     assert.ok(!prompt.includes("--no-prefs"));
   });
 
@@ -115,7 +158,9 @@ describe("buildPlanPrompt", () => {
       ...base,
       chain: { target: "build", flags: { auto: false, applyPrefs: true, force: false, allowUnsafeStep: false } },
     });
-    assert.ok(prompt.includes("gsd --print '/planf3-gsd-build <path-to-plan.html>'"));
+    assert.ok(prompt.includes(`--print '/planf3-gsd-build <path-to-plan.html>'`));
+    assert.ok(prompt.includes(`"${process.execPath}"`));
+    assert.equal(/(?<!")\bgsd --print/.test(prompt), false);
   });
 });
 
