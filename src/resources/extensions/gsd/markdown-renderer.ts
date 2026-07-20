@@ -986,9 +986,16 @@ export async function renderAllFromDb(basePath: string): Promise<RenderAllResult
     await capturePlanningCompatIfNeeded(basePath);
     const marker = readCompatMarker(basePath);
     if (marker.planning?.active && marker.planning.layout) {
-      const { writePlanningDirectory } = await import("./migrate/planning-writer.js");
-      await writePlanningDirectory(basePath, marker.planning.layout);
-      result.rendered++;
+      if (marker.planning.layout === "flat-phases") {
+        const { writePlanningDirectory } = await import("./migrate/planning-writer.js");
+        await writePlanningDirectory(basePath, marker.planning.layout);
+        result.rendered++;
+      } else {
+        logWarning(
+          "renderer",
+          `planning projection skipped: layout "${marker.planning.layout}" not yet supported (v1 supports flat-phases only)`,
+        );
+      }
     }
   } catch (err) {
     result.errors.push(`planning projection: ${(err as Error).message}`);
