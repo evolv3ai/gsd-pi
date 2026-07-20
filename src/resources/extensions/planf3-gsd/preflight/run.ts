@@ -1,12 +1,12 @@
 import { readFile } from "node:fs/promises";
 import { homedir } from "node:os";
-import { join, resolve } from "node:path";
+import { join, relative, resolve } from "node:path";
 import { parsePlanf3Html } from "../parser/planf3-html-parser.js";
 import { realSpawner } from "../gsd/real-spawner.js";
 import type { Spawner } from "../gsd/headless-runner.js";
 import { GENERATOR_VERSION } from "../version.js";
 import { computeVerdict, signOff } from "./enforce.js";
-import { consumeApprovalToken, type TokenVerdict } from "./approval-token.js";
+import { consumeApprovalToken, readPendingProjectedFrom, type TokenVerdict } from "./approval-token.js";
 import { scanEnvVars, guessEnvNames } from "./env-scan.js";
 import { projectionHash } from "./hash.js";
 import { assembleStageMap } from "./map.js";
@@ -193,7 +193,7 @@ export async function runPreflight(deps: PreflightDeps): Promise<PreflightRun> {
 /** F5.1-2: messages keyed by token verdict. Worded for the AGENT reading the
  *  refusal — each names the console flow so the agent relays it to the human
  *  instead of retrying (the e2e F-5.1 failure mode was unprompted retries). */
-const TOKEN_REFUSALS: Record<Exclude<TokenVerdict, "ok">, string> = {
+const TOKEN_REFUSALS: Record<Exclude<TokenVerdict, "ok" | "path-mismatch">, string> = {
   "no-pending": "sign-off requires the human approval token — have the human run /planf3-gsd-preflight in the console; it prints a token only they can relay",
   mismatch: "approval token does not match the pending token — have the human re-run /planf3-gsd-preflight in the console and relay the printed token",
   expired: "approval token expired — have the human re-run /planf3-gsd-preflight in the console for a fresh token",
@@ -203,9 +203,22 @@ const TOKEN_REFUSALS: Record<Exclude<TokenVerdict, "ok">, string> = {
 export async function signOffPreflight(deps: PreflightDeps, note: string | null, approvalToken: string | null): Promise<{ path: string; approvalHash: string }> {
   const run = await runPreflight(deps);
   const nowIso = deps.now ?? (() => new Date().toISOString());
-  const verdict = await consumeApprovalToken(deps.projectRoot, approvalToken ?? "", run.approvalHash, { now: () => new Date(nowIso()) });
-  if (verdict !== "ok") throw new Error(TOKEN_REFUSALS[verdict]);
   const projectedFrom = deps.htmlPath !== null ? resolve(deps.projectRoot, deps.htmlPath) : null;
+  const verdict = await consumeApprovalToken(deps.projectRoot, approvalToken ?? "", run.approvalHash, { now: () => new Date(nowIso()), projectedFrom });
+  if (verdict === "path-mismatch") {
+    // F6.0-6: the token is scoped to a different projection than this
+    // invocation. Refusal is non-destructive (the token survives) and the
+    // message IS the corrected command — the live F-G1 incident burned a
+    // token into a projectedFrom:null approval no build gate accepts.
+    const pendingScope = await readPendingProjectedFrom(deps.projectRoot);
+    const tokenArg = approvalToken !== null && approvalToken.length > 0 ? approvalToken : "<token>";
+    throw new Error(
+      pendingScope === null
+        ? `sign-off refused: this token was minted for the bare map — re-run without a plan path: /planf3-gsd-preflight --sign-off ${tokenArg}`
+        : `sign-off refused: this token was minted for a projected map — re-run with the plan path: /planf3-gsd-preflight ${relative(deps.projectRoot, pendingScope)} --sign-off ${tokenArg}`,
+    );
+  }
+  if (verdict !== "ok") throw new Error(TOKEN_REFUSALS[verdict]);
   const signed = signOff({
     base: run.fresh,
     previous: run.record,

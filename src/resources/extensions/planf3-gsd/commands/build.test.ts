@@ -711,7 +711,7 @@ describe("runBuild", () => {
       spawn: (async () => ({ exitCode: 1, stdout: "", stderr: "" })) as Spawner,
     };
     const probe = await runPreflight(deps);
-    const token = await issueApprovalToken(tmp, probe.approvalHash, { now: () => new Date("2026-07-06T08:00:00Z") });
+    const token = await issueApprovalToken(tmp, probe.approvalHash, { now: () => new Date("2026-07-06T08:00:00Z"), projectedFrom: htmlPath });
     const { approvalHash } = await signOffPreflight(deps, null, token);
     return approvalHash;
   }
@@ -772,7 +772,7 @@ describe("runBuild", () => {
       catalog: { ids: () => [] }, orchestrator: null,
     };
     const signProbe = await runPreflight(signDeps);
-    const signToken = await issueApprovalToken(tmp, signProbe.approvalHash);
+    const signToken = await issueApprovalToken(tmp, signProbe.approvalHash, { projectedFrom: htmlPath });
     await signOffPreflight(signDeps, null, signToken);
 
     const spawn: Spawner = async () => ({ exitCode: 0, stdout: "{}", stderr: "" });

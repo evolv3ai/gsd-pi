@@ -1,6 +1,6 @@
 import { describe, test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, mkdir, readFile, access } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, access, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ExtensionAPI } from "@gsd/pi-coding-agent";
@@ -119,5 +119,46 @@ describe("preflight command sign-off flow (F5.1-2)", () => {
     await cmd.handler("--offline --sign-off 0000000000", ctxFor(tmp, sink2));
     assert.match(sink2.join("\n"), /does not match/);
     await assert.rejects(access(join(tmp, "specs", "PRESETS.md")));
+  });
+});
+
+describe("sign-off hint echoes the projection path (F6.0-6)", () => {
+  const MINIMAL_PLAN = `<html><body><header><h1>P</h1></header>
+<section id="validation"><ul class="checklist"><li><code class="status">[]</code> <code>pnpm test</code></li></ul></section>
+<section id="model-policy"><dl><dt>planning</dt><dd>claude-code/claude-fable-5</dd></dl></section>
+</body></html>`;
+
+  test("projected unapproved run: hint carries the html path exactly as typed, pending scope is the RESOLVED path", async () => {
+    const tmp = await scaffold();
+    await writeFile(join(tmp, "specs", "p.html"), MINIMAL_PLAN, "utf8");
+    const sink: string[] = [];
+    await captureCommand().handler("specs/p.html --offline", ctxFor(tmp, sink));
+    const out = sink.join("\n");
+    const token = tokenFrom(out);
+    assert.ok(out.includes(`/planf3-gsd-preflight specs/p.html --sign-off ${token}`), `hint must echo the typed path:\n${out}`);
+    const pending = JSON.parse(await readFile(pendingApprovalPath(tmp), "utf8")) as { projectedFrom: string | null };
+    assert.equal(pending.projectedFrom, join(tmp, "specs", "p.html"));
+  });
+
+  test("bare unapproved run: hint has no path (unchanged wording)", async () => {
+    const tmp = await scaffold();
+    const sink: string[] = [];
+    await captureCommand().handler("--offline", ctxFor(tmp, sink));
+    const token = tokenFrom(sink.join("\n"));
+    assert.ok(sink.join("\n").includes(`/planf3-gsd-preflight --sign-off ${token}`));
+    const pending = JSON.parse(await readFile(pendingApprovalPath(tmp), "utf8")) as { projectedFrom: string | null };
+    assert.equal(pending.projectedFrom, null);
+  });
+
+  test("projected mint → projected console sign-off round-trips green", async () => {
+    const tmp = await scaffold();
+    await writeFile(join(tmp, "specs", "p.html"), MINIMAL_PLAN, "utf8");
+    const sink: string[] = [];
+    const cmd = captureCommand();
+    await cmd.handler("specs/p.html --offline", ctxFor(tmp, sink));
+    const token = tokenFrom(sink.join("\n"));
+    const sink2: string[] = [];
+    await cmd.handler(`specs/p.html --offline --sign-off ${token}`, ctxFor(tmp, sink2));
+    assert.match(sink2.join("\n"), /Signed off/);
   });
 });

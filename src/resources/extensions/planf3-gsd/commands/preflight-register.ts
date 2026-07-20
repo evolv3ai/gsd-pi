@@ -1,3 +1,4 @@
+import { resolve } from "node:path";
 import type { ExtensionAPI } from "@gsd/pi-coding-agent";
 import { emit } from "../gsd/notify.js";
 import { friendlyError } from "./error-message.js";
@@ -61,9 +62,14 @@ export function parsePreflightArgs(args: string): PreflightArgs {
   };
 }
 
-/** Insert the token line ABOVE the trailing `preflight: verdict=…` machine line. */
-export function withApprovalTokenLine(rendered: string, token: string): string {
-  const line = `approval token: ${token} — to approve this map, the human runs: /planf3-gsd-preflight --sign-off ${token}`;
+/** Insert the token line ABOVE the trailing `preflight: verdict=…` machine
+ *  line. F6.0-6: the printed command carries the plan path exactly as the
+ *  human typed it — a bare sign-off of a projected token is refused. */
+export function withApprovalTokenLine(rendered: string, token: string, htmlPath: string | null): string {
+  const invocation = htmlPath === null
+    ? `/planf3-gsd-preflight --sign-off ${token}`
+    : `/planf3-gsd-preflight ${htmlPath} --sign-off ${token}`;
+  const line = `approval token: ${token} — to approve this map, the human runs: ${invocation}`;
   const lines = rendered.trimEnd().split("\n");
   const last = lines[lines.length - 1] ?? "";
   if (last.startsWith("preflight: verdict=")) {
@@ -99,8 +105,10 @@ export function registerPreflightCommand(pi: ExtensionAPI): void {
         // the trailing verdict line so the machine channel stays last.
         let rendered = run.rendered;
         if (run.verdict === "unapproved" || run.verdict === "drift") {
-          const token = await issueApprovalToken(ctx.cwd, run.approvalHash);
-          rendered = withApprovalTokenLine(rendered, token);
+          const token = await issueApprovalToken(ctx.cwd, run.approvalHash, {
+            projectedFrom: parsed.htmlPath !== null ? resolve(ctx.cwd, parsed.htmlPath) : null,
+          });
+          rendered = withApprovalTokenLine(rendered, token, parsed.htmlPath);
         }
         emit(ctx, parsed.asJson ? JSON.stringify({ verdict: run.verdict, drift: run.drift, map: run.map }, null, 2) + "\n" + `preflight: verdict=${run.verdict}` : rendered, run.verdict === "ok" ? "info" : "warning");
         if (parsed.check) process.exitCode = EXIT_CODES[run.verdict];
