@@ -452,13 +452,16 @@ export async function renderStateProjection(basePath: string): Promise<{ stale: 
 export async function renderMilestoneShellProjections(
   basePath: string,
   milestoneId: string,
+  options: { skipRoadmap?: boolean } = {},
 ): Promise<{ stale: boolean }> {
   let stale = false;
-  try {
-    await renderRoadmapFromDb(basePath, milestoneId);
-  } catch (err) {
-    stale = true;
-    logWarning("projection", `renderRoadmapFromDb failed for ${milestoneId}: ${(err as Error).message}`);
+  if (!options.skipRoadmap) {
+    try {
+      await renderRoadmapFromDb(basePath, milestoneId);
+    } catch (err) {
+      stale = true;
+      logWarning("projection", `renderRoadmapFromDb failed for ${milestoneId}: ${(err as Error).message}`);
+    }
   }
   try {
     renderTopLevelRoadmapFromDb(basePath);

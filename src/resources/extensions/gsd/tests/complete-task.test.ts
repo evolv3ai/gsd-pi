@@ -383,6 +383,58 @@ console.log('\n=== complete-task: handler happy path ===');
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
+// complete-task: Roadmap task output is not clobbered by stale DB render
+// ═══════════════════════════════════════════════════════════════════════════
+
+console.log('\n=== complete-task: roadmap expected output is not re-rendered from stale DB ===');
+{
+  const dbPath = tempDbPath();
+  openDatabase(dbPath);
+
+  const { basePath, planPath } = createTempProject();
+  const phaseDir = path.dirname(planPath);
+  const roadmapPath = path.join(phaseDir, '01-ROADMAP.md');
+  const roadmapContent = `# M001: Test Milestone
+
+## Success Criteria
+- Keep remediation criteria from the verified task output.
+
+## Boundary Map
+- S01 -> terminal: criteria remain documented.
+`;
+  fs.writeFileSync(roadmapPath, roadmapContent);
+
+  insertMilestone({ id: 'M001', title: 'Test Milestone', planning: { vision: 'Stale DB vision' } });
+  insertSlice({ id: 'S01', milestoneId: 'M001', title: 'Test Slice', risk: 'high', depends: [], demo: 'basic functionality works', sequence: 1 });
+  insertTask({
+    id: 'T01',
+    sliceId: 'S01',
+    milestoneId: 'M001',
+    status: 'pending',
+    title: 'Repair roadmap criteria',
+    planning: {
+      expectedOutput: ['.gsd/phases/01-test/01-ROADMAP.md — remediation criteria'],
+    },
+  });
+
+  const result = await handleCompleteTask({
+    ...makeValidParams(),
+    keyFiles: [],
+    keyDecisions: [],
+  }, basePath);
+
+  assertTrue(!('error' in result), 'handler should succeed without error');
+  assertEq(
+    fs.readFileSync(roadmapPath, 'utf-8'),
+    roadmapContent,
+    'complete-task should not overwrite a roadmap listed as task expected output',
+  );
+
+  cleanupDir(basePath);
+  cleanup(dbPath);
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
 // complete-task: Flat-phase duplicate task IDs are slice-qualified
 // ═══════════════════════════════════════════════════════════════════════════
 
