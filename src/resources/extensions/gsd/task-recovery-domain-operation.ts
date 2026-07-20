@@ -297,7 +297,7 @@ export function readPendingTaskRecoveryContext(
   task: Pick<TaskScope, "milestoneId" | "sliceId" | "taskId">,
 ): PendingTaskRecoveryContext | null {
   const stored = getDb().prepare(`
-    SELECT action.action, action.recovery_action_id,
+    SELECT lifecycle.lifecycle_id, action.action, action.recovery_action_id,
            attempt.attempt_id, observation.result_id,
            observation.failure_kind, observation.summary, observation.evidence_json,
            action.rationale,
@@ -365,22 +365,37 @@ export function readPendingTaskRecoveryContext(
   let checkpoint = stored;
   if (storedAction === "abort") {
     if (!isTaskRecoveryResumeAuthorized(attemptId)) return null;
+    const lifecycleId = String(stored["lifecycle_id"]);
     const resumed = getDb().prepare(`
       SELECT checkpoint.checkpoint_id, checkpoint.confirmed_context,
              checkpoint.unresolved_summary, checkpoint.evidence_summary,
              checkpoint.suggested_next_action
       FROM workflow_domain_events event
+      JOIN workflow_recovery_actions resumed_action
+        ON resumed_action.project_id = event.project_id
+       AND resumed_action.recovery_action_id = json_extract(event.payload_json, '$.recoveryActionId')
       JOIN workflow_work_checkpoints checkpoint
         ON checkpoint.project_id = event.project_id
        AND checkpoint.operation_id = event.operation_id
        AND checkpoint.checkpoint_id = json_extract(event.payload_json, '$.workCheckpointId')
+       AND checkpoint.lifecycle_id = resumed_action.lifecycle_id
       WHERE event.event_type = 'task.recovery.resumed'
-        AND json_extract(event.payload_json, '$.recoveryActionId') = :recovery_action_id
+        AND event.entity_type = 'task'
+        AND event.entity_id = :entity_id
+        AND resumed_action.recovery_action_id = :recovery_action_id
+        AND resumed_action.lifecycle_id = :lifecycle_id
+        AND json_extract(event.payload_json, '$.lifecycleId') = :lifecycle_id
         AND json_extract(event.payload_json, '$.attemptId') = :attempt_id
         AND json_extract(event.payload_json, '$.resultId') = :result_id
       ORDER BY event.project_revision DESC
       LIMIT 1
     `).get({
+      ":entity_id": taskEntity({
+        milestoneId: task.milestoneId,
+        sliceId: task.sliceId,
+        taskId: task.taskId,
+      }),
+      ":lifecycle_id": lifecycleId,
       ":recovery_action_id": String(stored["recovery_action_id"]),
       ":attempt_id": attemptId,
       ":result_id": String(stored["result_id"]),
@@ -596,6 +611,11 @@ function requireResumableAbortScope(recoveryActionId: string): FailedAttemptScop
       ON attempt.project_id = observation.project_id
      AND attempt.lifecycle_id = observation.lifecycle_id
      AND attempt.attempt_id = observation.attempt_id
+    JOIN workflow_attempt_results result
+      ON result.project_id = observation.project_id
+     AND result.lifecycle_id = observation.lifecycle_id
+     AND result.attempt_id = observation.attempt_id
+     AND result.result_id = observation.result_id
     JOIN workflow_item_lifecycles lifecycle
       ON lifecycle.project_id = attempt.project_id
      AND lifecycle.lifecycle_id = attempt.lifecycle_id
@@ -605,6 +625,7 @@ function requireResumableAbortScope(recoveryActionId: string): FailedAttemptScop
       AND observation.recovery_owner = 'agent'
       AND lifecycle.lifecycle_status = 'in_progress'
       AND attempt.attempt_state = 'settled'
+      AND ${CURRENT_TASK_RECOVERY_CAUSAL_AUTHORITY_SQL}
       AND attempt.attempt_number = (
         SELECT MAX(latest.attempt_number)
         FROM workflow_execution_attempts latest

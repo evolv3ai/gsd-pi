@@ -30,7 +30,14 @@ import {
   _getAdapter,
 } from "../../../src/resources/extensions/gsd/gsd-db.ts";
 import { registerDbTools } from "../../../src/resources/extensions/gsd/bootstrap/db-tools.ts";
-import { claimTaskAttempt } from "../../../src/resources/extensions/gsd/task-execution-domain-operation.ts";
+import {
+  claimTaskAttempt,
+  settleTaskAttempt,
+} from "../../../src/resources/extensions/gsd/task-execution-domain-operation.ts";
+import {
+  readTaskRecoveryRoute,
+  recordFailureAndSelectRecovery,
+} from "../../../src/resources/extensions/gsd/task-recovery-domain-operation.ts";
 import { seedSliceCompletionAuthority } from "../../../src/resources/extensions/gsd/tests/slice-completion-fixture.ts";
 import { createWorkflowAuthorityFixture } from "../../../src/resources/extensions/gsd/tests/workflow-authority-fixture.ts";
 import {
@@ -54,7 +61,7 @@ function seedMilestoneAndSlice(base: string): void {
   );
 }
 
-function claimCanonicalTaskAuthority(base: string): void {
+function claimCanonicalTaskAuthority(base: string): string {
   openDatabase(join(base, ".gsd", "gsd.db"));
   const db = _getAdapter();
   assert.ok(db, "DB should be open before claiming canonical task authority");
@@ -93,7 +100,7 @@ function claimCanonicalTaskAuthority(base: string): void {
       'claimed', 1, ?
     )
   `).run(now);
-  claimTaskAttempt({
+  const claim = claimTaskAttempt({
     invocation: {
       idempotencyKey: "fixture:mcp-parity:claim:M001/S01/T01",
       sourceTransport: "internal",
@@ -105,6 +112,42 @@ function claimCanonicalTaskAuthority(base: string): void {
     milestoneLeaseToken: 7,
     coordinationDispatchId: Number(dispatch.lastInsertRowid),
   });
+  return claim.attemptId;
+}
+
+function executionInvocation(key: string) {
+  return {
+    idempotencyKey: `fixture:mcp-parity:${key}`,
+    sourceTransport: "internal" as const,
+    actorType: "agent" as const,
+    traceId: key,
+  };
+}
+
+function seedTaskRecoveryAbort(base: string): { attemptId: string; recoveryActionId: string } {
+  seedMilestoneAndSlice(base);
+  const attemptId = claimCanonicalTaskAuthority(base);
+  const settled = settleTaskAttempt({
+    invocation: executionInvocation("settle-fatal"),
+    attemptId,
+    outcome: "failed",
+    failureClass: "fatal",
+    summary: "The executor runtime is invalid.",
+    output: {},
+  });
+  const abort = recordFailureAndSelectRecovery({
+    invocation: executionInvocation("route-fatal"),
+    attemptId,
+    resultId: settled.resultId,
+    owner: "agent",
+    classification: { failureKind: "fatal" },
+    summary: "The executor runtime is invalid.",
+    evidence: { source: "executor" },
+    rationale: "Stop until the executor is repaired.",
+  });
+  assert.equal(abort.action, "abort");
+  assert.equal(abort.resumeAuthorized, false);
+  return { attemptId, recoveryActionId: abort.recoveryActionId };
 }
 
 function cleanup(base: string): void {
@@ -587,6 +630,130 @@ async function callMcpLifecycleTool(
     _meta: { "io.opengsd/idempotency-key": stableKey },
   });
 }
+
+const TASK_RECOVERY_RESUME_ARGS = {
+  repairSummary: "The executor runtime was rebuilt and verified.",
+  evidence: { pullRequest: 1457, check: "focused recovery tests passed" },
+};
+
+function executorDetails(result: unknown): Record<string, unknown> {
+  const record = result as { details?: unknown; structuredContent?: unknown };
+  const details = record.structuredContent ?? record.details;
+  assert.ok(details && typeof details === "object" && !Array.isArray(details), "executor result must expose details");
+  return details as Record<string, unknown>;
+}
+
+function assertTaskRecoveryResumeDurability(input: {
+  attemptId: string;
+  recoveryActionId: string;
+  firstResult: unknown;
+  replayResult: unknown;
+  expectedIdempotencyKey: string;
+  expectedTransport: "pi-tool" | "workflow-mcp";
+}): Record<string, unknown> {
+  const firstDetails = executorDetails(input.firstResult);
+  const replayDetails = executorDetails(input.replayResult);
+  assert.equal(firstDetails.status, "committed");
+  assert.equal(replayDetails.status, "replayed");
+  assert.equal(replayDetails.operationId, firstDetails.operationId);
+  assert.equal(firstDetails.recoveryActionId, input.recoveryActionId);
+  assert.equal(readTaskRecoveryRoute(input.attemptId)?.resumeAuthorized, true);
+
+  const db = _getAdapter();
+  assert.ok(db, "database must be open after resume replay");
+  assert.deepEqual(db.prepare(`
+    SELECT idempotency_key, source_transport
+    FROM workflow_operations
+    WHERE operation_type = 'task.recovery.resume'
+  `).all(), [{
+    idempotency_key: input.expectedIdempotencyKey,
+    source_transport: input.expectedTransport,
+  }]);
+  const events = db.prepare(`
+    SELECT payload_json
+    FROM workflow_domain_events
+    WHERE event_type = 'task.recovery.resumed'
+  `).all() as Array<{ payload_json: string }>;
+  assert.equal(events.length, 1, "resume replay must not duplicate the durable event");
+  const payload = JSON.parse(events[0].payload_json) as Record<string, unknown>;
+  assert.equal(payload.recoveryActionId, input.recoveryActionId);
+  assert.equal(payload.attemptId, input.attemptId);
+  assert.equal(payload.repairSummary, TASK_RECOVERY_RESUME_ARGS.repairSummary);
+  assert.deepEqual(payload.evidence, TASK_RECOVERY_RESUME_ARGS.evidence);
+
+  return {
+    firstStatus: firstDetails.status,
+    replayStatus: replayDetails.status,
+    operation: "task.recovery.resume",
+    eventType: "task.recovery.resumed",
+    eventCount: events.length,
+    repairSummary: payload.repairSummary,
+    evidence: payload.evidence,
+    resumeAuthorized: true,
+  };
+}
+
+describe("Task recovery resume persistent retry parity", () => {
+  it("Pi and MCP authorize one repaired retry and replay after DB restart", async () => {
+    let baseNative = "";
+    let baseMcp = "";
+    try {
+      baseNative = makeTmpBase();
+      const nativeAbort = seedTaskRecoveryAbort(baseNative);
+      const nativeArgs = {
+        recoveryActionId: nativeAbort.recoveryActionId,
+        ...TASK_RECOVERY_RESUME_ARGS,
+      };
+      const nativeFirst = await runNativeDbTool(baseNative, "gsd_task_recovery_resume", nativeArgs);
+      assert.ok(!(nativeFirst as { isError?: boolean }).isError, "native resume must succeed");
+      closeDatabase();
+      const nativeReplay = await runNativeDbTool(baseNative, "gsd_task_recovery_resume", nativeArgs);
+      assert.ok(!(nativeReplay as { isError?: boolean }).isError, "native resume replay must succeed");
+      const nativeSnapshot = assertTaskRecoveryResumeDurability({
+        ...nativeAbort,
+        firstResult: nativeFirst,
+        replayResult: nativeReplay,
+        expectedIdempotencyKey: "pi:gsd_task_recovery_resume:parity-call",
+        expectedTransport: "pi-tool",
+      });
+      closeDatabase();
+
+      baseMcp = makeTmpBase();
+      const mcpAbort = seedTaskRecoveryAbort(baseMcp);
+      const mcpArgs = {
+        recoveryActionId: mcpAbort.recoveryActionId,
+        ...TASK_RECOVERY_RESUME_ARGS,
+      };
+      const mcpFirst = await callMcpLifecycleTool(
+        baseMcp,
+        "gsd_task_recovery_resume",
+        mcpArgs,
+        "task-recovery-resume",
+      );
+      assert.ok(!(mcpFirst as { isError?: boolean }).isError, "MCP resume must succeed");
+      closeDatabase();
+      const mcpReplay = await callMcpLifecycleTool(
+        baseMcp,
+        "gsd_task_recovery_resume",
+        mcpArgs,
+        "task-recovery-resume",
+      );
+      assert.ok(!(mcpReplay as { isError?: boolean }).isError, "MCP resume replay must succeed");
+      const mcpSnapshot = assertTaskRecoveryResumeDurability({
+        ...mcpAbort,
+        firstResult: mcpFirst,
+        replayResult: mcpReplay,
+        expectedIdempotencyKey: "mcp:gsd_task_recovery_resume:task-recovery-resume",
+        expectedTransport: "workflow-mcp",
+      });
+
+      assert.deepEqual(mcpSnapshot, nativeSnapshot, "Pi and MCP resume behavior must match");
+    } finally {
+      if (baseNative) cleanup(baseNative);
+      if (baseMcp) cleanup(baseMcp);
+    }
+  });
+});
 
 async function runPersistentSliceLifecycleMatrix(
   transport: "pi" | "mcp",
