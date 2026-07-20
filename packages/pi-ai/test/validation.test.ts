@@ -113,4 +113,27 @@ describe("validateToolArguments", () => {
 			expect(() => validateToolArguments(tool, toolCall)).toThrow("Validation failed");
 		}
 	});
+
+	it("lists allowed enum values when enum validation fails", () => {
+		const tool: Tool = {
+			name: "save_evidence",
+			description: "Save evidence",
+			parameters: Type.Object({
+				kind: Type.Unsafe({
+					type: "string",
+					enum: ["gsd_uat_exec", "browser", "url"],
+				}),
+			}),
+		};
+		const toolCall: ToolCall = {
+			type: "toolCall",
+			id: "tool-1",
+			name: "save_evidence",
+			arguments: { kind: "artifact" },
+		};
+
+		expect(() => validateToolArguments(tool, toolCall)).toThrow(
+			/allowed values: "gsd_uat_exec", "browser", "url"/,
+		);
+	});
 });

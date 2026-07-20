@@ -2,7 +2,7 @@
 // File Purpose: Owns the durable UAT run lifecycle behind gsd_uat_result_save.
 
 import { existsSync, readdirSync, readFileSync } from "node:fs";
-import { isAbsolute, join, resolve } from "node:path";
+import { isAbsolute, join, normalize, resolve } from "node:path";
 
 import {
   hasUatBrowserToolSurface,
@@ -27,8 +27,22 @@ import { saveFile } from "./files.js";
 import { relSliceFile, resolveGsdPathContract } from "./paths.js";
 import { buildManualValidationGuidance, resolveCanonicalMilestoneRoot } from "./worktree-manager.js";
 
+export const UAT_EVIDENCE_KINDS = [
+  "gsd_uat_exec",
+  "gsd_exec",
+  "screenshot",
+  "log",
+  "url",
+  "browser",
+] as const;
+export type UatEvidenceKind = typeof UAT_EVIDENCE_KINDS[number];
+
+const UAT_EVIDENCE_KIND_SET = new Set<string>(UAT_EVIDENCE_KINDS);
+const APPROVED_EVIDENCE_REF_ROOTS = [".gsd/exec/", ".gsd/uat/", ".artifacts/browser/"] as const;
+const APPROVED_BROWSER_EVIDENCE_REF_ROOTS = [".artifacts/browser/"] as const;
+
 export interface UatEvidenceRef {
-  kind: "gsd_uat_exec" | "gsd_exec" | "screenshot" | "log" | "url" | "browser";
+  kind: UatEvidenceKind;
   ref: string;
   note?: string;
   unitType?: string;
@@ -193,6 +207,37 @@ function pushUnique(paths: string[], candidate: string): void {
   if (!paths.includes(candidate)) paths.push(candidate);
 }
 
+function quoteList(values: readonly string[]): string {
+  return values.map((value) => `"${value}"`).join(", ");
+}
+
+function approvedRootsText(roots: readonly string[] = APPROVED_EVIDENCE_REF_ROOTS): string {
+  return roots.join(", ");
+}
+
+function isUatEvidenceKind(value: unknown): value is UatEvidenceKind {
+  return typeof value === "string" && UAT_EVIDENCE_KIND_SET.has(value);
+}
+
+function isHttpUrlRef(ref: string): boolean {
+  try {
+    const parsed = new URL(ref);
+    return parsed.protocol === "http:" || parsed.protocol === "https:";
+  } catch {
+    return false;
+  }
+}
+
+function normalizeEvidenceRef(ref: string): string {
+  return normalize(ref).replace(/\\/g, "/").replace(/^\.\//, "").replace(/\/+$/, "");
+}
+
+function relativeRefStartsWithin(root: string, ref: string): boolean {
+  const normalizedRoot = root.replace(/\\/g, "/").replace(/\/+$/, "");
+  const normalizedRef = normalizeEvidenceRef(ref);
+  return normalizedRef === normalizedRoot || normalizedRef.startsWith(`${normalizedRoot}/`);
+}
+
 function execMetaPathCandidates(basePath: string, ref: string): string[] {
   const trimmed = ref.trim();
   const candidates: string[] = [];
@@ -245,24 +290,35 @@ export function readUatExecEvidenceMetadata(
 }
 
 function evidencePathIsApproved(basePath: string, ref: string): boolean {
-  const normalizedRef = ref.replace(/\\/g, "/");
-  if (normalizedRef.startsWith(".gsd/exec/") || normalizedRef.startsWith(".gsd/uat/")) return true;
-  if (normalizedRef.startsWith(".artifacts/browser/")) {
-    const resolvedRef = resolve(basePath, ref);
-    return approvedBrowserArtifactRoots(basePath).some((root) => pathStartsWithin(root, resolvedRef));
+  if (APPROVED_EVIDENCE_REF_ROOTS.some((root) => relativeRefStartsWithin(root, ref))) {
+    return true;
   }
+  const resolvedRef = isAbsolute(ref) ? resolve(ref) : resolve(basePath, ref);
   const gsdEvidenceApproved = approvedEvidenceRoots(basePath).some((root) => {
-    return pathStartsWithin(join(root, "exec"), ref) || pathStartsWithin(join(root, "uat"), ref);
+    return pathStartsWithin(join(root, "exec"), resolvedRef) || pathStartsWithin(join(root, "uat"), resolvedRef);
   });
   if (gsdEvidenceApproved) return true;
-  return approvedBrowserArtifactRoots(basePath).some((root) => pathStartsWithin(root, ref));
+  return approvedBrowserArtifactRoots(basePath).some((root) => pathStartsWithin(root, resolvedRef));
+}
+
+function browserArtifactPathIsApproved(basePath: string, ref: string): boolean {
+  if (!APPROVED_BROWSER_EVIDENCE_REF_ROOTS.some((root) => relativeRefStartsWithin(root, ref)) && !isAbsolute(ref)) {
+    return false;
+  }
+  const resolvedRef = isAbsolute(ref) ? resolve(ref) : resolve(basePath, ref);
+  return approvedBrowserArtifactRoots(basePath).some((root) => pathStartsWithin(root, resolvedRef));
 }
 
 function validateEvidenceRef(basePath: string, evidence: UatEvidenceRef): string | null {
+  if (!isUatEvidenceKind(evidence.kind)) {
+    return `evidence.kind must be one of: ${quoteList(UAT_EVIDENCE_KINDS)}`;
+  }
   if (!isNonEmptyString(evidence.ref)) return "evidence.ref is required";
   if (evidence.kind === "gsd_uat_exec" || evidence.kind === "gsd_exec") {
     const path = resolveExecMetaPath(basePath, evidence.ref.trim());
-    if (!path) return `missing gsd_exec metadata for evidence id "${evidence.ref}"`;
+    if (!path) {
+      return `${evidence.kind} evidence ref "${evidence.ref}" must resolve to an existing .meta.json file under .gsd/exec/`;
+    }
     if (evidence.kind === "gsd_uat_exec") {
       try {
         const meta = JSON.parse(readFileSync(path, "utf-8")) as { metadata?: { kind?: unknown } };
@@ -274,18 +330,20 @@ function validateEvidenceRef(basePath: string, evidence: UatEvidenceRef): string
     return null;
   }
   if (evidence.kind === "url") {
-    try {
-      const parsed = new URL(evidence.ref);
-      return parsed.protocol === "http:" || parsed.protocol === "https:"
-        ? null
-        : `invalid URL evidence ref "${evidence.ref}"`;
-    } catch {
-      return `invalid URL evidence ref "${evidence.ref}"`;
-    }
+    return isHttpUrlRef(evidence.ref)
+      ? null
+      : `url evidence ref must be an http:// or https:// URL; got "${evidence.ref}"`;
   }
-  return evidencePathIsApproved(basePath, evidence.ref)
-    ? null
-    : `evidence ref "${evidence.ref}" is outside approved evidence locations`;
+  if (evidence.kind === "screenshot" || evidence.kind === "log") {
+    return evidencePathIsApproved(basePath, evidence.ref)
+      ? null
+      : `${evidence.kind} evidence ref must be a path under approved evidence locations (${approvedRootsText()}); got "${evidence.ref}"`;
+  }
+  if (evidence.kind === "browser") {
+    if (isHttpUrlRef(evidence.ref) || browserArtifactPathIsApproved(basePath, evidence.ref)) return null;
+    return `browser evidence ref must be an http:// or https:// URL, or a path under ${approvedRootsText(APPROVED_BROWSER_EVIDENCE_REF_ROOTS)}; got "${evidence.ref}"`;
+  }
+  return null;
 }
 
 function validateUatChecks(basePath: string, params: UatResultSaveParams): string | null {

@@ -2409,9 +2409,14 @@ const uatExecParams = {
 };
 const uatExecSchema = z.object(uatExecParams);
 
+const uatEvidenceKindValues = ["gsd_uat_exec", "gsd_exec", "screenshot", "log", "url", "browser"] as const;
+const uatEvidenceRefDescription =
+  "Kind-specific evidence ref: gsd_uat_exec/gsd_exec use an evidence id or .gsd/exec/*.meta.json path; " +
+  "screenshot/log use a path under .gsd/exec/, .gsd/uat/, or .artifacts/browser/; " +
+  "url uses an http(s) URL; browser uses an http(s) URL or .artifacts/browser/ path.";
 const uatEvidenceRefSchema = z.object({
-  kind: z.enum(["gsd_uat_exec", "gsd_exec", "screenshot", "log", "url", "browser"]),
-  ref: nonEmptyString("ref"),
+  kind: z.enum(uatEvidenceKindValues).describe(`Evidence kind. Valid values: ${uatEvidenceKindValues.join(", ")}`),
+  ref: nonEmptyString("ref").describe(uatEvidenceRefDescription),
   note: z.string().optional(),
 });
 const uatCheckSchema = z.object({

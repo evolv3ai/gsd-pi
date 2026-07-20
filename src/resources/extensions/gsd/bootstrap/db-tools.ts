@@ -105,6 +105,12 @@ function formatToolErrorText(result: any, details: any): string {
   return typeof message === "string" && message.startsWith("Error") ? message : `Error: ${message}`;
 }
 
+const UAT_EVIDENCE_KIND_VALUES = ["gsd_uat_exec", "gsd_exec", "screenshot", "log", "url", "browser"] as const;
+const UAT_EVIDENCE_REF_DESCRIPTION =
+  "Kind-specific evidence ref: gsd_uat_exec/gsd_exec use an evidence id or .gsd/exec/*.meta.json path; " +
+  "screenshot/log use a path under .gsd/exec/, .gsd/uat/, or .artifacts/browser/; " +
+  "url uses an http(s) URL; browser uses an http(s) URL or .artifacts/browser/ path.";
+
 export function registerDbTools(pi: ExtensionAPI): void {
   // ─── gsd_decision_save (formerly gsd_save_decision) ─────────────────────
 
@@ -442,8 +448,8 @@ export function registerDbTools(pi: ExtensionAPI): void {
   };
 
   const uatEvidenceRef = Type.Object({
-    kind: StringEnum(["gsd_uat_exec", "gsd_exec", "screenshot", "log", "url", "browser"], { description: "Evidence kind" }),
-    ref: Type.String({ description: "Evidence ID, approved .gsd path, or URL" }),
+    kind: StringEnum(UAT_EVIDENCE_KIND_VALUES, { description: `Evidence kind. Valid values: ${UAT_EVIDENCE_KIND_VALUES.join(", ")}` }),
+    ref: Type.String({ description: UAT_EVIDENCE_REF_DESCRIPTION }),
     note: Type.Optional(Type.String({ description: "Short evidence note" })),
     unitType: Type.Optional(Type.String({ description: "Unit that produced the evidence" })),
     tool: Type.Optional(Type.String({ description: "Tool that produced the evidence" })),

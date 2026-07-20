@@ -148,6 +148,18 @@ test("run-uat prompt lists canonical gsd_uat_exec intent values", () => {
   assert.match(prompt, /do not use `artifact`, `runtime`, or `human-follow-up` as `intent`/i);
 });
 
+test("run-uat prompt documents all UAT result evidence kinds and ref rules", () => {
+  const prompt = readPrompt("run-uat");
+  for (const kind of ["gsd_uat_exec", "gsd_exec", "screenshot", "log", "url", "browser"] as const) {
+    assert.ok(prompt.includes(`\`${kind}\``), `run-uat prompt should document evidence kind ${kind}`);
+  }
+  assert.match(prompt, /\.gsd\/exec\//);
+  assert.match(prompt, /\.gsd\/uat\//);
+  assert.match(prompt, /\.artifacts\/browser\//);
+  assert.match(prompt, /http:\/\/` or `https:\/\//);
+  assert.match(prompt, /`artifact`, `runtime`, `browser`, and `human-follow-up` are check `mode` values/i);
+});
+
 test("run-uat prompt gives the complete UAT result-save presentation contract", () => {
   const prompt = readPrompt("run-uat");
   assert.match(prompt, /Call `gsd_uat_result_save` once after all checks are complete/);
