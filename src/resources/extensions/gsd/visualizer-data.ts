@@ -19,6 +19,7 @@ import {
   formatTierSavings,
   loadLedgerFromDisk,
   classifyUnitPhase,
+  filterUnitsForMilestone,
 } from './metrics.js';
 import { loadAllCaptures, countPendingCaptures } from './captures.js';
 import { loadEffectiveGSDPreferences } from './preferences.js';
@@ -449,7 +450,7 @@ export function computeCriticalPath(milestones: VisualizerMilestone[]): Critical
 
 // ─── Agent Activity ──────────────────────────────────────────────────────────
 
-function loadAgentActivity(units: UnitMetrics[], milestones: VisualizerMilestone[]): AgentActivityInfo | null {
+function loadAgentActivity(units: UnitMetrics[], milestones: VisualizerMilestone[], activeMilestoneId?: string): AgentActivityInfo | null {
   if (units.length === 0) return null;
 
   // Find currently running unit (finishedAt === 0)
@@ -460,7 +461,7 @@ function loadAgentActivity(units: UnitMetrics[], milestones: VisualizerMilestone
   const totalSlices = milestones.reduce((sum, m) => sum + m.slices.length, 0);
 
   // Completion rate from finished units
-  const finished = units.filter(u => u.finishedAt > 0);
+  const finished = filterUnitsForMilestone(units, activeMilestoneId).filter(u => u.finishedAt > 0);
   let completionRate = 0;
   if (finished.length >= 2) {
     const earliest = Math.min(...finished.map(u => u.startedAt));
@@ -966,7 +967,7 @@ export async function loadVisualizerData(basePath: string): Promise<VisualizerDa
     }
   }
 
-  const agentActivity = loadAgentActivity(units, milestones);
+  const agentActivity = loadAgentActivity(units, milestones, state.activeMilestone?.id);
   const { changelog, verifications: sliceVerifications } = await loadChangelogAndVerifications(basePath, milestones);
 
   const knowledge = loadKnowledge(basePath);

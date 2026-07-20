@@ -11,8 +11,25 @@ import {
   loadVisualizerData,
   type VisualizerMilestone,
 } from "../visualizer-data.ts";
-import { _getAdapter, closeDatabase, openDatabase } from "../gsd-db.ts";
+import { _getAdapter, closeDatabase, insertMilestone, insertSlice, openDatabase } from "../gsd-db.ts";
 import { createMemory } from "../memory-store.ts";
+import { generateHtmlReport } from "../export-html.ts";
+import { resetMetrics, type UnitMetrics } from "../metrics.ts";
+
+function makeMetricUnit(id: string, startedAt: number, finishedAt: number): UnitMetrics {
+  return {
+    type: id.split("/").length >= 3 ? "execute-task" : "complete-slice",
+    id,
+    model: "test-model",
+    startedAt,
+    finishedAt,
+    tokens: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+    cost: 0,
+    toolCalls: 0,
+    assistantMessages: 0,
+    userMessages: 0,
+  };
+}
 
 test("computeCriticalPath follows milestone dependencies", () => {
   const milestones: VisualizerMilestone[] = [
@@ -81,6 +98,77 @@ test("loadVisualizerData hydrates milestones, captures, stats, and health fields
     assert.ok(data.health);
     assert.ok(data.criticalPath.milestonePath.length >= 1);
   } finally {
+    rmSync(base, { recursive: true, force: true });
+  }
+});
+
+test("loadVisualizerData scopes ETA rate to active milestone units", async () => {
+  const base = mkdtempSync(join(tmpdir(), "gsd-visualizer-eta-scope-"));
+  try {
+    resetMetrics();
+    const m1Dir = join(base, ".gsd", "milestones", "M001");
+    const m2Dir = join(base, ".gsd", "milestones", "M002");
+    mkdirSync(m1Dir, { recursive: true });
+    mkdirSync(m2Dir, { recursive: true });
+
+    writeFileSync(
+      join(m1Dir, "M001-ROADMAP.md"),
+      [
+        "# M001: Previous",
+        "",
+        "## Slices",
+        "- [x] **S01: Done** `risk:low` `depends:[]`",
+      ].join("\n"),
+    );
+    writeFileSync(join(m1Dir, "M001-SUMMARY.md"), "# M001 Summary\n\nDone.");
+    writeFileSync(
+      join(m2Dir, "M002-ROADMAP.md"),
+      [
+        "# M002: Active",
+        "",
+        "## Slices",
+        "- [x] **S01: Done** `risk:low` `depends:[]`",
+        "- [ ] **S02: Remaining** `risk:low` `depends:[]`",
+      ].join("\n"),
+    );
+
+    // Milestone lifecycle is DB-authoritative: seed the DB so M001 derives as
+    // complete and M002 as the active milestone. loadVisualizerData reopens the
+    // project DB after it is closed here.
+    openDatabase(join(base, ".gsd", "gsd.db"));
+    insertMilestone({ id: "M001", title: "Previous", status: "complete" });
+    insertSlice({ milestoneId: "M001", id: "S01", title: "Done", status: "complete", sequence: 1 });
+    insertMilestone({ id: "M002", title: "Active", status: "active" });
+    insertSlice({ milestoneId: "M002", id: "S01", title: "Done", status: "complete", sequence: 1 });
+    insertSlice({ milestoneId: "M002", id: "S02", title: "Remaining", status: "pending", sequence: 2 });
+    closeDatabase();
+
+    const units = [
+      makeMetricUnit("M001/S01/T01", 1_000, 61_000),
+      makeMetricUnit("M001/S01/T02", 61_000, 121_000),
+      makeMetricUnit("M001/S01/T03", 121_000, 181_000),
+      makeMetricUnit("M002/S01/T01", 100_000_000, 100_900_000),
+      makeMetricUnit("M002/S01/T02", 100_900_000, 101_800_000),
+    ];
+    writeFileSync(
+      join(base, ".gsd", "metrics.json"),
+      JSON.stringify({ version: 1, projectStartedAt: 1_000, units }),
+    );
+
+    const data = await loadVisualizerData(base);
+
+    assert.equal(data.milestones.find(m => m.id === "M002")?.status, "active");
+    assert.equal(data.agentActivity?.completionRate, 4);
+
+    const html = generateHtmlReport(data, {
+      projectName: "ETA scope",
+      projectPath: base,
+      gsdVersion: "test",
+    });
+    assert.ok(html.includes("4.0/hr"), "export HTML should use the scoped active-milestone rate");
+  } finally {
+    resetMetrics();
+    closeDatabase();
     rmSync(base, { recursive: true, force: true });
   }
 });

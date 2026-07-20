@@ -21,6 +21,7 @@ import {
   setCompletionProgressWidget,
   getRoadmapSlicesSync,
   clearSliceProgressCache,
+  updateSliceProgressCache,
   getWidgetMode,
   cycleWidgetMode,
   setWidgetMode,
@@ -53,6 +54,7 @@ import {
   insertSlice,
   insertTask,
 } from "../gsd-db.ts";
+import { initMetrics, resetMetrics, type UnitMetrics } from "../metrics.ts";
 
 function makeTempDir(prefix: string): string {
   return join(
@@ -67,6 +69,21 @@ function cleanup(dir: string): void {
   } catch {
     // best-effort
   }
+}
+
+function makeMetricUnit(id: string, startedAt: number, finishedAt: number): UnitMetrics {
+  return {
+    type: id.split("/").length >= 3 ? "execute-task" : "complete-slice",
+    id,
+    model: "test-model",
+    startedAt,
+    finishedAt,
+    tokens: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+    cost: 0,
+    toolCalls: 0,
+    assistantMessages: 0,
+    userMessages: 0,
+  };
 }
 
 type RenderableWidget = { render(width: number): string[]; invalidate(): void; dispose?: () => void };
@@ -496,6 +513,42 @@ test("estimateTimeRemaining returns null when no ledger data", () => {
 
 test("estimateTimeRemaining is exported and callable", () => {
   assert.equal(typeof estimateTimeRemaining, "function");
+});
+
+test("estimateTimeRemaining scopes completed units to the active milestone", (t) => {
+  const dir = makeTempDir("eta-scope");
+  mkdirSync(join(dir, ".gsd"), { recursive: true });
+
+  t.after(() => {
+    resetMetrics();
+    closeDatabase();
+    clearSliceProgressCache();
+    cleanup(dir);
+  });
+
+  openDatabase(join(dir, ".gsd", "gsd.db"));
+  insertMilestone({ id: "M002", title: "Active", status: "active" });
+  insertSlice({ milestoneId: "M002", id: "S01", title: "Done", status: "complete", sequence: 1 });
+  insertSlice({ milestoneId: "M002", id: "S02", title: "Remaining", status: "pending", sequence: 2 });
+
+  const units = [
+    makeMetricUnit("M001/S01/T01", 1_000, 61_000),
+    makeMetricUnit("M001/S01/T02", 61_000, 121_000),
+    makeMetricUnit("M001/S02/T01", 121_000, 181_000),
+    makeMetricUnit("M001/S02/T02", 181_000, 241_000),
+    makeMetricUnit("M002/S01/T01", 241_000, 301_000),
+    makeMetricUnit("M002/S01/T02", 301_000, 361_000),
+  ];
+  writeFileSync(
+    join(dir, ".gsd", "metrics.json"),
+    JSON.stringify({ version: 1, projectStartedAt: 1_000, units }),
+  );
+
+  initMetrics(dir);
+  clearSliceProgressCache();
+  updateSliceProgressCache(dir, "M002");
+
+  assert.equal(estimateTimeRemaining(), "~2m remaining");
 });
 
 // ─── getAutoDashboardData elapsed guard ──────────────────────────────────────
