@@ -119,10 +119,12 @@ export interface CommitOptions {
 }
 
 export type TurnGitActionMode = "commit" | "snapshot" | "status-only";
+export type TurnGitFailureClass = "transient" | "hook-content" | "unknown";
 
 export interface TurnGitActionResult {
   action: TurnGitActionMode;
   status: "ok" | "failed";
+  failureClass?: TurnGitFailureClass;
   commitMessage?: string;
   snapshotLabel?: string;
   dirty?: boolean;
@@ -1328,8 +1330,63 @@ export function handleTurnGitActionError(action: TurnGitActionMode, err: unknown
   return {
     action,
     status: "failed",
+    failureClass: classifyTurnGitActionFailure(action, err),
     error: errorWithStreams.stderr?.trim() || errorWithStreams.message || getErrorMessage(err),
   };
+}
+
+const TRANSIENT_GIT_FAILURE_PATTERNS: readonly RegExp[] = [
+  /index\.lock/i,
+  /another git process/i,
+  /unable to create ['"].*\.lock['"]/i,
+  /could not lock/i,
+  /cannot lock ref/i,
+  /resource temporarily unavailable/i,
+];
+
+const GIT_OWNED_TRANSIENT_GIT_FAILURE_PATTERNS: readonly RegExp[] = [
+  /(?:^|\n)(?:fatal|error):[^\n]*index\.lock/i,
+  /(?:^|\n)(?:fatal|error):[^\n]*another git process/i,
+  /(?:^|\n)(?:fatal|error):[^\n]*unable to create ['"].*\.lock['"]/i,
+  /(?:^|\n)(?:fatal|error):[^\n]*could not lock/i,
+  /(?:^|\n)(?:fatal|error):[^\n]*cannot lock ref/i,
+  /(?:^|\n)(?:fatal|error):[^\n]*resource temporarily unavailable/i,
+  /(?:^|\n)another git process seems to be running/i,
+];
+
+function classifyTurnGitActionFailure(action: TurnGitActionMode, err: unknown): TurnGitFailureClass {
+  const errorWithStreams = err as { stderr?: string; message?: string; status?: number };
+  const stderr = errorWithStreams.stderr?.trim() ?? "";
+  const message = errorWithStreams.message ?? getErrorMessage(err);
+  const combined = `${stderr}\n${message}`;
+  // A clean exit-1 is git's canonical "a hook rejected the commit" signal, but the
+  // numeric status can be missing or rewritten (wrapped errors, signal kills). When
+  // status is absent, fall back to output shape: git announces its own commit
+  // failures with a leading `fatal:`/`error:` diagnostic, whereas hooks emit
+  // arbitrary stderr. This keeps hook rejections whose status was dropped routing
+  // into bounded git-commit remediation instead of silently pausing as `unknown`.
+  const status = errorWithStreams.status;
+  const isCommitHookRejection =
+    action === "commit" &&
+    stderr !== "" &&
+    (status === 1 || (status == null && !/(?:^|\n)(?:fatal|error):/i.test(stderr)));
+  if (isCommitHookRejection) {
+    if (GIT_OWNED_TRANSIENT_GIT_FAILURE_PATTERNS.some((pattern) => pattern.test(stderr))) {
+      return "transient";
+    }
+    return "hook-content";
+  }
+  if (TRANSIENT_GIT_FAILURE_PATTERNS.some((pattern) => pattern.test(combined))) {
+    return "transient";
+  }
+  return "unknown";
+}
+
+function mergeTurnGitFailureClasses(classes: readonly TurnGitFailureClass[]): TurnGitFailureClass {
+  if (classes.includes("hook-content")) return "hook-content";
+  if (classes.includes("unknown")) return "unknown";
+  if (classes.includes("transient")) return "transient";
+  return "unknown";
 }
 
 export function isRepositoryDirty(repoRoot: string): boolean {
@@ -1418,6 +1475,7 @@ function runPerRepositoryCommitAction(args: {
 }): {
   commitMessages: Record<string, string>;
   commitErrors: Record<string, string>;
+  commitFailureClasses: Record<string, TurnGitFailureClass>;
   skippedRepositories: string[];
 } {
   const preferences = loadEffectiveGSDPreferences(args.basePath)?.preferences;
@@ -1426,12 +1484,14 @@ function runPerRepositoryCommitAction(args: {
   const gitPrefs = preferences?.git ?? {};
   const commitMessages: Record<string, string> = {};
   const commitErrors: Record<string, string> = {};
+  const commitFailureClasses: Record<string, TurnGitFailureClass> = {};
   const skippedRepositories: string[] = [];
 
   for (const repoId of repoIds) {
     const repo = registry.byId.get(repoId);
     if (!repo) {
       commitErrors[repoId] = `unknown repository target: ${repoId}`;
+      commitFailureClasses[repoId] = "unknown";
       continue;
     }
     if (repo.commitPolicy === "skip") {
@@ -1453,10 +1513,11 @@ function runPerRepositoryCommitAction(args: {
       }
     } catch (err) {
       commitErrors[repo.id] = getErrorMessage(err);
+      commitFailureClasses[repo.id] = classifyTurnGitActionFailure("commit", err);
     }
   }
 
-  return { commitMessages, commitErrors, skippedRepositories };
+  return { commitMessages, commitErrors, commitFailureClasses, skippedRepositories };
 }
 
 export function runTurnGitAction(args: {
@@ -1499,6 +1560,7 @@ export function runTurnGitAction(args: {
       return {
         action: args.action,
         status: "failed",
+        failureClass: mergeTurnGitFailureClasses(Object.values(repoCommitResult.commitFailureClasses)),
         error: Object.entries(repoCommitResult.commitErrors)
           .map(([repoId, msg]) => `${repoId}: ${msg}`)
           .join("; "),

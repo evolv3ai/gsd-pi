@@ -139,6 +139,14 @@ Replace the path with the exact global bin directory from your pnpm error messag
 
 **Fix:** If the runtime record shows fresh recovery progress, resume with `/gsd auto`; the failsafe defers cancellation while recovery is actively producing durable output. If the journal shows a stopped finalize reason such as a git closeout failure or repeated finalize timeout, inspect `.gsd/git-action-failures.log`, resolve the underlying git issue, then resume.
 
+### Auto mode retries or pauses after a commit hook rejects task changes
+
+**Symptoms:** After an `execute-task` unit passes verification, auto mode reports `Git commit failed... Retrying task remediation (attempt 1/2)` or later reports that git commit failed after 2 remediation attempts and pauses. `.gsd/git-action-failures.log` contains the full hook output.
+
+**Cause:** The post-task `git commit` was rejected by hook-owned content, commonly a pre-commit lint, formatting, secret, or policy check. GSD classifies this path as `hook-content`, injects the hook output into a bounded task remediation retry, and gives the agent up to 2 attempts to fix the committed content. This is separate from transient git lock failures, which use the short git retry path instead.
+
+**Fix:** Inspect `.gsd/git-action-failures.log` and the hook output, fix the failing content or hook configuration, then resume with `/gsd auto`. In parent workspaces, if some repositories already committed before another repository's hook failed, reconcile the partially committed state manually before resuming; GSD pauses that case instead of re-running the task so it does not duplicate already-committed work.
+
 ### Wrong files in worktree
 
 **Symptoms:** Planning artifacts or code appear in the wrong directory.

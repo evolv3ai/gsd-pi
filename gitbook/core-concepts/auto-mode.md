@@ -239,6 +239,12 @@ Commands must be directly runnable checks such as `npm run lint`, `npm run test`
 
 If no verification commands are configured and the task plan does not provide a `verify` command, GSD attempts project discovery. It checks `package.json` scripts first, then Python pytest markers through the `python-project` discovery source: a `tests/` directory containing files that match `test_*.py` or `*_test.py` at any nested depth, `pytest.ini`, or pytest configuration sections in `pyproject.toml` such as `[tool.pytest.ini_options]`; equivalent pytest markers under `[tool.pytest]`, `[tool.pytest.*]`, `[pytest]`, or `[tool:pytest]` are also treated as explicit pytest evidence. Browser-facing tasks with no runnable host command can continue to slice UAT only after the canonical executor Result succeeds and no blocking runtime errors are found.
 
+## Post-Task Commit Hook Remediation
+
+When turn-level gitops uses the default `uok.gitops.turn_action: commit`, an `execute-task` closeout commits after host verification passes. If a commit hook rejects the staged task changes, GSD classifies the failure as `hook-content` and retries the task with the hook output injected as remediation context.
+
+This path is capped at 2 remediation attempts. After the cap is exhausted, auto mode pauses and writes the full git error to `.gsd/git-action-failures.log`. Transient git lock failures still use the short git retry path, and parent-workspace partial commits pause instead of re-running the task when one repository has already committed.
+
 ## Slice Discussion Gate
 
 For projects requiring human review before each slice:

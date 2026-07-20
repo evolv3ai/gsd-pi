@@ -222,6 +222,14 @@ When context usage reaches 70%, GSD sends a wrap-up signal to the agent, nudging
 
 Commits are generated from task summaries — not generic "complete task" messages. Each commit message reflects what was actually built, giving clean `git log` output that reads like a changelog.
 
+### Post-Task Commit Hook Remediation
+
+When turn-level gitops uses the default `uok.gitops.turn_action: commit`, an `execute-task` closeout runs a git commit after host verification passes. If `git commit` exits with hook-owned output, such as a pre-commit hook rejecting lint, formatting, secret, or policy checks, GSD classifies the failure as `hook-content` instead of treating it as a soft closeout warning.
+
+For a single-repository task, or a parent workspace task where no repository has already committed, auto mode injects the hook output back into the same task as a remediation retry so the agent can fix the staged changes and complete the task again. This commit-hook remediation path is capped at 2 attempts. After the cap is exhausted, auto mode pauses and writes the full git error to `.gsd/git-action-failures.log` for operator inspection.
+
+Transient git failures such as `.git/index.lock` contention still use the short git retry path. If a parent workspace partially committed some repositories before another repository's hook rejected the commit, GSD pauses instead of re-running the task, because redoing the task could duplicate work that is already committed in the successful repositories.
+
 ### Stuck Detection
 
 GSD uses a sliding-window analysis to detect stuck loops. Instead of a simple "same unit dispatched twice" counter, the detector examines recent dispatch history for repeated patterns — catching cycles like A→B→A→B as well as single-unit repeats. On detection, GSD retries once with a deep diagnostic prompt. If it fails again, auto mode stops so you can intervene.
