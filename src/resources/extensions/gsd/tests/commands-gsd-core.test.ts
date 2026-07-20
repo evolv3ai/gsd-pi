@@ -601,6 +601,8 @@ describe("Batch 4 handlers dispatch", () => {
     await handlePlanPhase("--research --tdd", ctx as any, pi as any);
     // The research flag line renders the value (research), not the placeholder name.
     assert.match(pi.sent[0].content, /--research` \/ `--skip-research` — research/);
+    assert.match(pi.sent[0].content, /gsd_summary_save/);
+    assert.match(pi.sent[0].content, /artifact_type: "RESEARCH"/);
     assert.match(pi.sent[0].content, /`--tdd` — ON/);
   });
   test("handlePlanPhase skip-research flag", async () => {
@@ -628,6 +630,8 @@ describe("Batch 4 handlers dispatch", () => {
     const pi = createMockPi(); const ctx = createMockCtx();
     await handleUiPhase("", ctx as any, pi as any);
     assert.equal(pi.sent[0].customType, "gsd-ui-phase");
+    assert.match(pi.sent[0].content, /gsd_summary_save/);
+    assert.match(pi.sent[0].content, /artifact_type: "UI-SPEC"/);
   });
   test("handleAiIntegrationPhase default", async () => {
     const pi = createMockPi(); const ctx = createMockCtx();

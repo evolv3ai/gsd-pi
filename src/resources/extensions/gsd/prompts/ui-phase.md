@@ -19,7 +19,7 @@ You are running the GSD **ui-phase** workflow — produce a UI design contract (
 
 4. **Align on constraints.** Brand, type scale, color tokens, spacing system, component library — use existing design tokens where they exist; flag gaps.
 
-5. **Write the UI-SPEC** to the milestone/slice artifact in `.gsd/`. Recommend `/gsd sketch` to prototype high-uncertainty surfaces, or `/gsd plan-phase` to plan implementation.
+5. **Write the UI-SPEC** by calling `gsd_summary_save` with `artifact_type: "UI-SPEC"` and the applicable `milestone_id` / `slice_id`. This persists the milestone/slice UI design contract to the computed `.gsd/` artifact path before implementation planning. Recommend `/gsd sketch` to prototype high-uncertainty surfaces, or `/gsd plan-phase` to plan implementation.
 
 ## Success criteria
 

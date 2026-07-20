@@ -270,6 +270,31 @@ test("executeSummarySave persists artifact and returns computed path", async () 
   }
 });
 
+test("executeSummarySave persists UI-SPEC artifacts at the computed flat-phase path", async () => {
+  const base = makeTmpBase();
+  try {
+    openTestDb(base);
+    const result = await inProjectDir(base, () => executeSummarySave({
+      milestone_id: "M001",
+      slice_id: "S01",
+      artifact_type: "UI-SPEC",
+      content: "# UI Spec\n\nDesign contract.",
+    }, base));
+
+    assert.equal(result.details.operation, "save_summary");
+    assert.equal(result.details.path, "phases/01-m001/01-01-UI-SPEC.md");
+    assert.equal(result.details.artifact_type, "UI-SPEC");
+
+    const filePath = join(base, ".gsd", "phases", "01-m001", "01-01-UI-SPEC.md");
+    assert.ok(existsSync(filePath), "UI-SPEC artifact should be written to disk");
+    assert.match(readFileSync(filePath, "utf-8"), /Design contract/);
+    assert.equal(getArtifact("phases/01-m001/01-01-UI-SPEC.md")?.artifact_type, "UI-SPEC");
+  } finally {
+    closeDatabase();
+    cleanup(base);
+  }
+});
+
 test("executeSummarySave mirrors milestone artifacts into the active worktree projection", async () => {
   const base = makeTmpBase();
   const worktree = join(base, ".gsd", "worktrees", "M001");
