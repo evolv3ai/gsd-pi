@@ -168,3 +168,34 @@ describe("runStatusReport — staleness nudge (M4)", () => {
     // nudge may be null (parse degraded) — the call must simply not throw
   });
 });
+
+describe("runStatusReport — staleness nudge second arm: completed-but-unswept (F6.0-7)", () => {
+  const completedState = {
+    phase: "idle",
+    lastCompletedMilestone: { id: "M042", title: "Minimal Plan" },
+  };
+
+  test("milestone completed, sweep never ran (zero done markers) -> nudge", async () => {
+    const tmp = await makeStatusProject(PRISTINE);
+    const r = await runStatusReport({ cwd: tmp, spawn: snapshotSpawner(completedState), now: NOW });
+    assert.equal(r.nudge, STALE_NUDGE);
+  });
+
+  test("milestone completed and already swept (a done marker exists) -> no nudge", async () => {
+    const tmp = await makeStatusProject(FIXTURE); // fixture has a [x] item
+    const r = await runStatusReport({ cwd: tmp, spawn: snapshotSpawner(completedState), now: NOW });
+    assert.equal(r.nudge, null);
+  });
+
+  test("completed milestone has no bridge manifest -> no nudge, no error", async () => {
+    const tmp = await mkdtemp(join(tmpdir(), "planf3-gsd-nudge2-none-"));
+    const r = await runStatusReport({ cwd: tmp, spawn: snapshotSpawner(completedState), now: NOW });
+    assert.equal(r.nudge, null);
+  });
+
+  test("neither active nor completed milestone -> no nudge", async () => {
+    const tmp = await makeStatusProject(PRISTINE);
+    const r = await runStatusReport({ cwd: tmp, spawn: snapshotSpawner({ phase: "idle" }), now: NOW });
+    assert.equal(r.nudge, null);
+  });
+});

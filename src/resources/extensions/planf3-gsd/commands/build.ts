@@ -8,6 +8,7 @@ import { checkPresetsGate, type PresetsGateResult } from "../preflight/enforce.j
 import { PRESETS_RELATIVE_PATH } from "../preflight/presets-file.js";
 import { runExport, type ExportResult } from "./export.js";
 import { runSync, type SyncOutcomeKind } from "./sync.js";
+import { makeActivityStamp, type ActivityStamp } from "../gsd/activity-probe.js";
 import { friendlyError } from "./error-message.js";
 
 export interface PrefsSummary {
@@ -50,10 +51,15 @@ export interface BuildOptions {
   allowUnsafeStep?: boolean;
   force?: boolean;
   globalPrefsPath?: string;
-  /** Kill `gsd headless {new-milestone,auto}` if no stdout arrives for this
-   *  long. Default 10 minutes. Set to 0 to disable. Guards against upstream
-   *  #1294 (smart-entry menu route hangs headless indefinitely). */
+  /** Kill `gsd headless {new-milestone,auto}` if neither stdout nor `.gsd`
+   *  activity (metadata-only probe, F6.0-5) shows progress for this long.
+   *  Default 10 minutes. Set to 0 to disable both the timer and the probe.
+   *  Menu-hang fast-path (upstream #1294) is unchanged. */
   headlessIdleMs?: number;
+  /** Injectable liveness probe for tests (F6.0-5). Default: makeActivityStamp(cwd). */
+  activityStamp?: ActivityStamp;
+  /** Probe cadence in ms (default 30s). */
+  probeIntervalMs?: number;
 }
 
 export type AutoChainOutcome = "not-applicable" | "chained" | "relaunched" | "not-started" | "stopped-at-pause";
@@ -150,7 +156,12 @@ interface IdleGuard {
   dispose: () => void;
 }
 
-function makeIdleGuard(idleMs: number): IdleGuard {
+interface IdleGuardOptions {
+  activityStamp?: ActivityStamp;
+  probeIntervalMs?: number;
+}
+
+function makeIdleGuard(idleMs: number, guardOpts: IdleGuardOptions = {}): IdleGuard {
   const controller = new AbortController();
   if (idleMs === 0) {
     return {
@@ -162,6 +173,31 @@ function makeIdleGuard(idleMs: number): IdleGuard {
   }
   let timer: ReturnType<typeof setTimeout> = setTimeout(() => controller.abort(), idleMs);
   const reset = () => { clearTimeout(timer); timer = setTimeout(() => controller.abort(), idleMs); };
+  // F6.0-5: JSON-mode children buffer ALL stdout until exit, so stdout silence
+  // is not evidence of a hang. The probe supplies the progress signal: a stamp
+  // strictly greater than the last seen value resets the idle timer (the first
+  // observation only initializes the baseline). Null stamps and probe errors
+  // are "no signal" — can't-see is NOT alive.
+  let probeTimer: ReturnType<typeof setInterval> | null = null;
+  if (guardOpts.activityStamp !== undefined) {
+    const stamp = guardOpts.activityStamp;
+    let lastSeen: number | null = null;
+    let inFlight = false;
+    probeTimer = setInterval(() => {
+      if (inFlight) return;
+      inFlight = true;
+      void stamp()
+        .then((s) => {
+          if (s !== null) {
+            if (lastSeen !== null && s > lastSeen) reset();
+            if (lastSeen === null || s > lastSeen) lastSeen = s;
+          }
+        })
+        .catch(() => { /* probe failure = no signal, never aborts */ })
+        .finally(() => { inFlight = false; });
+    }, guardOpts.probeIntervalMs ?? 30_000);
+    probeTimer.unref?.();
+  }
   return {
     signal: controller.signal,
     onStdout: (chunk) => {
@@ -169,11 +205,11 @@ function makeIdleGuard(idleMs: number): IdleGuard {
       if (MENU_HANG_RE.test(chunk)) controller.abort();
     },
     wasAborted: () => controller.signal.aborted,
-    dispose: () => { clearTimeout(timer); },
+    dispose: () => { clearTimeout(timer); if (probeTimer !== null) clearInterval(probeTimer); },
   };
 }
 
-const HEADLESS_IDLE_MESSAGE = "gsd idled headless without progress (known upstream #1294) — killed the child";
+const HEADLESS_IDLE_MESSAGE = "gsd idled headless — no stdout and no .gsd activity for the idle window (menu-hang case: upstream #1294) — killed the child";
 
 export async function runBuild(htmlPath: string, opts: BuildOptions = {}): Promise<BuildResult> {
   if (opts.auto !== true && opts.allowUnsafeStep !== true) {
@@ -281,10 +317,12 @@ export async function runBuild(htmlPath: string, opts: BuildOptions = {}): Promi
   const trackCost = (s: BridgeStatus): void => { if (s.cost > observedCost) observedCost = s.cost; };
 
   const idleMs = opts.headlessIdleMs ?? 10 * 60 * 1000;
+  const guardOpts: IdleGuardOptions = { activityStamp: opts.activityStamp ?? makeActivityStamp(cwd) };
+  if (opts.probeIntervalMs !== undefined) guardOpts.probeIntervalMs = opts.probeIntervalMs;
 
   let nmExitCode = -1;
   {
-    const guard = makeIdleGuard(idleMs);
+    const guard = makeIdleGuard(idleMs, guardOpts);
     try {
       nmExitCode = (await runner.newMilestone(exportResult.specPath, {
         auto: opts.auto === true,
@@ -389,7 +427,7 @@ export async function runBuild(htmlPath: string, opts: BuildOptions = {}): Promi
       // wrap (idle guard, kills the child on hang, distinguishes failed:auto-
       // relaunch from failed:headless-idle). This branch is otherwise unchanged
       // from v0.3.1.
-      const guard = makeIdleGuard(idleMs);
+      const guard = makeIdleGuard(idleMs, guardOpts);
       try {
         await runner.auto({ signal: guard.signal, onStdout: guard.onStdout });
         status = mapQuerySnapshot((await runner.query()).json);

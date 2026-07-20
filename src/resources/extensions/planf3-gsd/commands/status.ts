@@ -103,26 +103,43 @@ export interface StatusReport {
 
 export const STALE_NUDGE = "markers behind live state — run /planf3-gsd-sync";
 
+/** Zero done markers in the plan the manifest points at. Empty htmlPath and
+ *  parse failures count as "not zero" (no nudge); throws propagate to the
+ *  caller's catch. */
+async function planShowsZeroDone(cwd: string, manifest: ManifestRef): Promise<boolean> {
+  if (manifest.htmlPath.length === 0) return false;
+  const htmlPath = isAbsolute(manifest.htmlPath) ? manifest.htmlPath : join(cwd, manifest.htmlPath);
+  const plan = parsePlanf3Html(await readFile(htmlPath, "utf8"));
+  const doneMarkers =
+    plan.phases.filter((p) => p.status === "done").length +
+    plan.phases.reduce((acc, p) => acc + p.tasks.reduce((a, t) => a + t.checklist.filter((i) => i.status === "done").length, 0), 0);
+  return doneMarkers === 0;
+}
+
 /**
  * Staleness nudge (M4 loop touchpoint c). Status stays read-only: this only
- * READS the plan HTML the bridge manifest points at. Fires when the active
- * milestone has completed slices/tasks but the plan shows zero done markers.
+ * READS the plan HTML the bridge manifest points at. Two arms:
+ *  - active milestone with completed slices/tasks but zero done markers;
+ *  - F6.0-7: milestone completed but the sweep never ran (lastCompleted owns
+ *    the manifest, plan still pristine) — the moment the nudge matters most.
  * Every failure degrades to null — a nudge must never break a status call.
  */
 async function computeStaleNudge(cwd: string, status: BridgeStatus): Promise<string | null> {
   try {
     const active = status.activeMilestone;
-    const progress = status.progress;
-    if (active === null || progress === null) return null;
-    if (progress.slices.done + progress.tasks.done === 0) return null;
-    const manifest = await findBridgeManifest(cwd, active.id);
-    if (manifest === null || manifest.htmlPath.length === 0) return null;
-    const htmlPath = isAbsolute(manifest.htmlPath) ? manifest.htmlPath : join(cwd, manifest.htmlPath);
-    const plan = parsePlanf3Html(await readFile(htmlPath, "utf8"));
-    const doneMarkers =
-      plan.phases.filter((p) => p.status === "done").length +
-      plan.phases.reduce((acc, p) => acc + p.tasks.reduce((a, t) => a + t.checklist.filter((i) => i.status === "done").length, 0), 0);
-    return doneMarkers === 0 ? STALE_NUDGE : null;
+    if (active !== null) {
+      const progress = status.progress;
+      if (progress === null) return null;
+      if (progress.slices.done + progress.tasks.done === 0) return null;
+      const manifest = await findBridgeManifest(cwd, active.id);
+      if (manifest === null) return null;
+      return (await planShowsZeroDone(cwd, manifest)) ? STALE_NUDGE : null;
+    }
+    const completed = status.lastCompletedMilestone;
+    if (completed === null) return null;
+    const manifest = await findBridgeManifest(cwd, completed.id);
+    if (manifest === null) return null;
+    return (await planShowsZeroDone(cwd, manifest)) ? STALE_NUDGE : null;
   } catch {
     return null;
   }

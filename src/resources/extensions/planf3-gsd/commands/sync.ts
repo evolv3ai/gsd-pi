@@ -72,6 +72,23 @@ function applyBindings(manifest: Record<string, unknown>, c: CorrelationResult):
   return notes;
 }
 
+/** F6.0-8: the completion sweep keeps the manifest's validation record
+ *  truthful — custody-round completions never pass through runBuild, which
+ *  is otherwise the only writer of validation.lastStatus (observed stuck on
+ *  "running" for a fully-swept milestone). Mutates in place; null = already
+ *  passed, nothing to persist. */
+function applyValidationUpkeep(manifest: Record<string, unknown>, nowIso: string): string | null {
+  const existing = manifest.validation;
+  const validation = existing && typeof existing === "object" && !Array.isArray(existing)
+    ? (existing as Record<string, unknown>)
+    : {};
+  if (validation.lastStatus === "passed") return null;
+  validation.lastStatus = "passed";
+  validation.lastSyncedAt = nowIso;
+  manifest.validation = validation;
+  return "validation.lastStatus → passed";
+}
+
 /** Atomic same-directory write: temp + rename, best-effort temp cleanup on failure. */
 async function atomicWrite(path: string, content: string): Promise<void> {
   const tmpPath = join(dirname(path), `.${basename(path)}.sync-tmp-${process.pid}`);
@@ -138,19 +155,26 @@ export async function runSync(htmlPathArg: string | null, dryRun: boolean, opts:
     return { kind: "not-observable", message: `milestone ${milestoneId} not observable in current gsd state; nothing synced`, applied: none, unmatched: [], bound: [] };
   }
 
+  const now = opts.now ?? (() => new Date().toISOString());
+
   // Persist observed bindings (rungs 2/3/4) BEFORE the marker-write decision:
-  // a binding can be new even when every marker is already correct. Dry-run
-  // persists nothing. Atomic like the HTML write (temp + rename).
+  // a binding can be new even when every marker is already correct. F6.0-8:
+  // the completion sweep also upserts validation.lastStatus in the SAME
+  // atomic write. Dry-run persists nothing. Atomic like the HTML write
+  // (temp + rename); one write whether bindings, validation, or both changed.
   const bound: string[] = [];
   if (!dryRun && manifest !== null) {
     const notes = applyBindings(manifest, correlation);
+    if (computed.completed) {
+      const upkeep = applyValidationUpkeep(manifest, now());
+      if (upkeep !== null) notes.push(upkeep);
+    }
     if (notes.length > 0) {
       await atomicWrite(manifestPath, JSON.stringify(manifest, null, 2) + "\n");
       bound.push(...notes);
     }
   }
 
-  const now = opts.now ?? (() => new Date().toISOString());
   const rewritten = rewriteHtml(html, computed.updates, computed.expectedMarkerCount, {
     gsdMilestone: milestoneId,
     gsdSession: status.sessionId,

@@ -711,7 +711,7 @@ describe("runBuild", () => {
       spawn: (async () => ({ exitCode: 1, stdout: "", stderr: "" })) as Spawner,
     };
     const probe = await runPreflight(deps);
-    const token = await issueApprovalToken(tmp, probe.approvalHash, { now: () => new Date("2026-07-06T08:00:00Z") });
+    const token = await issueApprovalToken(tmp, probe.approvalHash, { now: () => new Date("2026-07-06T08:00:00Z"), projectedFrom: htmlPath });
     const { approvalHash } = await signOffPreflight(deps, null, token);
     return approvalHash;
   }
@@ -772,7 +772,7 @@ describe("runBuild", () => {
       catalog: { ids: () => [] }, orchestrator: null,
     };
     const signProbe = await runPreflight(signDeps);
-    const signToken = await issueApprovalToken(tmp, signProbe.approvalHash);
+    const signToken = await issueApprovalToken(tmp, signProbe.approvalHash, { projectedFrom: htmlPath });
     await signOffPreflight(signDeps, null, signToken);
 
     const spawn: Spawner = async () => ({ exitCode: 0, stdout: "{}", stderr: "" });
@@ -932,5 +932,99 @@ describe("runBuild — headless idle guard (F4 / upstream #1294)", () => {
       /#1294/,
     );
     assert.ok(Date.now() - started < 3_000, "fast-path aborted well before the 10s idle window");
+  });
+});
+
+describe("runBuild — activity-probe idle guard (F6.0-5: silent JSON-mode children)", () => {
+  // JSON-mode children emit NO incremental stdout (e2e grok-m4 F-G7) — the
+  // probe is the only liveness signal in every test below.
+  const silentChild = (durationMs: number): Spawner => (_cmd, args, opts) => {
+    if (args.includes("new-milestone")) {
+      return new Promise((resolve, reject) => {
+        opts.signal?.addEventListener("abort", () => {
+          reject(Object.assign(new Error("aborted"), { name: "AbortError" }));
+        });
+        setTimeout(() => resolve({ exitCode: 0, stdout: "{}", stderr: "" }), durationMs);
+      });
+    }
+    return Promise.resolve({ exitCode: 0, stdout: JSON.stringify({ state: { phase: "executing", activeMilestone: { id: "M1", title: "t" }, activeTask: { id: "T1", title: "t" } }, next: null, cost: { total: 0 } }), stderr: "" });
+  };
+
+  async function scaffoldPlan(prefix: string): Promise<{ tmp: string; htmlPath: string }> {
+    const tmp = await mkdtemp(join(tmpdir(), prefix));
+    const htmlPath = join(tmp, "minimal.html");
+    await copyFile(join(here, "..", "fixtures", "minimal-plan.html"), htmlPath);
+    return { tmp, htmlPath };
+  }
+
+  test("silent child + advancing activity stamps → NOT aborted, build completes", async () => {
+    const { tmp, htmlPath } = await scaffoldPlan("planf3-probe-alive-");
+    let tick = 0;
+    const result = await runBuild(htmlPath, {
+      auto: true, binary: "gsd", cwd: tmp, spawn: silentChild(200),
+      force: true, globalPrefsPath: join(tmp, "no-global.md"),
+      headlessIdleMs: 80, probeIntervalMs: 20,
+      activityStamp: async () => ++tick, // strictly increasing → always alive
+      now: () => "2026-07-20T10:00:00Z",
+    });
+    assert.equal(result.milestoneId, "M1");
+  });
+
+  test("silent child + frozen stamp → aborted at idleMs, failed:headless-idle row, message names .gsd activity", async () => {
+    const { tmp, htmlPath } = await scaffoldPlan("planf3-probe-frozen-");
+    await assert.rejects(
+      () => runBuild(htmlPath, {
+        auto: true, binary: "gsd", cwd: tmp, spawn: silentChild(60_000),
+        force: true, globalPrefsPath: join(tmp, "no-global.md"),
+        headlessIdleMs: 80, probeIntervalMs: 20,
+        activityStamp: async () => 12_345, // never advances
+        now: () => "2026-07-20T10:05:00Z",
+      }),
+      /no stdout and no \.gsd activity.*#1294/,
+    );
+    const rows = (await readFile(join(tmp, ".gsd", "planf3-gsd-evals.jsonl"), "utf8")).trim().split("\n").map((l) => JSON.parse(l));
+    assert.equal(rows[rows.length - 1].phase, "failed:headless-idle");
+  });
+
+  test("silent child + null stamps (no .gsd observable) → aborted — can't-see is NOT alive", async () => {
+    const { tmp, htmlPath } = await scaffoldPlan("planf3-probe-null-");
+    await assert.rejects(
+      () => runBuild(htmlPath, {
+        auto: true, binary: "gsd", cwd: tmp, spawn: silentChild(60_000),
+        force: true, globalPrefsPath: join(tmp, "no-global.md"),
+        headlessIdleMs: 80, probeIntervalMs: 20,
+        activityStamp: async () => null,
+        now: () => "2026-07-20T10:10:00Z",
+      }),
+      /no stdout and no \.gsd activity/,
+    );
+  });
+
+  test("probe that throws → treated as no signal (aborts at idleMs; never crashes the build differently)", async () => {
+    const { tmp, htmlPath } = await scaffoldPlan("planf3-probe-throws-");
+    await assert.rejects(
+      () => runBuild(htmlPath, {
+        auto: true, binary: "gsd", cwd: tmp, spawn: silentChild(60_000),
+        force: true, globalPrefsPath: join(tmp, "no-global.md"),
+        headlessIdleMs: 80, probeIntervalMs: 20,
+        activityStamp: async () => { throw new Error("probe exploded"); },
+        now: () => "2026-07-20T10:15:00Z",
+      }),
+      /no stdout and no \.gsd activity/, // the idle abort, NOT "probe exploded"
+    );
+  });
+
+  test("headlessIdleMs 0 disables timer AND probe — stamp fn is never called", async () => {
+    const { tmp, htmlPath } = await scaffoldPlan("planf3-probe-off-");
+    let called = 0;
+    const result = await runBuild(htmlPath, {
+      auto: true, binary: "gsd", cwd: tmp, spawn: silentChild(150),
+      force: true, globalPrefsPath: join(tmp, "no-global.md"),
+      headlessIdleMs: 0, probeIntervalMs: 10,
+      activityStamp: async () => { called++; return 1; },
+      now: () => "2026-07-20T10:20:00Z",
+    });
+    assert.equal(result.milestoneId, "M1");
+    assert.equal(called, 0, "idleMs 0 must not start the probe");
   });
 });

@@ -9,7 +9,7 @@ GSD spec markdown + bridge manifest beside it, then shells out to
 
 - **Tier:** bundled (ships inside `@opengsd/gsd-pi`)
 - **Platform requirement:** `gsd-pi >= 2.29.0`
-- **Version:** 0.6.0 (M0+M1+M2 complete — plan/run/build/preflight; + M3 sync; + M4 loop/steer; + F-4.2 CLI-provider fallback; + F5.1-2 sign-off token hardening; see [Out of scope](#out-of-scope) for the road from here)
+- **Version:** 0.6.1 (M0+M1+M2 complete — plan/run/build/preflight; + M3 sync; + M4 loop/steer; + F-4.2 CLI-provider fallback; + F5.1-2 sign-off token hardening; + F6.0-5..8 acceptance fixes; see [Out of scope](#out-of-scope) for the road from here)
 
 ## Quickstart
 
@@ -272,6 +272,13 @@ holds custody of the loop and drives it explicitly:
    marker has painted, silence no longer means the rest are current; it
    just means this particular check stopped looking.
 
+- **Staleness nudge (extended in 0.6.1, F6.0-7):** also fires when the
+  milestone is already completed but the plan was never swept
+  (`lastCompletedMilestone` owns the manifest, zero done markers).
+- **Sync (extended in 0.6.1, F6.0-8):** the completion sweep upserts
+  `validation.lastStatus: "passed"` and `validation.lastSyncedAt` into the
+  manifest alongside binding persistence (same atomic write; idempotent).
+
 ### Steer, pause, resume, stop
 
 Thin passthroughs to the documented `gsd headless <cmd>` surface —
@@ -301,6 +308,14 @@ slash command — preflight/PRESETS gate, preferences overlay, eval rows, and
 the idle guard all apply identically. It exists primarily as the chain target
 for `/planf3-gsd-run`; `auto` defaults to `true`, and step mode still
 requires `allowUnsafeStep` just like the command.
+
+- **Idle guard (changed in 0.6.1, F6.0-5):** `gsd headless --output-format json`
+  children buffer all stdout until exit, so the guard no longer treats stdout
+  silence as a hang. Liveness comes from a metadata-only probe of `.gsd`
+  (`fs.stat` mtimes on the db/journal/activity paths every 30s — the bridge's
+  one narrow carve-out from "never consume `.gsd/` internals": stat-only,
+  never content, best-effort). The 10-minute default now measures genuine
+  no-progress; `headlessIdleMs: 0` still disables everything.
 
 ### Direct-import workaround when the tool isn't discovered (`--print` mode)
 
@@ -333,6 +348,12 @@ Sign-off is no longer a boolean an agent can set. The flow:
 3. The token is consumed on success; a wrong token leaves it valid; if the
    workflow map changed since issue, sign-off refuses (`stale-map`) and the
    human must re-approve the new map.
+
+- **Sign-off (changed in 0.6.1, F6.0-6):** the minted-token hint prints the
+  full command including the plan path, and the token is scoped to that
+  projection — consuming it bare (or with a different path) is refused
+  without burning the token, and the refusal echoes the corrected command.
+  The pending-approval file is schema v2 (`projectedFrom`).
 
 The tool surface never mints, returns, or logs a token — `signOff: true`
 without a valid relayed token is refused with instructions to involve the

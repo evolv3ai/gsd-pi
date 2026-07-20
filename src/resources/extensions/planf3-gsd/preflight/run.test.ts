@@ -80,11 +80,11 @@ describe("runPreflight", () => {
     const { tmp, html } = await scaffold();
     const d = deps(tmp, html);
     const probe = await runPreflight(d);
-    await issueApprovalToken(tmp, probe.approvalHash, { now: () => new Date("2026-07-06T07:00:00Z") });
+    await issueApprovalToken(tmp, probe.approvalHash, { now: () => new Date("2026-07-06T07:00:00Z"), projectedFrom: html });
     await assert.rejects(signOffPreflight(d, null, "0000000000"), /does not match/);
     await assert.rejects(readFile(join(tmp, "specs", "PRESETS.md"), "utf8"));
     // the real token still works afterwards
-    const token2 = await issueApprovalToken(tmp, probe.approvalHash, { now: () => new Date("2026-07-06T07:00:00Z") });
+    const token2 = await issueApprovalToken(tmp, probe.approvalHash, { now: () => new Date("2026-07-06T07:00:00Z"), projectedFrom: html });
     const { path } = await signOffPreflight(d, null, token2);
     assert.equal(path, join(tmp, "specs", "PRESETS.md"));
   });
@@ -92,7 +92,7 @@ describe("runPreflight", () => {
   test("sign-off with a STALE-MAP token (map changed since issue) is refused (F5.1-2)", async () => {
     const { tmp, html } = await scaffold();
     const d = deps(tmp, html);
-    await issueApprovalToken(tmp, "0".repeat(64), { now: () => new Date("2026-07-06T07:00:00Z") });
+    await issueApprovalToken(tmp, "0".repeat(64), { now: () => new Date("2026-07-06T07:00:00Z"), projectedFrom: html });
     await assert.rejects(signOffPreflight(d, null, "anytoken00"), /does not match|changed since/);
   });
 
@@ -100,7 +100,7 @@ describe("runPreflight", () => {
     const { tmp, html } = await scaffold();
     const d = deps(tmp, html);
     const probe = await runPreflight(d);
-    const token = await issueApprovalToken(tmp, probe.approvalHash, { now: () => new Date("2026-07-06T07:00:00Z") });
+    const token = await issueApprovalToken(tmp, probe.approvalHash, { now: () => new Date("2026-07-06T07:00:00Z"), projectedFrom: html });
     const { path, approvalHash } = await signOffPreflight(d, "first approval", token);
     assert.equal(path, join(tmp, "specs", "PRESETS.md"));
     assert.match(await readFile(path, "utf8"), /first approval/);
@@ -127,7 +127,7 @@ describe("runPreflight", () => {
     // Sign with the ABSOLUTE path (this is what the tool caller in the e2e did).
     const dAbs = deps(tmp, html);
     const probeAbs = await runPreflight(dAbs);
-    const tokenAbs = await issueApprovalToken(tmp, probeAbs.approvalHash, { now: () => new Date("2026-07-06T07:00:00Z") });
+    const tokenAbs = await issueApprovalToken(tmp, probeAbs.approvalHash, { now: () => new Date("2026-07-06T07:00:00Z"), projectedFrom: html });
     await signOffPreflight(dAbs, "signed with abs", tokenAbs);
 
     // Re-run with the EQUIVALENT RELATIVE path (the argv shape of a slash command).
@@ -142,5 +142,35 @@ describe("exit-code contract (spec §11.10)", () => {
   test("verdict → exit code mapping table", async () => {
     const { EXIT_CODES } = await import("../commands/preflight-register.js");
     assert.deepEqual(EXIT_CODES, { ok: 0, unapproved: 20, drift: 21, error: 1 });
+  });
+});
+
+describe("sign-off path binding (F6.0-6)", () => {
+  test("bare sign-off of a path-scoped token refuses with the full projected command, token survives", async () => {
+    const { tmp, html } = await scaffold();
+    const probe = await runPreflight(deps(tmp, html));
+    const token = await issueApprovalToken(tmp, probe.approvalHash, { now: () => new Date("2026-07-06T07:00:00Z"), projectedFrom: html });
+    // bare deps: same project, NO htmlPath
+    await assert.rejects(
+      signOffPreflight(deps(tmp, null), null, token),
+      (err: Error) => {
+        assert.match(err.message, /minted for a projected map/);
+        assert.ok(err.message.includes(`specs/p.html --sign-off ${token}`), `retry hint must carry path + token: ${err.message}`);
+        return true;
+      },
+    );
+    // token survived the refusal — the projected sign-off still works
+    const { path } = await signOffPreflight(deps(tmp, html), null, token);
+    assert.equal(path, join(tmp, "specs", "PRESETS.md"));
+  });
+
+  test("projected sign-off of a bare token refuses and names the bare retry", async () => {
+    const { tmp, html } = await scaffold();
+    const probe = await runPreflight(deps(tmp, null));
+    const token = await issueApprovalToken(tmp, probe.approvalHash, { now: () => new Date("2026-07-06T07:00:00Z") });
+    await assert.rejects(
+      signOffPreflight(deps(tmp, html), null, token),
+      /minted for the bare map/,
+    );
   });
 });
