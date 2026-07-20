@@ -246,7 +246,10 @@
 |------|------|
 | `gsd` | 启动新的交互式会话 |
 | `gsd --continue`（`-c`） | 恢复当前目录最近一次会话 |
+| `gsd --session <path\|id>` | 恢复指定的 session 文件或 session ID |
+| `gsd --session-dir <dir>` | 使用自定义目录存储和查找 sessions |
 | `gsd --model <id>` | 为当前会话覆盖默认模型 |
+| `gsd --thinking <level>` | 覆盖当前会话的 thinking level。有效值：`off`、`minimal`、`low`、`medium`、`high`、`xhigh`、`max` |
 | `gsd --print "msg"`（`-p`） | 单次 prompt 模式（无 TUI） |
 | `gsd --mode <text\|json\|rpc\|mcp>` | 非交互使用时的输出模式 |
 | `gsd --list-models [search]` | 列出可用模型并退出 |
@@ -281,6 +284,9 @@ gsd headless query
 # 用于 CI 的超时参数
 gsd headless --timeout 600000 auto
 
+# 带 model/thinking 覆盖的 auto 简写
+gsd auto --model claude-code/sonnet --thinking medium
+
 # 强制指定一个 phase
 gsd headless dispatch plan
 
@@ -300,6 +306,7 @@ echo "Build a CLI tool" | gsd headless new-milestone --context -
 | `--max-restarts N` | 崩溃时自动重启并指数退避（默认 3）。设为 0 可关闭 |
 | `--json` | 以 JSONL 形式把所有事件流式输出到 stdout |
 | `--model ID` | 覆盖 headless 会话使用的模型 |
+| `--thinking LEVEL` | 覆盖 headless 会话的 thinking level。有效值：`off`、`minimal`、`low`、`medium`、`high`、`xhigh`、`max` |
 | `--context <file>` | 给 `new-milestone` 提供上下文文件（用 `-` 表示 stdin） |
 | `--context-text <text>` | 给 `new-milestone` 提供内联上下文文本 |
 | `--auto` | 在创建 milestone 后直接接续自动模式 |

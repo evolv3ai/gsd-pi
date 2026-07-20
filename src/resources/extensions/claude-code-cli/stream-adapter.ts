@@ -23,7 +23,7 @@ import type { ExtensionUIContext } from "@gsd/pi-coding-agent";
 import { EventStream } from "@gsd/pi-ai";
 import { execSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, realpathSync } from "node:fs";
 import { homedir } from "node:os";
 import { createRequire } from "node:module";
 import { dirname, join } from "node:path";
@@ -119,6 +119,7 @@ interface ClaudeCodeStreamOptions extends SimpleStreamOptions {
 	extensionUIContext?: ExtensionUIContext;
 	onExternalToolCall?: (toolCall: ToolCall) => Promise<void> | void;
 	onExternalToolResult?: (event: { toolCall: ToolCall; result: ExternalToolResultPayload }) => Promise<void> | void;
+	_findConcurrentClaudeCodeProcessesForTest?: (cwd: string) => ConcurrentClaudeCodeProcess[];
 	_sdkQueryForTest?: (args: {
 		prompt: string | AsyncIterable<unknown>;
 		options?: Record<string, unknown>;
@@ -146,6 +147,99 @@ export function serverToolUseToToolCallLike(block: {
 /** Resolve the workspace root for local Claude Code process execution. */
 export function resolveClaudeCodeCwd(options?: SimpleStreamOptions): string {
 	return options?.cwd && options.cwd.trim().length > 0 ? options.cwd : process.cwd();
+}
+
+export interface ConcurrentClaudeCodeProcess {
+	pid: number;
+	cwd: string;
+	command: string;
+}
+
+const warnedConcurrentClaudeCodeCwds = new Set<string>();
+
+function hasArgValue(argv: string[], flag: string, value: string): boolean {
+	return argv.some((arg, index) =>
+		arg === `${flag}=${value}` || (arg === flag && argv[index + 1] === value)
+	);
+}
+
+function referencesClaudeCodeExecutable(argv: string[]): boolean {
+	return argv.some((arg) => {
+		const normalized = arg.replaceAll("\\", "/");
+		return /(?:^|\/)claude(?:\.cmd|\.exe)?$/i.test(normalized)
+			|| /@anthropic-ai\/claude-agent-sdk\/cli\.js$/i.test(normalized);
+	});
+}
+
+export function isClaudeCodeSdkProcessArgv(argv: string[]): boolean {
+	return referencesClaudeCodeExecutable(argv)
+		&& hasArgValue(argv, "--output-format", "stream-json")
+		&& hasArgValue(argv, "--input-format", "stream-json");
+}
+
+function readProcArgv(procRoot: string, pid: string): string[] {
+	const raw = readFileSync(join(procRoot, pid, "cmdline"), "utf-8");
+	return raw.split("\0").filter(Boolean);
+}
+
+export function findConcurrentClaudeCodeProcesses(
+	cwd: string,
+	options: { procRoot?: string; currentPid?: number } = {},
+): ConcurrentClaudeCodeProcess[] {
+	const procRoot = options.procRoot ?? "/proc";
+	if (procRoot === "/proc" && process.platform !== "linux") return [];
+
+	let targetCwd: string;
+	try {
+		targetCwd = realpathSync(cwd);
+	} catch {
+		return [];
+	}
+
+	const entries = (() => {
+		try {
+			return readdirSync(procRoot, { withFileTypes: true });
+		} catch {
+			return undefined;
+		}
+	})();
+	if (!entries) {
+		return [];
+	}
+
+	const currentPid = options.currentPid ?? process.pid;
+	const matches: ConcurrentClaudeCodeProcess[] = [];
+	for (const entry of entries) {
+		if (!entry.isDirectory() || !/^\d+$/.test(entry.name)) continue;
+		const pid = Number(entry.name);
+		if (pid === currentPid) continue;
+
+		let processCwd: string;
+		let argv: string[];
+		try {
+			processCwd = realpathSync(join(procRoot, entry.name, "cwd"));
+			if (processCwd !== targetCwd) continue;
+			argv = readProcArgv(procRoot, entry.name);
+		} catch {
+			continue;
+		}
+
+		if (!isClaudeCodeSdkProcessArgv(argv)) continue;
+		matches.push({ pid, cwd: processCwd, command: argv.join(" ") });
+	}
+
+	return matches.sort((a, b) => a.pid - b.pid);
+}
+
+export function buildConcurrentClaudeCodeProcessWarning(
+	cwd: string,
+	processes: ConcurrentClaudeCodeProcess[],
+): string {
+	const pids = processes.map((processInfo) => processInfo.pid).join(", ");
+	const pidLabel = processes.length === 1 ? `PID ${pids}` : `PIDs ${pids}`;
+	return `Another Claude Code SDK process is already running in ${cwd} (${pidLabel}). ` +
+		`Its in-memory Agent tasks will not appear in this session's TaskList/TaskGet/TaskOutput; ` +
+		`wait for it to finish or stop it before redoing work in this working tree.`;
 }
 
 /** A single selectable option within an SDK elicitation schema field. */
@@ -724,6 +818,35 @@ export function pushWorkflowMcpReadinessProgressEvent(input: {
 	const delta = block.text.length === 0 ? message : `\n${message}`;
 	block.text += delta;
 	stream.push({ type: "text_delta", contentIndex, delta, partial });
+}
+
+function emitConcurrentClaudeCodeProcessWarning(input: {
+	cwd: string;
+	stream: Pick<AssistantMessageEventStream, "push">;
+	partial: AssistantMessage;
+	uiContext: ExtensionUIContext | undefined;
+	findProcesses: (cwd: string) => ConcurrentClaudeCodeProcess[];
+}): void {
+	let resolvedCwd: string;
+	try {
+		resolvedCwd = realpathSync(input.cwd);
+	} catch {
+		resolvedCwd = input.cwd;
+	}
+	if (warnedConcurrentClaudeCodeCwds.has(resolvedCwd)) return;
+
+	const processes = input.findProcesses(input.cwd);
+	if (processes.length === 0) return;
+
+	warnedConcurrentClaudeCodeCwds.add(resolvedCwd);
+	const message = buildConcurrentClaudeCodeProcessWarning(resolvedCwd, processes);
+	pushWorkflowMcpReadinessProgressEvent({
+		stream: input.stream,
+		partial: input.partial,
+		state: {},
+		message,
+	});
+	input.uiContext?.notify(message, "warning");
 }
 
 export function isClaudeCodeAbortErrorMessage(message: string | undefined | null): boolean {
@@ -2453,6 +2576,18 @@ async function pumpSdkMessages(
 			timestamp: Date.now(),
 		};
 		stream.push({ type: "start", partial: initialPartial });
+		const findConcurrentClaudeCodeProcessesForCwd =
+			claudeOptions?._findConcurrentClaudeCodeProcessesForTest
+			?? (sdkQueryForTest ? undefined : findConcurrentClaudeCodeProcesses);
+		if (findConcurrentClaudeCodeProcessesForCwd) {
+			emitConcurrentClaudeCodeProcessWarning({
+				cwd,
+				stream,
+				partial: initialPartial,
+				uiContext,
+				findProcesses: findConcurrentClaudeCodeProcessesForCwd,
+			});
+		}
 		const readinessProgressState: WorkflowMcpReadinessProgressState = {};
 
 		const trackWorkflowMcpSdk = Boolean(workflowMcpServerName && gsdPhase);

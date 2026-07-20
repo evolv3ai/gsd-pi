@@ -2,6 +2,8 @@
 
 All commands can be run via `gsd headless [command]`.
 
+Session startup flags such as `--model ID` and `--thinking LEVEL` can be supplied for headless runs. `--thinking` accepts `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, or `max`.
+
 ## Workflow Commands
 
 | Command | Description |

@@ -55,14 +55,7 @@ import { createWorkspace, scopeMilestone } from "../workspace.js";
 import { supportsStructuredQuestions } from "../workflow-mcp.js";
 import { getRegisteredToolSnapshot, getToolBaselineSnapshot } from "../auto-model-selection.js";
 import { deriveState } from "../state.js";
-import { parseUnitId } from "../unit-id.js";
 import { isClosedStatus } from "../status-guards.js";
-import {
-  isDbAvailable,
-  getSlice,
-  getTask,
-} from "../gsd-db.js";
-import { refreshWorkflowDatabaseFromDisk } from "../db-workspace.js";
 import { getErrorMessage } from "../error-utils.js";
 import { logWarning } from "../workflow-logger.js";
 import { normalizeRealPath } from "../paths.js";
@@ -76,6 +69,10 @@ import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { evaluateAllCompleteSettlement } from "../milestone-settlement.js";
 import { hasHeldMilestoneLease, reclaimMissingMilestoneLease } from "./milestone-lease-reclaim.js";
+import {
+  getAlreadyClosedDispatchReason as getDispatchAlreadyClosedReason,
+  shouldBypassAlreadyClosedForVerificationRetry,
+} from "./dispatch.js";
 
 type UokFlags = ReturnType<typeof resolveUokFlags>;
 
@@ -145,25 +142,6 @@ export interface DispatchDecisionInput {
   sessionProvider?: string;
   /** Model registry for executor-model lookups inside the budget engine. */
   modelRegistry?: MinimalModelRegistry;
-}
-
-function getAlreadyClosedDispatchReason(unitType: string, unitId: string): string | null {
-  if (!isDbAvailable()) return null;
-  refreshWorkflowDatabaseFromDisk();
-  const { milestone, slice, task } = parseUnitId(unitId);
-  if (unitType === "execute-task" && milestone && slice && task) {
-    const row = getTask(milestone, slice, task);
-    return row && isClosedStatus(row.status)
-      ? `execute-task ${unitId} is already ${row.status}`
-      : null;
-  }
-  if (unitType === "complete-slice" && milestone && slice) {
-    const row = getSlice(milestone, slice);
-    return row && isClosedStatus(row.status)
-      ? `complete-slice ${unitId} is already ${row.status}`
-      : null;
-  }
-  return null;
 }
 
 function shouldAdoptActiveMilestone(
@@ -279,11 +257,18 @@ export async function decideOrchestratorDispatch(
     if (authorityBlocker) {
       return { kind: "blocked", reason: authorityBlocker, action: "stop" };
     }
-    const alreadyClosedReason = getAlreadyClosedDispatchReason(
+    const alreadyClosedReason = getDispatchAlreadyClosedReason(
       pendingRetry.unitType,
       pendingRetry.unitId,
     );
-    if (alreadyClosedReason) {
+    if (
+      alreadyClosedReason &&
+      !shouldBypassAlreadyClosedForVerificationRetry(
+        pendingRetry.unitType,
+        pendingRetry.unitId,
+        session.pendingVerificationRetry,
+      )
+    ) {
       session.pendingOrchestrationDispatch = null;
       session.pendingVerificationRetry = null;
       return { kind: "skipped", reason: alreadyClosedReason };
@@ -330,8 +315,15 @@ export async function decideOrchestratorDispatch(
       reason: action.matchedRule ?? "dispatch-skip",
     };
   }
-  const alreadyClosedReason = getAlreadyClosedDispatchReason(action.unitType, action.unitId);
-  if (alreadyClosedReason) {
+  const alreadyClosedReason = getDispatchAlreadyClosedReason(action.unitType, action.unitId);
+  if (
+    alreadyClosedReason &&
+    !shouldBypassAlreadyClosedForVerificationRetry(
+      action.unitType,
+      action.unitId,
+      session?.pendingVerificationRetry,
+    )
+  ) {
     if (session) {
       session.pendingOrchestrationDispatch = null;
       session.pendingVerificationRetry = null;

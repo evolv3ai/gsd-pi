@@ -215,6 +215,7 @@ interface SingleResult {
 	stderr: string;
 	usage: UsageStats;
 	model?: string;
+	thinking?: string;
 	stopReason?: string;
 	errorMessage?: string;
 	sessionFile?: string;
@@ -370,6 +371,7 @@ function resultToChildArtifact(result: SingleResult, index: number, cwd?: string
 		errorMessage: result.errorMessage,
 		stopReason: result.stopReason,
 		model: result.model,
+		...(result.thinking !== undefined ? { thinking: result.thinking } : {}),
 		usage: result.usage,
 		merge: result.mergeResult
 			? {
@@ -380,6 +382,23 @@ function resultToChildArtifact(result: SingleResult, index: number, cwd?: string
 				}
 			: undefined,
 	};
+}
+
+function markMissingFinalResponse(result: SingleResult): void {
+	if (result.exitCode !== 0) return;
+	if (getFinalOutput(result.messages).trim()) return;
+	result.exitCode = 1;
+	result.stopReason = "error";
+	result.errorMessage = "Subagent produced no valid final response.";
+	result.stderr = result.stderr || result.errorMessage;
+}
+
+function effectiveThinkingForAgent(
+	agents: AgentConfig[],
+	agentName: string,
+	thinkingOverride?: string,
+): string | undefined {
+	return thinkingOverride ?? agents.find((a) => a.name === agentName)?.thinking;
 }
 
 function formatAgentLabel(agent: string, trackingName?: string): string {
@@ -397,6 +416,7 @@ function formatRunRecord(record: ReturnType<SubagentRunStore["get"]>): string {
 	for (const child of record.children) {
 		const exit = child.exitCode === undefined ? "" : ` (exit ${child.exitCode})`;
 		lines.push(`- [${child.status}] ${formatAgentLabel(child.agent, child.trackingName)}${exit}: ${child.output || child.errorMessage || child.stderr || child.task}`);
+		if (child.thinking) lines.push(`  thinking: ${child.thinking}`);
 		if (child.sessionFile) lines.push(`  session: ${child.sessionFile}`);
 	}
 	if (record.failure) lines.push(`Failure: ${record.failure.message}`);
@@ -436,8 +456,10 @@ async function runSingleAgent(
 			stderr: `Unknown agent: "${agentName}". Available agents: ${available}.`,
 			usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, contextTokens: 0, turns: 0 },
 			step,
+			thinking: thinkingOverride,
 		};
 	}
+	const effectiveThinking = thinkingOverride ?? agent.thinking;
 
 	// GSD phase guard: block agents that conflict with the active GSD phase
 	if (agent.conflictsWith && agent.conflictsWith.length > 0) {
@@ -453,6 +475,7 @@ async function runSingleAgent(
 				stderr: `Agent "${agentName}" is blocked: it conflicts with the active GSD phase "${activePhase}". Use the built-in GSD workflow instead.`,
 				usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, contextTokens: 0, turns: 0 },
 				step,
+				thinking: effectiveThinking,
 			};
 		}
 	}
@@ -471,6 +494,7 @@ async function runSingleAgent(
 		stderr: "",
 		usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, contextTokens: 0, turns: 0 },
 		model: modelOverride ?? agent.model,
+		thinking: effectiveThinking,
 		step,
 	};
 
@@ -553,6 +577,7 @@ async function runSingleAgent(
 		currentResult.exitCode = exitCode;
 		currentResult.running = false;
 		if (wasAborted) throw new Error("Subagent was aborted");
+		markMissingFinalResponse(currentResult);
 		return currentResult;
 	} finally {
 		if (tmpPromptPath)
@@ -594,6 +619,7 @@ async function runSingleAgentInCmuxSplit(
 	if (!agent) {
 		return runSingleAgent(defaultCwd, agents, agentName, task, cwd, step, signal, onUpdate, makeDetails, modelOverride, contextMode, parentSessionManager, sessionOverride, trackingName, thinkingOverride);
 	}
+	const effectiveThinking = thinkingOverride ?? agent.thinking;
 
 	let tmpPromptDir: string | null = null;
 	let tmpPromptPath: string | null = null;
@@ -610,6 +636,7 @@ async function runSingleAgentInCmuxSplit(
 		stderr: "",
 		usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, contextTokens: 0, turns: 0 },
 		model: modelOverride ?? agent.model,
+		thinking: effectiveThinking,
 		step,
 	};
 
@@ -712,6 +739,7 @@ async function runSingleAgentInCmuxSplit(
 		}
 		currentResult.exitCode = Number.parseInt(fs.readFileSync(exitPath, "utf-8").trim() || "1", 10) || 0;
 		currentResult.running = false;
+		markMissingFinalResponse(currentResult);
 		return currentResult;
 	} finally {
 		if (tmpPromptPath)
@@ -1015,6 +1043,15 @@ export default function (pi: ExtensionAPI) {
 					trackingName: dispatchTrackingNames[index],
 					task: dispatchTasks[index] ?? "",
 					cwd: resolveSubagentWorktreeCwd(ctx.cwd, rawCwd),
+					thinking: effectiveThinkingForAgent(
+						agents,
+						agent,
+						hasChain
+							? chainParams[index]?.thinking ?? params.thinking
+							: hasTasks
+								? taskParams[index]?.thinking ?? params.thinking
+								: params.thinking,
+					),
 				};
 			});
 			try {
@@ -1122,6 +1159,7 @@ export default function (pi: ExtensionAPI) {
 					usage: zeroUsage(),
 					stopReason: signal?.aborted ? "aborted" : "error",
 					errorMessage: message,
+					thinking: dispatchIndex >= 0 ? dispatchChildren[dispatchIndex]?.thinking : undefined,
 					...(step !== undefined ? { step } : {}),
 				};
 			};
@@ -1341,7 +1379,7 @@ export default function (pi: ExtensionAPI) {
 						ctx.sessionManager,
 						undefined,
 						dispatchTrackingNames[i],
-						step.thinking || params.thinking,
+						step.thinking ?? params.thinking,
 					);
 					results.push(result);
 					persistRunResults(results);
@@ -1422,7 +1460,7 @@ export default function (pi: ExtensionAPI) {
 				const results = await mapWithConcurrencyLimit(taskParams, MAX_CONCURRENCY, async (t, index) => {
 					const workerId = registerWorker(t.agent, t.task, index, batchSize, batchId);
 					const taskModel = t.model || params.model;
-						const taskThinking = t.thinking || params.thinking;
+					const taskThinking = t.thinking ?? params.thinking;
 					const updateParallelResult = (partial: AgentToolResult<SubagentDetails>) => {
 						if (partial.details?.results[0]) {
 							allResults[index] = partial.details.results[0];

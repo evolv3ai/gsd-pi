@@ -17,6 +17,9 @@ gsd headless [flags] [command] [args...]
 - `--timeout N` — overall timeout in ms (default 300000)
 - `--json` — JSONL event stream to stdout
 - `--model ID` — override LLM model
+- `--thinking LEVEL` — override thinking level (`off`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`)
+- `--resume <id>` — resume a prior headless session by ID
+- `--bare` — start with minimal context for CI/ecosystem use
 - `--verbose` — show tool calls in progress output
 - `--supervised` — forward interactive UI requests to orchestrator via stdout/stdin
 - `--response-timeout N` — timeout for orchestrator response in supervised mode (default 30000)

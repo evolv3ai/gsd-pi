@@ -64,6 +64,7 @@ export function validateConfig(raw: unknown): DaemonConfig {
       ...(typeof c['runtime_id'] === 'string' ? { runtime_id: c['runtime_id'] } : {}),
       ...(typeof c['runtime_name'] === 'string' ? { runtime_name: c['runtime_name'] } : {}),
       ...(typeof c['enabled'] === 'boolean' ? { enabled: c['enabled'] } : {}),
+      ...(typeof c['session_events'] === 'boolean' ? { session_events: c['session_events'] } : {}),
     };
   }
 
@@ -126,12 +127,33 @@ export function validateConfig(raw: unknown): DaemonConfig {
     }
   }
 
+  // --- env override: GSD_CLOUD_SESSION_EVENTS (default on; 0/false disables) ---
+  const envSessionEvents = process.env['GSD_CLOUD_SESSION_EVENTS'];
+  if (envSessionEvents !== undefined && cloud) {
+    const normalized = envSessionEvents.trim().toLowerCase();
+    cloud = { ...cloud, session_events: normalized !== '0' && normalized !== 'false' };
+  }
+
   return {
     cloud,
     discord,
     projects: { scan_roots: scanRoots },
     log: { file: logFile, level: logLevel, max_size_mb: maxSizeMb },
   };
+}
+
+/**
+ * Read project scan_roots from a config file.
+ * Missing file or malformed YAML yields an empty list (does not throw).
+ */
+export function loadScanRoots(configPath: string): string[] {
+  if (!existsSync(configPath)) return [];
+  try {
+    const parsed = parseYaml(readFileSync(configPath, 'utf-8'));
+    return validateConfig(parsed).projects.scan_roots;
+  } catch {
+    return [];
+  }
 }
 
 /**

@@ -302,8 +302,9 @@ test("gsd with unknown subcommand and no TTY exits 1 without hanging", async () 
 // ---------------------------------------------------------------------------
 
 test("gsd with unknown flags does not crash", async () => {
-  // Unknown flags are silently ignored by the arg parser.
-  // With --help appended, we get a clean exit path to test.
+  // Unknown flags now error, but --help is a meta-request that always wins:
+  // `gsd --some-unknown-flag --help` resolves to help with a clean exit 0
+  // rather than crashing.
   const result = await runGsd(["--some-unknown-flag", "--help"]);
 
   assert.ok(!result.timedOut, "process should not time out");

@@ -181,6 +181,7 @@ export const PLANNING_ARTIFACT_SUFFIXES: readonly string[] = [
   "REPLAN",
   "SUMMARY",
   "RESEARCH",
+  "UI-SPEC",
   "VALIDATION",
   "ASSESSMENT",
   "UAT",
@@ -735,7 +736,7 @@ function slugLooksLikeTeamSuffixProjection(slugPart: string): boolean {
   return /^[a-z0-9]{6}(-|$)/.test(slugPart);
 }
 
-function phaseDirMatchesMilestoneId(
+export function phaseDirMatchesMilestoneId(
   dirName: string,
   milestoneId: string,
   phaseNum: number,

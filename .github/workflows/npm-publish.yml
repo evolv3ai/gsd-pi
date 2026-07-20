@@ -299,6 +299,7 @@ jobs:
           name: prod-release-metadata
           path: release-metadata/
           if-no-files-found: error
+          retention-days: 7
 
   prod-native-build:
     name: Build native ${{ matrix.platform }}
@@ -382,6 +383,7 @@ jobs:
           name: native-${{ matrix.platform }}
           path: artifacts/gsd_engine.node
           if-no-files-found: error
+          retention-days: 7
 
   prod-release:
     name: Production Release

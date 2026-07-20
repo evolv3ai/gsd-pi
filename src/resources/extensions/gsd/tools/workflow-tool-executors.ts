@@ -113,6 +113,7 @@ export type {
 export const SUPPORTED_SUMMARY_ARTIFACT_TYPES = [
   "SUMMARY",
   "RESEARCH",
+  "UI-SPEC",
   "CONTEXT",
   "ASSESSMENT",
   "CONTEXT-DRAFT",

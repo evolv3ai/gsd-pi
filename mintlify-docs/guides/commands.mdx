@@ -139,7 +139,10 @@ In terminals without Kitty keyboard protocol support (macOS Terminal.app, JetBra
 |------|-------------|
 | `gsd` | Start a new interactive session |
 | `gsd --continue` (`-c`) | Resume the most recent session |
+| `gsd --session <path\|id>` | Resume a specific session file or session ID |
+| `gsd --session-dir <dir>` | Store and look up sessions in a custom directory |
 | `gsd --model <id>` | Override the default model |
+| `gsd --thinking <level>` | Override thinking level (`off`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`) |
 | `gsd --print "msg"` (`-p`) | Single-shot prompt mode (no TUI) |
 | `gsd --mode <text\|json\|rpc\|mcp>` | Output mode for non-interactive use |
 | `gsd --list-models [search]` | List available models and exit |
@@ -161,6 +164,7 @@ gsd headless              # run auto mode
 gsd headless next         # run a single unit
 gsd headless query        # instant JSON snapshot (~50ms, no LLM)
 gsd headless --timeout 600000 auto   # with timeout
+gsd auto --thinking medium           # auto shorthand with thinking override
 gsd headless new-milestone --context brief.md --auto
 ```
 
@@ -170,6 +174,7 @@ gsd headless new-milestone --context brief.md --auto
 | `--max-restarts N` | Auto-restart on crash (default: 3, set 0 to disable) |
 | `--json` | Stream events as JSONL to stdout |
 | `--model ID` | Override the model |
+| `--thinking LEVEL` | Override thinking level (`off`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`) |
 | `--context <file>` | Context file for `new-milestone` (use `-` for stdin) |
 | `--auto` | Chain into auto-mode after milestone creation |
 

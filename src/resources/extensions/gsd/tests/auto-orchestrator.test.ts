@@ -1668,6 +1668,67 @@ test("decideOrchestratorDispatch clears verification retry state when skipping a
   }
 });
 
+test("decideOrchestratorDispatch re-dispatches a closed execute-task for git-commit remediation instead of skipping", async () => {
+  // Regression for #1491 / bugbot 3609601306: after task verification the task
+  // is already `complete` in the DB, but its post-task commit was rejected by a
+  // pre-commit hook. The remediation retry carries a `git-commit:` signature, so
+  // the already-closed dispatch guard must honor it (re-deliver the hook rejection
+  // to the agent) rather than clearing the retry and stranding the uncommitted work.
+  const stateSnapshot = makeState();
+  const base = mkdtempSync(join(tmpdir(), "gsd-orchestrator-closed-remediation-"));
+
+  try {
+    mkdirSync(join(base, ".gsd"), { recursive: true });
+    openDatabase(join(base, ".gsd", "gsd.db"));
+    insertMilestone({ id: "M001", title: "Milestone", status: "active" });
+    insertSlice({ milestoneId: "M001", id: "S01", title: "Slice", status: "active" });
+    insertTask({ milestoneId: "M001", sliceId: "S01", id: "T01", title: "Task", status: "complete" });
+
+    const ctx = { model: {}, modelRegistry: { getAll: () => [], getAvailable: () => [] } } as never;
+    const pi = { getActiveTools: () => [] } as never;
+    const session = {
+      basePath: base,
+      pendingOrchestrationDispatch: null,
+      pendingVerificationRetryDispatch: {
+        unitType: "execute-task",
+        unitId: "M001/S01/T01",
+        prompt: "retry commit remediation",
+        pauseAfterUatDispatch: false,
+        state: stateSnapshot,
+        mid: "M001",
+        midTitle: "Milestone",
+      },
+      pendingVerificationRetry: {
+        unitId: "M001/S01/T01",
+        failureContext: "Git commit failed after task verification. blocked by test hook",
+        signature: "git-commit:1:blocked by test hook",
+        attempt: 1,
+      },
+    } as never;
+
+    const result = await decideOrchestratorDispatch(ctx, pi, base, session, { stateSnapshot });
+
+    assert.ok(result);
+    if (!result || !("unitType" in result)) assert.fail("expected dispatch decision, not skip");
+    assert.equal(result.unitType, "execute-task");
+    assert.equal(result.unitId, "M001/S01/T01");
+    assert.equal(result.reason, "verification-retry");
+    const sess = session as {
+      pendingVerificationRetry: { unitId?: string } | null;
+      pendingVerificationRetryDispatch: unknown;
+      pendingOrchestrationDispatch: { prompt?: string } | null;
+    };
+    // The retry must survive the already-closed guard (not be cleared) so the
+    // hook rejection is re-delivered to the agent on the next unit run.
+    assert.equal(sess.pendingVerificationRetry?.unitId, "M001/S01/T01");
+    assert.equal(sess.pendingVerificationRetryDispatch, null);
+    assert.equal(sess.pendingOrchestrationDispatch?.prompt, "retry commit remediation");
+  } finally {
+    closeDatabase();
+    rmSync(base, { recursive: true, force: true });
+  }
+});
+
 test("decideOrchestratorDispatch preserves stop reason as a blocked decision", async (t) => {
   openDispatchDecisionDatabase(t);
   const stateSnapshot = makeState();

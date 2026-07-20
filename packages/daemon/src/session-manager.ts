@@ -34,6 +34,11 @@ const FIRE_AND_FORGET_METHODS = new Set([
   'notify', 'setStatus', 'setWidget', 'setTitle', 'set_editor_text',
 ]);
 
+const PAUSED_PREFIXES = [
+  'auto-mode paused',
+  'step-mode paused',
+];
+
 const TERMINAL_PREFIXES = [
   'auto-mode stopped',
   'step-mode stopped',
@@ -45,7 +50,32 @@ const TERMINAL_PREFIXES = [
 function isTerminalNotification(event: Record<string, unknown>): boolean {
   if (event.type !== 'extension_ui_request' || event.method !== 'notify') return false;
   const message = String(event.message ?? '').toLowerCase();
-  return TERMINAL_PREFIXES.some((prefix) => message.startsWith(prefix));
+  if (TERMINAL_PREFIXES.some((prefix) => message.startsWith(prefix))) return true;
+  return PAUSED_PREFIXES.some((prefix) => message.startsWith(prefix)) && isNonBlockingPauseNotice(message);
+}
+
+function isNonBlockingPauseNotice(message: string): boolean {
+  return message.includes('idempotent advance: unit already active');
+}
+
+function isOrchestratorPausedEvent(event: Record<string, unknown>): boolean {
+  const data = event.data as Record<string, unknown> | undefined;
+  const eventType = String(event.eventType ?? '');
+  const name = String(data?.name ?? '');
+  const reason = String(data?.reason ?? '').toLowerCase();
+  return (
+    eventType === 'orchestrator-guard-block' && name === 'advance-paused'
+  ) || (
+    eventType === 'orchestrator-terminal' && name === 'stop' && reason === 'pause'
+  );
+}
+
+function isPausedEvent(event: Record<string, unknown>): boolean {
+  if (isOrchestratorPausedEvent(event)) return true;
+  if (event.type !== 'extension_ui_request' || event.method !== 'notify') return false;
+  const message = String(event.message ?? '').toLowerCase();
+  if (isNonBlockingPauseNotice(message)) return false;
+  return PAUSED_PREFIXES.some((prefix) => message.startsWith(prefix));
 }
 
 function isBlockedNotification(event: Record<string, unknown>): boolean {
@@ -64,11 +94,11 @@ function isBlockingUIRequest(event: Record<string, unknown>): boolean {
 // SessionManager
 // ---------------------------------------------------------------------------
 
-/** Terminal lifecycle states — work is finished, process may be reclaimed. */
-const TERMINAL_STATUSES: ReadonlySet<string> = new Set(['completed', 'error', 'cancelled']);
+/** Terminal lifecycle states — work is finished or paused, process may be reclaimed. */
+const TERMINAL_STATUSES: ReadonlySet<string> = new Set(['paused', 'completed', 'error', 'cancelled']);
 
 /**
- * How many terminal (completed/cancelled/errored) sessions to retain for
+ * How many terminal (paused/completed/cancelled/errored) sessions to retain for
  * inspection before evicting the oldest. Bounds heap growth on a daemon that
  * services many distinct project dirs over its lifetime — without this, every
  * session ever run stays resident forever (events buffer + RpcClient ref).
@@ -105,7 +135,7 @@ export class SessionManager extends EventEmitter {
 
     const existing = this.sessions.get(resolvedDir);
     if (existing) {
-      // A terminal session (completed/cancelled/error) is retained only for
+      // A terminal session (paused/completed/cancelled/error) is retained only for
       // inspection — it must not block a fresh start for the same dir. Evict it
       // and reclaim its process before starting anew.
       if (TERMINAL_STATUSES.has(existing.status)) {
@@ -310,7 +340,15 @@ export class SessionManager extends EventEmitter {
 
     for (const session of this.sessions.values()) {
       session.unsubscribe?.();
-      if (session.status === 'running' || session.status === 'starting' || session.status === 'blocked') {
+      // A paused session still owns a live headless child process (its RpcClient
+      // is retained for "type to interact"). On daemon shutdown that process must
+      // be reclaimed too, otherwise pausing then stopping the daemon leaks it.
+      if (
+        session.status === 'running' ||
+        session.status === 'starting' ||
+        session.status === 'blocked' ||
+        session.status === 'paused'
+      ) {
         stopPromises.push(
           session.client.stop().catch(() => { /* swallow */ })
         );
@@ -357,6 +395,20 @@ export class SessionManager extends EventEmitter {
     if (session) {
       session.unsubscribe?.();
       session.unsubscribe = undefined;
+      // A paused session deliberately keeps its EventBridge state alive (channel
+      // mapping, batcher, blocker collectors) so "type to interact" keeps working.
+      // Evicting it silently would strand that state on the old sessionId while a
+      // fresh start claims a new channel, so emit the teardown event here. The
+      // other terminal states already tore their bridge state down on
+      // completed/cancelled/error, so only 'paused' needs it (and the bridge's
+      // cleanup is idempotent regardless).
+      if (session.status === 'paused') {
+        this.emit('session:cancelled', {
+          sessionId: session.sessionId,
+          projectDir: session.projectDir,
+          projectName: session.projectName,
+        });
+      }
       // The agent child process may still be alive (e.g. a completed session
       // kept for follow-up relay) — reclaim it on eviction.
       void session.client.stop().catch(() => { /* swallow */ });
@@ -410,6 +462,24 @@ export class SessionManager extends EventEmitter {
         session.cost.tokens.cacheRead = Math.max(session.cost.tokens.cacheRead, costEvent.tokens.cacheRead ?? 0);
         session.cost.tokens.cacheWrite = Math.max(session.cost.tokens.cacheWrite, costEvent.tokens.cacheWrite ?? 0);
       }
+    }
+
+    // Paused detection — pauseAuto() is resumable and must not leave the
+    // session looking active, or duplicate-start prevention will deadlock.
+    // Keep the RpcClient event subscription: a paused session stays interactive
+    // ("type to interact"), so resumed agent output and later terminal/blocked
+    // notifications must still reach handleEvent to relay and update status.
+    // The subscription is torn down on cleanup/eviction/cancel instead.
+    if (isPausedEvent(event as Record<string, unknown>)) {
+      session.status = 'paused';
+      session.pendingBlocker = null;
+      this.logger.info('session paused', { sessionId: session.sessionId, projectDir: session.projectDir });
+      this.emit('session:paused', {
+        sessionId: session.sessionId,
+        projectDir: session.projectDir,
+        projectName: session.projectName,
+      });
+      return;
     }
 
     // Terminal detection — auto-mode/step-mode stopped
@@ -483,3 +553,4 @@ function extractBlocker(event: SdkAgentEvent): PendingBlocker {
     event: uiEvent,
   };
 }
+

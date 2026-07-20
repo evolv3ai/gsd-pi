@@ -30,6 +30,7 @@ import {
   rememberRetryDispatch,
   applyVerificationRetryPolicy,
 } from "./phase-helpers.js";
+import type { PendingVerificationRetry } from "./session.js";
 import type { IterationContext, IterationData, LoopState, PhaseResult, PreDispatchData } from "./types.js";
 
 export function getAlreadyClosedDispatchReason(unitType: string, unitId: string): string | null {
@@ -49,6 +50,18 @@ export function getAlreadyClosedDispatchReason(unitType: string, unitId: string)
       : null;
   }
   return null;
+}
+
+export function shouldBypassAlreadyClosedForVerificationRetry(
+  unitType: string,
+  unitId: string,
+  retryInfo: PendingVerificationRetry | null | undefined,
+): boolean {
+  return (
+    unitType === "execute-task" &&
+    retryInfo?.unitId === unitId &&
+    retryInfo.signature?.startsWith("git-commit:") === true
+  );
 }
 
 function isUnhandledPhaseWarning(dispatchResult: DispatchAction): dispatchResult is Extract<DispatchAction, { action: "stop" }> {
@@ -191,7 +204,10 @@ export async function runDispatch(
   }
 
   const alreadyClosedReason = getAlreadyClosedDispatchReason(unitType, unitId);
-  if (alreadyClosedReason) {
+  if (
+    alreadyClosedReason &&
+    !shouldBypassAlreadyClosedForVerificationRetry(unitType, unitId, s.pendingVerificationRetry)
+  ) {
     s.pendingVerificationRetry = null;
     loopState.recentUnits = [];
     loopState.stuckRecoveryAttempts = Math.max(loopState.stuckRecoveryAttempts, 1);

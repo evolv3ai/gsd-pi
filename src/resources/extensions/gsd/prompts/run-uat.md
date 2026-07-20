@@ -57,7 +57,7 @@ The **Tool Surface** block prepended above lists unavailable tools for this unit
 
 For each check, record:
 - The check description (from the UAT file)
-- The evidence mode used: `artifact`, `runtime`, or `human-follow-up`
+- The evidence mode used: `artifact`, `runtime`, `browser`, or `human-follow-up`
 - The command or action taken, including the `gsd_uat_exec` evidence ID for automated checks
 - The actual result observed
 - `PASS`, `FAIL`, or `NEEDS-HUMAN`
@@ -93,10 +93,21 @@ checks: [{
   description: "<check description from the UAT file>",
   mode: "artifact" | "runtime" | "browser" | "human-follow-up",
   result: "PASS" | "FAIL" | "NEEDS-HUMAN",
-  evidence: [{ kind: "gsd_uat_exec", ref: "<evidence id>" }],
+  evidence: [{ kind: "<evidence kind>", ref: "<kind-specific ref>" }],
   notes: "<observed output, evidence, reason, or manual follow-up>",
 }]
 ```
+
+Accepted `evidence.kind` values and `ref` rules:
+
+- `gsd_uat_exec` - `ref` is the `gsd_uat_exec` evidence ID, or a `.meta.json` path under `.gsd/exec/`. The metadata file must exist and be typed as `uat_exec`.
+- `gsd_exec` - `ref` is a `gsd_exec` evidence ID, or a `.meta.json` path under `.gsd/exec/`. The metadata file must exist.
+- `screenshot` - `ref` is a path under `.artifacts/browser/`, `.gsd/exec/`, or `.gsd/uat/`.
+- `log` - `ref` is a path under `.gsd/exec/`, `.gsd/uat/`, or `.artifacts/browser/`.
+- `url` - `ref` is an `http://` or `https://` URL.
+- `browser` - `ref` is either an `http://` or `https://` URL for navigation-backed checks, or a path under `.artifacts/browser/` for screenshot/artifact-backed browser checks.
+
+Do not invent evidence kinds such as `artifact`, `file`, or `executionId`. `artifact`, `runtime`, `browser`, and `human-follow-up` are check `mode` values, not evidence `kind` values.
 
 ---
 

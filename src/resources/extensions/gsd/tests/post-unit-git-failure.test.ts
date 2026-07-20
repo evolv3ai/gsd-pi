@@ -9,11 +9,18 @@ const source = readFileSync(
   "utf-8",
 );
 
-test("postUnitPreVerification blocks on git action failure", () => {
+test("postUnitPreVerification blocks on non-transient git action failure", () => {
   const failureBlock = extractSourceRegion(source, 'if (gitResult.status === "failed")');
-  assert.ok(failureBlock.includes('ctx.ui.notify(failureMsg, opts?.softFailure ? "warning" : "error")'));
+  // Deterministic / unknown git failures still pause auto-mode instead of silently continuing.
+  assert.ok(failureBlock.includes('ctx.ui.notify(failureMsg, "error")'));
   assert.ok(failureBlock.includes("await pauseAuto(ctx, pi)"));
   assert.ok(failureBlock.includes('return "dispatched"'));
+  // Only transient failures are allowed to warn-and-continue under softFailure.
+  assert.ok(failureBlock.includes('if (opts?.softFailure && gitResult.failureClass === "transient")'));
+  assert.ok(failureBlock.includes('return "continue"'));
+  // Deterministic pre-commit hook rejections on execute-task commits route into bounded remediation retries.
+  assert.ok(failureBlock.includes('gitResult.failureClass === "hook-content"'));
+  assert.ok(failureBlock.includes('return "retry"'));
   assert.ok(!failureBlock.includes("git-action-failed-nonblocking"));
 });
 

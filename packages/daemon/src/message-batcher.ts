@@ -89,7 +89,7 @@ export class MessageBatcher {
   start(): void {
     if (this.timer) return; // already running
     this.timer = setInterval(() => {
-      void this.flush();
+      void this.flushBuffer();
     }, this.flushIntervalMs);
     // Don't hold the process open for the timer
     if (this.timer && typeof this.timer === 'object' && 'unref' in this.timer) {
@@ -112,7 +112,7 @@ export class MessageBatcher {
     if (this.destroyed) return;
     this.destroyed = true;
     this.stop();
-    await this.flush();
+    await this.flushBuffer();
     this.logger.debug('Batcher destroyed');
   }
 
@@ -133,7 +133,7 @@ export class MessageBatcher {
     }
     this.buffer.push(formatted);
     if (this.buffer.length >= this.maxBatchSize) {
-      void this.flush();
+      void this.flushBuffer();
     }
   }
 
@@ -144,7 +144,7 @@ export class MessageBatcher {
   async enqueueImmediate(formatted: FormattedEvent): Promise<void> {
     if (this.destroyed) return;
     // Flush pending buffer first so ordering is preserved
-    await this.flush();
+    await this.flushBuffer();
     // Send the priority event immediately, alone
     await this.doSend([formatted]);
   }
@@ -152,6 +152,15 @@ export class MessageBatcher {
   /** Current number of events in the buffer (for testing/diagnostics). */
   get pending(): number {
     return this.buffer.length;
+  }
+
+  /**
+   * Flush the current buffer immediately without stopping the batcher.
+   * Use this to deliver queued output at a boundary (e.g. a session pausing)
+   * while keeping the batcher alive for continued streaming. No-op if empty.
+   */
+  async flush(): Promise<void> {
+    await this.flushBuffer();
   }
 
   // -----------------------------------------------------------------------
@@ -163,7 +172,7 @@ export class MessageBatcher {
    * Multiple embeds are combined into one send() call (Discord supports up to 10).
    * No-op if buffer is empty.
    */
-  private async flush(): Promise<void> {
+  private async flushBuffer(): Promise<void> {
     if (this.buffer.length === 0) return;
     if (this.flushing) return; // prevent re-entrant flush
 

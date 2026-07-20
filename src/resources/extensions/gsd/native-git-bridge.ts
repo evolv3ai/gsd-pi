@@ -998,15 +998,18 @@ export function nativeCommit(
     });
     return result;
   } catch (err: unknown) {
-    const errObj = err as { stdout?: string; stderr?: string; message?: string };
+    const errObj = err as { stdout?: string; stderr?: string; message?: string; status?: number; signal?: NodeJS.Signals };
     const combined = [errObj.stdout, errObj.stderr, errObj.message].filter(Boolean).join(" ");
     if (combined.includes("nothing to commit") || combined.includes("nothing added to commit") || combined.includes("no changes added")) {
       return null;
     }
     const commitDetail = errObj.stderr?.trim() || errObj.message || "git commit failed";
     const wrapped = new Error(`git commit failed: ${commitDetail}`);
-    (wrapped as Error & { stdout?: string; stderr?: string }).stdout = errObj.stdout;
-    (wrapped as Error & { stdout?: string; stderr?: string }).stderr = errObj.stderr;
+    const typedWrapped = wrapped as Error & { stdout?: string; stderr?: string; status?: number; signal?: NodeJS.Signals };
+    typedWrapped.stdout = errObj.stdout;
+    typedWrapped.stderr = errObj.stderr;
+    typedWrapped.status = errObj.status;
+    typedWrapped.signal = errObj.signal;
     throw wrapped;
   }
 }

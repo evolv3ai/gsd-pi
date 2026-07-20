@@ -85,6 +85,7 @@ export class EventBridge {
     started: (...args: unknown[]) => void;
     event: (...args: unknown[]) => void;
     blocked: (...args: unknown[]) => void;
+    paused: (...args: unknown[]) => void;
     completed: (...args: unknown[]) => void;
     cancelled: (...args: unknown[]) => void;
     error: (...args: unknown[]) => void;
@@ -118,6 +119,9 @@ export class EventBridge {
       blocked: (data: unknown) => {
         void this.onSessionBlocked(data as SessionBlockedPayload);
       },
+      paused: (data: unknown) => {
+        void this.onSessionPaused(data as SessionPausedPayload);
+      },
       completed: (data: unknown) => {
         void this.onSessionCompleted(data as SessionCompletedPayload);
       },
@@ -135,6 +139,7 @@ export class EventBridge {
     this.sessionManager.on('session:started', this.boundHandlers.started);
     this.sessionManager.on('session:event', this.boundHandlers.event);
     this.sessionManager.on('session:blocked', this.boundHandlers.blocked);
+    this.sessionManager.on('session:paused', this.boundHandlers.paused);
     this.sessionManager.on('session:completed', this.boundHandlers.completed);
     this.sessionManager.on('session:cancelled', this.boundHandlers.cancelled);
     this.sessionManager.on('session:error', this.boundHandlers.error);
@@ -149,6 +154,7 @@ export class EventBridge {
       this.sessionManager.off('session:started', this.boundHandlers.started);
       this.sessionManager.off('session:event', this.boundHandlers.event);
       this.sessionManager.off('session:blocked', this.boundHandlers.blocked);
+      this.sessionManager.off('session:paused', this.boundHandlers.paused);
       this.sessionManager.off('session:completed', this.boundHandlers.completed);
       this.sessionManager.off('session:cancelled', this.boundHandlers.cancelled);
       this.sessionManager.off('session:error', this.boundHandlers.error);
@@ -281,6 +287,24 @@ export class EventBridge {
     await this.cleanupSession(sessionId);
 
     this.logger.info('bridge: session completed', { sessionId, projectName });
+  }
+
+  private async onSessionPaused(data: SessionPausedPayload): Promise<void> {
+    const { sessionId, projectName } = data;
+    // A paused auto-mode session stays interactive: the SessionManager keeps the
+    // session and its RpcClient so the user can "type to interact" (relayed via
+    // prompt() in handleMessageCreate). Tearing down the channel mapping or the
+    // batcher here would drop those messages and silence resumed output, so the
+    // bridge stays wired. We only release stale blocker collectors, since pause
+    // clears any pending blocker, and flush the pending batch so the pause
+    // notice is delivered promptly without destroying the batcher.
+    const collectorSet = this.collectors.get(sessionId);
+    if (collectorSet) {
+      for (const collector of collectorSet) collector.stop('session-paused');
+      this.collectors.delete(sessionId);
+    }
+    await this.batchers.get(sessionId)?.flush();
+    this.logger.info('bridge: session paused', { sessionId, projectName });
   }
 
   private async onSessionCancelled(data: SessionCancelledPayload): Promise<void> {
@@ -527,6 +551,12 @@ interface SessionBlockedPayload {
 }
 
 interface SessionCompletedPayload {
+  sessionId: string;
+  projectDir: string;
+  projectName: string;
+}
+
+interface SessionPausedPayload {
   sessionId: string;
   projectDir: string;
   projectName: string;

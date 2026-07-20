@@ -99,6 +99,12 @@ A unit failed to produce its expected artifact twice.
 
 **Fix:** Check the task plan for clarity. Refine it manually, then `/gsd auto`.
 
+### Auto mode retries or pauses after a commit hook rejects task changes
+
+After an `execute-task` unit passes verification, GSD commits the task when `uok.gitops.turn_action: commit` is active. If a pre-commit or other commit hook rejects the staged content, GSD classifies the failure as `hook-content`, injects the hook output into task remediation, and retries up to 2 times.
+
+**Fix:** Inspect `.gsd/git-action-failures.log`, fix the hook-reported lint/format/secret/policy failure or hook configuration, then resume with `/gsd auto`. If a parent workspace partially committed one repository before another repository's hook failed, reconcile the already-committed repository manually before resuming; GSD pauses that case instead of re-running the task.
+
 ### `command not found: gsd` after install
 
 npm's global bin directory isn't in `$PATH`.

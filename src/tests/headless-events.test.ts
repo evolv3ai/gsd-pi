@@ -230,6 +230,20 @@ test('isTerminalNotification: idempotent advance pause notifications are termina
   assert.equal(isTerminalNotification(makeNotify('Auto-mode paused: idempotent advance: unit already active')), true)
 })
 
+test('isTerminalNotification: structured orchestrator terminal pause events are terminal', () => {
+  assert.equal(isTerminalNotification({
+    eventType: 'orchestrator-terminal',
+    data: { source: 'auto-orchestrator', name: 'stop', reason: 'pause' },
+  }), true)
+})
+
+test('isTerminalNotification: structured orchestrator advance-paused events are terminal', () => {
+  assert.equal(isTerminalNotification({
+    eventType: 'orchestrator-guard-block',
+    data: { source: 'auto-orchestrator', name: 'advance-paused', reason: 'manual attention' },
+  }), true)
+})
+
 test('isTerminalNotification: manual merge-resolution notifications are terminal', () => {
   assert.equal(isTerminalNotification(makeNotify('Survivor-branch finalization for M001 failed: merge conflict. Resolve manually and re-run /gsd auto.')), true)
 })
@@ -255,6 +269,17 @@ test('isBlockedNotification: pause notifications require intervention in headles
 
 test('isBlockedNotification: idempotent advance pause notifications are not blocked', () => {
   assert.equal(isBlockedNotification(makeNotify('Auto-mode paused: idempotent advance: unit already active')), false)
+})
+
+test('isBlockedNotification: structured orchestrator pause events require intervention', () => {
+  assert.equal(isBlockedNotification({
+    eventType: 'orchestrator-terminal',
+    data: { source: 'auto-orchestrator', name: 'stop', reason: 'pause' },
+  }), true)
+  assert.equal(isBlockedNotification({
+    eventType: 'orchestrator-guard-block',
+    data: { source: 'auto-orchestrator', name: 'advance-paused', reason: 'manual attention' },
+  }), true)
 })
 
 test('isBlockedNotification: manual merge-resolution notifications require intervention', () => {

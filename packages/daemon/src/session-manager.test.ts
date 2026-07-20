@@ -108,12 +108,19 @@ class TestableSessionManager extends SessionManager {
     const resolvedDir = resolve(projectDir);
     const projectName = basename(resolvedDir);
 
-    // Check duplicate via getSessionByDir
+    // Mirror production duplicate handling: active sessions block, terminal
+    // sessions are evicted so a paused auto-mode run can be resumed.
     const existing = this.getSessionByDir(resolvedDir);
     if (existing) {
-      throw new Error(
-        `Session already active for ${resolvedDir} (sessionId: ${existing.sessionId}, status: ${existing.status})`
-      );
+      if (existing.status === 'paused' || existing.status === 'completed' || existing.status === 'error' || existing.status === 'cancelled') {
+        existing.unsubscribe?.();
+        await existing.client.stop().catch(() => { /* swallow */ });
+        (this as any).sessions.delete(resolvedDir);
+      } else {
+        throw new Error(
+          `Session already active for ${resolvedDir} (sessionId: ${existing.sessionId}, status: ${existing.status})`
+        );
+      }
     }
 
     const client = new MockRpcClient({ cwd: resolvedDir, args: [] });
@@ -539,6 +546,92 @@ describe('SessionManager', () => {
     assert.equal(session.status, 'completed');
   });
 
+  it('detects paused from auto-mode paused notification and permits restart', async () => {
+    const { manager, spy } = createManager();
+    const dir = '/tmp/paused-terminal-test';
+    let paused: Record<string, unknown> | undefined;
+    manager.on('session:paused', (data: Record<string, unknown>) => { paused = data; });
+
+    const sessionId = await manager.startSession({ projectDir: dir });
+    const session = manager.getSession(sessionId)!;
+    const firstClient = manager.lastClient!;
+
+    manager.lastClient!.emitEvent({
+      type: 'extension_ui_request',
+      id: 'p1',
+      method: 'notify',
+      message: 'Auto-mode paused (Escape). Type to interact, or /gsd auto to resume.',
+    });
+
+    assert.equal(session.status, 'paused');
+    assert.equal(session.pendingBlocker, null);
+    assert.equal(spy.findCalls('info', 'session paused').length, 1);
+    assert.ok(paused, 'pause notification should emit session:paused');
+    assert.equal(paused.sessionId, sessionId);
+    assert.equal(paused.projectName, 'paused-terminal-test');
+
+    const nextSessionId = await manager.startSession({ projectDir: dir });
+    assert.notEqual(nextSessionId, sessionId);
+    assert.ok(firstClient.stopped);
+    assert.equal(manager.getSession(nextSessionId)!.status, 'running');
+    assert.equal(manager.getSessionByDir(dir)!.sessionId, nextSessionId);
+  });
+
+  it('keeps the event subscription after pause so resumed output still transitions state', async () => {
+    const { manager } = createManager();
+    const dir = '/tmp/paused-resume-test';
+
+    const sessionId = await manager.startSession({ projectDir: dir });
+    const session = manager.getSession(sessionId)!;
+
+    manager.lastClient!.emitEvent({
+      type: 'extension_ui_request',
+      id: 'p1',
+      method: 'notify',
+      message: 'Auto-mode paused (Escape). Type to interact, or /gsd auto to resume.',
+    });
+    assert.equal(session.status, 'paused');
+
+    // A resumed session ("type to interact") keeps producing events. They must
+    // still reach handleEvent: a later terminal notification transitions the
+    // session to completed rather than being dropped with the subscription.
+    manager.lastClient!.emitEvent({
+      type: 'extension_ui_request',
+      id: 'n1',
+      method: 'notify',
+      message: 'Auto-mode stopped: completed all tasks',
+    });
+    assert.equal(session.status, 'completed');
+  });
+
+  it('detects paused from structured orchestrator terminal pause event', async () => {
+    const { manager } = createManager();
+    const dir = '/tmp/structured-paused-terminal-test';
+    let paused: Record<string, unknown> | undefined;
+    manager.on('session:paused', (data: Record<string, unknown>) => { paused = data; });
+
+    const sessionId = await manager.startSession({ projectDir: dir });
+    const session = manager.getSession(sessionId)!;
+
+    manager.lastClient!.emitEvent({
+      eventType: 'orchestrator-terminal',
+      data: {
+        source: 'auto-orchestrator',
+        name: 'stop',
+        reason: 'pause',
+      },
+    });
+
+    assert.equal(session.status, 'paused');
+    assert.equal(session.pendingBlocker, null);
+    assert.ok(paused, 'structured orchestrator pause should emit session:paused');
+    assert.equal(paused.sessionId, sessionId);
+
+    const nextSessionId = await manager.startSession({ projectDir: dir });
+    assert.notEqual(nextSessionId, sessionId);
+    assert.equal(manager.getSessionByDir(dir)!.sessionId, nextSessionId);
+  });
+
   // ---- getAllSessions returns all tracked sessions ----
 
   it('getAllSessions returns all tracked sessions', async () => {
@@ -886,6 +979,108 @@ describe('SessionManager', () => {
     assert.equal(cancelled.sessionId, sessionId);
     assert.ok(String(cancelled.projectDir).endsWith('cancel-emit'));
     assert.equal(cancelled.projectName, 'cancel-emit');
+  });
+
+  // ---- Evicting a paused session emits session:cancelled (bridge teardown) ----
+
+  it('evicting a paused session emits session:cancelled so the bridge tears down', async () => {
+    const { manager } = createManager();
+
+    let cancelled: Record<string, unknown> | undefined;
+    manager.on('session:cancelled', (data: Record<string, unknown>) => { cancelled = data; });
+
+    const sessionId = await manager.startSession({ projectDir: '/tmp/evict-paused' });
+    const resolvedDir = resolve('/tmp/evict-paused');
+
+    // Drive the session into 'paused'. A paused session deliberately keeps its
+    // EventBridge state (channel mapping, batcher, collectors) alive for
+    // "type to interact", so it is the only terminal state that still needs
+    // bridge teardown when evicted.
+    manager.lastClient!.emitEvent({
+      type: 'extension_ui_request',
+      method: 'notify',
+      message: 'Auto-mode paused (Escape). Type to interact, or /gsd auto to resume.',
+    });
+    assert.equal(manager.getSessionByDir(resolvedDir)!.status, 'paused');
+
+    // Evicting the paused session (e.g. a fresh startSession for the same dir)
+    // must notify the EventBridge so its stale state on the old sessionId is
+    // torn down instead of stranded.
+    (manager as unknown as { evictSession(dir: string): void }).evictSession(resolvedDir);
+
+    assert.ok(cancelled, 'evicting a paused session should emit session:cancelled');
+    assert.equal(cancelled.sessionId, sessionId);
+    assert.ok(String(cancelled.projectDir).endsWith('evict-paused'));
+    assert.equal(cancelled.projectName, 'evict-paused');
+    // Session is removed from tracking and its child process reclaimed.
+    assert.equal(manager.getSessionByDir(resolvedDir), undefined);
+    assert.ok(manager.lastClient!.stopped);
+  });
+
+  // ---- Evicting a non-paused terminal session does not re-emit teardown ----
+
+  it('evicting non-paused terminal sessions does not re-emit session:cancelled', async () => {
+    {
+      const { manager } = createManager();
+
+      await manager.startSession({ projectDir: '/tmp/evict-completed' });
+      const resolvedDir = resolve('/tmp/evict-completed');
+
+      manager.lastClient!.emitEvent({
+        type: 'extension_ui_request',
+        id: 'n1',
+        method: 'notify',
+        message: 'Auto-mode stopped: completed all tasks',
+      });
+      assert.equal(manager.getSessionByDir(resolvedDir)!.status, 'completed');
+
+      let cancelledCount = 0;
+      manager.on('session:cancelled', () => { cancelledCount++; });
+
+      (manager as unknown as { evictSession(dir: string): void }).evictSession(resolvedDir);
+
+      assert.equal(cancelledCount, 0, 'completed sessions already tore down their bridge state on completion');
+      assert.equal(manager.getSessionByDir(resolvedDir), undefined);
+    }
+
+    {
+      const { manager } = createManager();
+      const resolvedDir = resolve('/tmp/evict-error');
+
+      manager.nextInitError = new Error('Connection refused');
+      await assert.rejects(
+        () => manager.startSession({ projectDir: '/tmp/evict-error' }),
+        /Failed to start session/
+      );
+      assert.equal(manager.getSessionByDir(resolvedDir)!.status, 'error');
+
+      let cancelledCount = 0;
+      manager.on('session:cancelled', () => { cancelledCount++; });
+
+      (manager as unknown as { evictSession(dir: string): void }).evictSession(resolvedDir);
+
+      assert.equal(cancelledCount, 0, 'error sessions already tore down their bridge state on error');
+      assert.equal(manager.getSessionByDir(resolvedDir), undefined);
+    }
+
+    {
+      const { manager } = createManager();
+
+      const sessionId = await manager.startSession({ projectDir: '/tmp/evict-cancelled' });
+      const resolvedDir = resolve('/tmp/evict-cancelled');
+
+      let cancelledCount = 0;
+      manager.on('session:cancelled', () => { cancelledCount++; });
+
+      await manager.cancelSession(sessionId);
+      assert.equal(manager.getSessionByDir(resolvedDir)!.status, 'cancelled');
+      assert.equal(cancelledCount, 1, 'cancelSession should emit exactly once');
+
+      (manager as unknown as { evictSession(dir: string): void }).evictSession(resolvedDir);
+
+      assert.equal(cancelledCount, 1, 'evicting a cancelled session should not emit a duplicate cancellation');
+      assert.equal(manager.getSessionByDir(resolvedDir), undefined);
+    }
   });
 
   // ---- cleanup empties the sessions map (no retained references) ----

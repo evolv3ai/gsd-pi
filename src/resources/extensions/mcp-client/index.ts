@@ -55,6 +55,11 @@ const connections = new Map<string, ManagedConnection>();
 const pendingConnections = new Map<string, Promise<Client>>();
 const toolCache = new Map<string, McpToolSchema[]>();
 const trustedStdioServers = new Set<string>();
+const MCP_TRUST_CONFIRM_TIMEOUT_MS = 120_000;
+const emptyStdioTrustPromptQueue = Promise.resolve();
+let stdioTrustPromptQueue: Promise<void> = emptyStdioTrustPromptQueue;
+const activeStdioTrustApprovalAborts = new Set<(err: Error) => void>();
+const queuedStdioTrustApprovalAborts = new Set<(err: Error) => void>();
 
 function stdioTrustKey(config: McpServerConfig): string {
 	return JSON.stringify({
@@ -75,14 +80,142 @@ export function _buildMcpChildEnvForTest(configEnv: Record<string, string> | und
 	return buildMcpChildEnv(configEnv);
 }
 
-export function _buildMcpTrustConfirmOptionsForTest(signal?: AbortSignal): { timeout: number; signal?: AbortSignal } {
-	return signal ? { timeout: 120_000, signal } : { timeout: 120_000 };
+export function _buildMcpTrustConfirmOptionsForTest(
+	signal?: AbortSignal,
+	timeout = MCP_TRUST_CONFIRM_TIMEOUT_MS,
+): { timeout: number; signal?: AbortSignal } {
+	return signal ? { timeout, signal } : { timeout };
+}
+
+function trustApprovalTimeoutError(serverName: string): Error {
+	return new Error(`Timed out waiting for stdio MCP trust approval for "${serverName}"`);
+}
+
+function trustApprovalAbortError(serverName: string, reason?: unknown): Error {
+	if (reason instanceof Error) return reason;
+	if (typeof reason === "string" && reason.length > 0) return new Error(reason);
+	return new Error(`Stdio MCP trust approval for "${serverName}" was aborted.`);
+}
+
+function createTrustApprovalAbort(
+	serverName: string,
+	signal: AbortSignal | undefined,
+	timeout: number,
+): { signal: AbortSignal; aborted: Promise<never>; cleanup: () => void } {
+	const controller = new AbortController();
+	let rejectAborted: (err: Error) => void = () => {};
+	const aborted = new Promise<never>((_resolve, reject) => {
+		rejectAborted = reject;
+	});
+	aborted.catch(() => {});
+
+	const abort = (err: Error) => {
+		if (controller.signal.aborted) return;
+		controller.abort(err);
+		rejectAborted(err);
+	};
+	activeStdioTrustApprovalAborts.add(abort);
+
+	const timeoutId = setTimeout(() => {
+		abort(trustApprovalTimeoutError(serverName));
+	}, timeout);
+
+	const onCallerAbort = () => {
+		abort(trustApprovalAbortError(serverName, signal?.reason));
+	};
+	if (signal?.aborted) {
+		onCallerAbort();
+	} else {
+		signal?.addEventListener("abort", onCallerAbort, { once: true });
+	}
+
+	return {
+		signal: controller.signal,
+		aborted,
+		cleanup: () => {
+			clearTimeout(timeoutId);
+			signal?.removeEventListener("abort", onCallerAbort);
+			activeStdioTrustApprovalAborts.delete(abort);
+		},
+	};
+}
+
+function abortActiveStdioTrustApprovals(err: Error): void {
+	for (const abort of Array.from(activeStdioTrustApprovalAborts)) abort(err);
+	activeStdioTrustApprovalAborts.clear();
+}
+
+function abortQueuedStdioTrustApprovals(err: Error): void {
+	for (const abort of Array.from(queuedStdioTrustApprovalAborts)) abort(err);
+	queuedStdioTrustApprovalAborts.clear();
+}
+
+async function runWithSerializedStdioTrustPrompt<T>(
+	serverName: string,
+	signal: AbortSignal | undefined,
+	timeout: number,
+	run: (approvalSignal: AbortSignal) => Promise<T>,
+): Promise<T> {
+	const previous = stdioTrustPromptQueue;
+	let releasePrompt = () => {};
+	const current = new Promise<void>((resolve) => {
+		releasePrompt = resolve;
+	});
+	const queued = previous.catch(() => {}).then(() => current);
+	stdioTrustPromptQueue = queued;
+
+	let rejectQueued: (err: Error) => void = () => {};
+	const queuedAborted = new Promise<never>((_resolve, reject) => {
+		rejectQueued = reject;
+	});
+	queuedAborted.catch(() => {});
+	const abortQueued = (err: Error) => rejectQueued(err);
+	queuedStdioTrustApprovalAborts.add(abortQueued);
+
+	try {
+		if (signal?.aborted) {
+			throw trustApprovalAbortError(serverName, signal.reason);
+		}
+		if (signal) {
+			await Promise.race([
+				new Promise<void>((resolve, reject) => {
+					const onAbort = () => {
+						cleanup();
+						reject(trustApprovalAbortError(serverName, signal.reason));
+					};
+					const onPrevious = () => {
+						cleanup();
+						resolve();
+					};
+					const cleanup = () => {
+						signal.removeEventListener("abort", onAbort);
+					};
+					signal.addEventListener("abort", onAbort, { once: true });
+					previous.catch(() => {}).then(onPrevious, onPrevious);
+				}),
+				queuedAborted,
+			]);
+		} else {
+			await Promise.race([previous.catch(() => {}), queuedAborted]);
+		}
+
+		const approvalAbort = createTrustApprovalAbort(serverName, signal, timeout);
+		try {
+			return await Promise.race([run(approvalAbort.signal), approvalAbort.aborted]);
+		} finally {
+			approvalAbort.cleanup();
+		}
+	} finally {
+		queuedStdioTrustApprovalAborts.delete(abortQueued);
+		releasePrompt();
+	}
 }
 
 async function assertTrustedStdioServer(
 	config: McpServerConfig,
 	ctx?: ExtensionContext,
 	signal?: AbortSignal,
+	timeout = MCP_TRUST_CONFIRM_TIMEOUT_MS,
 ): Promise<string | undefined> {
 	if (config.transport !== "stdio") return undefined;
 	const trustKey = stdioTrustKey(config);
@@ -100,15 +233,33 @@ async function assertTrustedStdioServer(
 	const envSummary = envKeys.length > 0
 		? `\n\nConfigured environment keys: ${envKeys.join(", ")}`
 		: "\n\nNo explicit environment keys configured.";
-	const approved = await ctx.ui.confirm(
-		`Trust MCP server "${config.name}"?`,
-		`Project config ${config.sourcePath} wants to start:\n\n${commandLine}${envSummary}\n\nOnly approve MCP servers you trust.`,
-		_buildMcpTrustConfirmOptionsForTest(signal),
-	);
-	if (!approved) {
-		throw new Error(`MCP server "${config.name}" was not approved by the user.`);
-	}
-	return trustKey;
+	return runWithSerializedStdioTrustPrompt(config.name, signal, timeout, async (approvalSignal) => {
+		if (trustedStdioServers.has(trustKey)) return undefined;
+		const approved = await ctx.ui.confirm(
+			`Trust MCP server "${config.name}"?`,
+			`Project config ${config.sourcePath} wants to start:\n\n${commandLine}${envSummary}\n\nOnly approve MCP servers you trust.`,
+			_buildMcpTrustConfirmOptionsForTest(approvalSignal, timeout),
+		);
+		if (!approved) {
+			throw new Error(`MCP server "${config.name}" was not approved by the user.`);
+		}
+		return trustKey;
+	});
+}
+
+export function _assertTrustedStdioServerForTest(
+	config: McpServerConfig,
+	ctx?: ExtensionContext,
+	signal?: AbortSignal,
+	timeout = MCP_TRUST_CONFIRM_TIMEOUT_MS,
+): Promise<string | undefined> {
+	return assertTrustedStdioServer(config, ctx, signal, timeout);
+}
+
+export async function _resetMcpClientStateForTest(): Promise<void> {
+	await closeAll();
+	clearMcpConfigCache();
+	stdioTrustPromptQueue = emptyStdioTrustPromptQueue;
 }
 
 // Exported for tests (see tests/server-name-spaces.test.ts).
@@ -192,6 +343,10 @@ async function connectServer(config: McpServerConfig, signal?: AbortSignal, ctx?
 }
 
 async function closeAll(): Promise<void> {
+	const sessionClosedError = new Error("MCP session closed while waiting for stdio MCP trust approval.");
+	abortActiveStdioTrustApprovals(sessionClosedError);
+	abortQueuedStdioTrustApprovals(sessionClosedError);
+	stdioTrustPromptQueue = emptyStdioTrustPromptQueue;
 	const closing = Array.from(connections.entries()).map(async ([name, conn]) => {
 		try {
 			await conn.client.close();

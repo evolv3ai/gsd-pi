@@ -14,6 +14,7 @@ import {
   pruneStaleFlatPhaseBackups,
 } from "../flat-phase-migration.ts";
 import { openDatabase, closeDatabase, insertArtifact, insertMilestone, insertSlice, insertTask, getAllMilestones, getMilestoneSlices, getSliceTasks, _getAdapter } from "../gsd-db.ts";
+import { writeCompatMarker } from "../compat/compat-marker.ts";
 
 const tmpDirs: string[] = [];
 function makeTmp(options: { withTask?: boolean } = {}): string {
@@ -76,6 +77,24 @@ test("migrateToFlatPhase moves content from milestones/ to phases/", async () =>
 
   assert.ok(existsSync(join(base, ".gsd", "phases")), "phases/ should exist");
   assert.ok(!existsSync(join(base, ".gsd", "milestones")), "milestones/ should be removed");
+});
+
+test("migrateToFlatPhase ignores unsupported .planning projection layout", async () => {
+  const base = makeTmp();
+  mkdirSync(join(base, ".planning", "milestones", "M001", "v1-phases"), { recursive: true });
+  writeCompatMarker(base, {
+    schema: 2,
+    lastWriter: "gsd-pi",
+    lastProjectedAt: "",
+    projections: {},
+    planning: { active: true, layout: "legacy-milestone-dir", projections: {}, passthrough: {} },
+    piVersion: "1.4.0",
+  });
+
+  await migrateToFlatPhase(base);
+
+  assert.ok(existsSync(join(base, ".gsd", "phases", "01-foundation")), "flat phase should render");
+  assert.equal(existsSync(join(base, ".gsd", "milestones")), false, "legacy milestones/ should be removed");
 });
 
 test("migrateToFlatPhase ignores and removes stale phase dirs from prior aborted runs", async () => {

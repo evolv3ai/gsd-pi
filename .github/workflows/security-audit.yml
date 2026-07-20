@@ -110,6 +110,7 @@ jobs:
           path: |
             ${{ matrix.workspace }}/dependency-audit.json
             ${{ matrix.workspace }}/dependency-audit-summary.md
+          retention-days: 7
 
   cargo-audit:
     name: cargo audit
@@ -162,6 +163,7 @@ jobs:
           path: |
             native/cargo-audit.json
             native/cargo-audit-summary.md
+          retention-days: 7
 
   secret-scan-full:
     # Full-tree secret scan. The per-PR scan in ci-fast-gates.sh is diff-only, so

@@ -140,7 +140,9 @@ describe('EventBridge', () => {
       assert.ok(sessionManager.listenerCount('session:started') > 0);
       assert.ok(sessionManager.listenerCount('session:event') > 0);
       assert.ok(sessionManager.listenerCount('session:blocked') > 0);
+      assert.ok(sessionManager.listenerCount('session:paused') > 0);
       assert.ok(sessionManager.listenerCount('session:completed') > 0);
+      assert.ok(sessionManager.listenerCount('session:cancelled') > 0);
       assert.ok(sessionManager.listenerCount('session:error') > 0);
       assert.ok(client.listenerCount('messageCreate') > 0);
     });
@@ -152,7 +154,9 @@ describe('EventBridge', () => {
       assert.equal(sessionManager.listenerCount('session:started'), 0);
       assert.equal(sessionManager.listenerCount('session:event'), 0);
       assert.equal(sessionManager.listenerCount('session:blocked'), 0);
+      assert.equal(sessionManager.listenerCount('session:paused'), 0);
       assert.equal(sessionManager.listenerCount('session:completed'), 0);
+      assert.equal(sessionManager.listenerCount('session:cancelled'), 0);
       assert.equal(sessionManager.listenerCount('session:error'), 0);
       assert.equal(client.listenerCount('messageCreate'), 0);
     });
@@ -587,6 +591,43 @@ describe('EventBridge', () => {
       await tick();
 
       // After cleanup, events for this session are silently ignored
+      sessionManager.emit('session:event', {
+        sessionId: 'sess-1', projectDir: '/test/project',
+        event: { type: 'tool_execution_start', name: 'read' } as SdkAgentEvent,
+      });
+      await tick();
+      assert.equal(mockFn(logger.error).mock.callCount(), 0);
+    });
+  });
+
+  describe('session:paused → cleanup', () => {
+    it('flushes pending events and cleans up', async () => {
+      const { bridge, sessionManager, channelManager, logger } = buildBridge();
+      bridge.start();
+
+      sessionManager.emit('session:started', {
+        sessionId: 'sess-1', projectDir: '/test/project', projectName: 'my-project',
+      });
+      await tick();
+
+      sessionManager.emit('session:event', {
+        sessionId: 'sess-1', projectDir: '/test/project',
+        event: {
+          type: 'extension_ui_request',
+          method: 'notify',
+          message: 'Auto-mode paused (Escape). Type to interact, or /gsd auto to resume.',
+        } as SdkAgentEvent,
+      });
+      sessionManager.emit('session:paused', {
+        sessionId: 'sess-1', projectDir: '/test/project', projectName: 'my-project',
+      });
+      await tick();
+
+      assert.ok(channelManager._sentMessages.length > 0, 'pending pause notification should flush before cleanup');
+      assert.ok(
+        mockFn(logger.info).mock.calls.some((c) => String(c.arguments[0]).includes('session paused')),
+      );
+
       sessionManager.emit('session:event', {
         sessionId: 'sess-1', projectDir: '/test/project',
         event: { type: 'tool_execution_start', name: 'read' } as SdkAgentEvent,

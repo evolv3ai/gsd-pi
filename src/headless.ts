@@ -75,6 +75,7 @@ export interface HeadlessOptions {
   json: boolean
   outputFormat: OutputFormat
   model?: string
+  thinking?: HeadlessThinkingLevel
   command: string
   commandArgs: string[]
   context?: string       // file path or '-' for stdin
@@ -91,6 +92,12 @@ export interface HeadlessOptions {
 }
 
 const HEADLESS_CHAIN_AUTO_FLAG = '--headless-chain-auto'
+type HeadlessThinkingLevel = 'off' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'max'
+const VALID_THINKING_LEVELS = new Set<HeadlessThinkingLevel>(['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'])
+
+function isHeadlessThinkingLevel(value: string): value is HeadlessThinkingLevel {
+  return VALID_THINKING_LEVELS.has(value as HeadlessThinkingLevel)
+}
 
 export function buildHeadlessSlashCommand(options: Pick<HeadlessOptions, 'command' | 'commandArgs' | 'auto'>): string {
   const commandArgs = [...options.commandArgs]
@@ -200,6 +207,13 @@ export function parseHeadlessArgs(argv: string[]): HeadlessOptions {
       } else if (arg === '--model' && i + 1 < args.length) {
         // --model can also be passed from the main CLI; headless-specific takes precedence
         options.model = args[++i]
+      } else if (arg === '--thinking' && i + 1 < args.length) {
+        const level = args[++i]
+        if (!isHeadlessThinkingLevel(level)) {
+          process.stderr.write(`[headless] Error: --thinking must be one of: ${[...VALID_THINKING_LEVELS].join(', ')} (got '${level}')\n`)
+          process.exit(1)
+        }
+        options.thinking = level
       } else if (arg === '--context' && i + 1 < args.length) {
         options.context = args[++i]
       } else if (arg === '--context-text' && i + 1 < args.length) {
@@ -439,6 +453,9 @@ async function runHeadlessOnce(options: HeadlessOptions, restartCount: number): 
   }
   if (options.model) {
     clientOptions.model = options.model
+  }
+  if (options.thinking) {
+    clientOptions.args = [...((clientOptions.args as string[]) || []), '--thinking', options.thinking]
   }
   if (injector) {
     clientOptions.env = injector.getSecretEnvVars()

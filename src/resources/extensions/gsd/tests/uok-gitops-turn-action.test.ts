@@ -186,6 +186,101 @@ test("uok gitops turn action commit creates commit with unit trailer", () => {
   }
 });
 
+test("uok gitops turn action classifies commit hook failures as hook-content", () => {
+  const repo = makeRepo();
+  try {
+    const hookPath = join(repo, ".git", "hooks", "pre-commit");
+    writeFileSync(
+      hookPath,
+      [
+        "#!/bin/sh",
+        "echo blocked by test hook >&2",
+        "exit 1",
+      ].join("\n"),
+      "utf-8",
+    );
+    chmodSync(hookPath, 0o755);
+    writeFileSync(join(repo, "feature.ts"), "export const x = 1;\n", "utf-8");
+
+    const result = runTurnGitAction({
+      basePath: repo,
+      action: "commit",
+      unitType: "execute-task",
+      unitId: "M001/S01/T-hook",
+    });
+
+    assert.equal(result.status, "failed");
+    assert.equal(result.failureClass, "hook-content");
+    assert.match(result.error ?? "", /blocked by test hook/);
+  } finally {
+    rmSync(repo, { recursive: true, force: true });
+  }
+});
+
+test("uok gitops turn action classifies hook rejection with lock-like output as hook-content", () => {
+  // A pre-commit hook aborts `git commit` with exit code 1 and its stderr is arbitrary
+  // user text that may coincidentally match a transient lock pattern. Unless the stderr
+  // looks like git's own lock error, route it to hook remediation.
+  const err = Object.assign(new Error("git commit failed: could not lock config file"), {
+    stderr: "could not lock config file .pre-commit-guard\nblocked by policy",
+    status: 1,
+  });
+
+  const result = handleTurnGitActionError("commit", err);
+  assert.equal(result.status, "failed");
+  assert.equal(result.failureClass, "hook-content");
+});
+
+test("uok gitops turn action classifies hook rejection with missing exit status as hook-content", () => {
+  // A hook aborts the commit but the numeric exit status is dropped or rewritten
+  // (wrapped error, signal kill). Non-git-owned stderr must still route into
+  // bounded git-commit remediation rather than pausing as `unknown`.
+  const missingStatus = Object.assign(new Error("git commit failed: blocked by lint hook"), {
+    stderr: "blocked by lint hook\nrun `pnpm lint --fix` and retry",
+  });
+
+  const missingResult = handleTurnGitActionError("commit", missingStatus);
+  assert.equal(missingResult.status, "failed");
+  assert.equal(missingResult.failureClass, "hook-content");
+
+  // Signal-killed hook: status is null rather than 1.
+  const signalKilled = Object.assign(new Error("git commit failed: pre-commit terminated"), {
+    stderr: "pre-commit checks did not pass",
+    status: null,
+    signal: "SIGTERM",
+  });
+
+  const signalResult = handleTurnGitActionError("commit", signalKilled);
+  assert.equal(signalResult.status, "failed");
+  assert.equal(signalResult.failureClass, "hook-content");
+});
+
+test("uok gitops turn action classifies exit-1 git lock output as transient", () => {
+  const err = Object.assign(new Error("git commit failed: fatal: Unable to create '.git/index.lock'"), {
+    stderr: [
+      "fatal: Unable to create '/tmp/repo/.git/index.lock': File exists.",
+      "",
+      "Another git process seems to be running in this repository.",
+    ].join("\n"),
+    status: 1,
+  });
+
+  const result = handleTurnGitActionError("commit", err);
+  assert.equal(result.status, "failed");
+  assert.equal(result.failureClass, "transient");
+});
+
+test("uok gitops turn action classifies exit-128 lock contention as transient", () => {
+  const err = Object.assign(new Error("fatal: cannot lock ref 'HEAD'"), {
+    stderr: "fatal: cannot lock ref 'HEAD': Unable to create '.git/refs/heads/main.lock': File exists.",
+    status: 128,
+  });
+
+  const result = handleTurnGitActionError("commit", err);
+  assert.equal(result.status, "failed");
+  assert.equal(result.failureClass, "transient");
+});
+
 test("uok gitops turn action commit defaults to child repositories in parent mode", () => {
   const root = mkdtempSync(join(tmpdir(), "gsd-uok-gitops-parent-commit-"));
   try {
@@ -233,6 +328,58 @@ workspace:
     assert.equal(run("git status --porcelain", join(root, "backend")), "");
     assert.ok(run("git log -1 --pretty=%B", join(root, "frontend")).includes("GSD-Unit: M001/S01/T-parent"));
     assert.ok(run("git log -1 --pretty=%B", join(root, "backend")).includes("GSD-Unit: M001/S01/T-parent"));
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("uok gitops turn action preserves hook-content when mixed with unknown parent repo errors", () => {
+  const root = mkdtempSync(join(tmpdir(), "gsd-uok-gitops-parent-hook-"));
+  try {
+    initRepo(root);
+    mkdirSync(join(root, ".gsd"), { recursive: true });
+    mkdirSync(join(root, "frontend"), { recursive: true });
+    initRepo(join(root, "frontend"));
+    writeFileSync(join(root, ".gitignore"), "frontend/\n", "utf-8");
+    run("git add .gitignore", root);
+    run('git commit -m "chore: ignore nested repos"', root);
+    writeFileSync(join(root, ".gsd", "PREFERENCES.md"), `---
+version: 1
+workspace:
+  mode: parent
+  repositories:
+    frontend:
+      path: frontend
+---
+`, "utf-8");
+    run("git add .gsd/PREFERENCES.md", root);
+    run('git commit -m "chore: configure parent workspace repos"', root);
+
+    const hookPath = join(root, "frontend", ".git", "hooks", "pre-commit");
+    writeFileSync(
+      hookPath,
+      [
+        "#!/bin/sh",
+        "echo blocked by frontend hook >&2",
+        "exit 1",
+      ].join("\n"),
+      "utf-8",
+    );
+    chmodSync(hookPath, 0o755);
+    writeFileSync(join(root, "frontend", "README.md"), "# frontend dirty\n", "utf-8");
+
+    const result = runTurnGitAction({
+      basePath: root,
+      action: "commit",
+      unitType: "execute-task",
+      unitId: "M001/S01/T-parent-hook",
+      targetRepositories: ["frontend", "missing"],
+    });
+
+    assert.equal(result.status, "failed");
+    assert.equal(result.failureClass, "hook-content");
+    assert.match(result.commitErrors?.frontend ?? "", /blocked by frontend hook/);
+    assert.equal(result.commitErrors?.missing, "unknown repository target: missing");
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
@@ -388,7 +535,18 @@ test("uok gitops turn action keeps non-infrastructure git failures recoverable",
 
   assert.equal(result.action, "commit");
   assert.equal(result.status, "failed");
+  assert.equal(result.failureClass, "unknown");
   assert.equal(result.error, "nothing to commit");
+});
+
+test("uok gitops turn action classifies git lock failures as transient", () => {
+  const err = Object.assign(new Error("fatal: Unable to create '.git/index.lock': File exists."), {
+    stderr: "fatal: Unable to create '.git/index.lock': File exists.",
+  });
+
+  const result = handleTurnGitActionError("commit", err);
+  assert.equal(result.status, "failed");
+  assert.equal(result.failureClass, "transient");
 });
 
 test("uok gitops turn action prefers stderr details for git failures", () => {
@@ -398,5 +556,6 @@ test("uok gitops turn action prefers stderr details for git failures", () => {
 
   const result = handleTurnGitActionError("commit", err);
   assert.equal(result.status, "failed");
+  assert.equal(result.failureClass, "unknown");
   assert.equal(result.error, "fatal: unable to auto-detect email address");
 });

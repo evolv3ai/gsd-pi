@@ -1485,27 +1485,16 @@ export class TUI extends Container {
 		}
 
 		const previousContentViewportTop = getViewportTop(this.previousLines.length);
-		let clampedToViewport = false;
 		if (firstChanged < previousContentViewportTop) {
-			if (appendedLines) {
-				// A mid-buffer insertion (e.g. a markdown code-fence border materialising)
-				// shifted a line across the scrollback/viewport boundary.  Clamping would
-				// leave the displaced line frozen in scrollback AND re-emit it in the live
-				// region, producing a verbatim duplicate.  Fall back to a clean repaint.
-				logRedraw(
-					`firstChanged < viewportTop + buffer grew (${firstChanged} < ${previousContentViewportTop}) — full repaint to avoid duplicate`,
-				);
-				fullRender(true);
-				return;
-			}
-			const newViewportTop = getViewportTop(newLines.length);
-			const clampedFirst = Math.max(0, Math.min(previousContentViewportTop, newViewportTop));
+			// A mid-buffer reflow (for example markdown code-fence borders or prose word-wrap)
+			// shifted a line across the scrollback/viewport boundary. Clamping would leave
+			// the displaced line frozen in scrollback and re-emit it in the live region,
+			// producing a verbatim duplicate. Fall back to a clean repaint.
 			logRedraw(
-				`firstChanged < viewportTop (${firstChanged} < ${previousContentViewportTop}) — repaint from ${clampedFirst}`,
+				`firstChanged < viewportTop (${firstChanged} < ${previousContentViewportTop}) — full repaint to avoid duplicate`,
 			);
-			firstChanged = clampedFirst;
-			lastChanged = Math.max(lastChanged, newLines.length - 1);
-			clampedToViewport = true;
+			fullRender(true);
+			return;
 		}
 
 		let buffer = this.useSynchronizedOutput ? "\x1b[?2026h" : "";
@@ -1560,7 +1549,7 @@ export class TUI extends Container {
 		// Track where cursor ended up after rendering
 		let finalCursorRow = renderEnd;
 
-		if (this.previousLines.length > newLines.length && !clampedToViewport) {
+		if (this.previousLines.length > newLines.length) {
 			const renderEndScreenRow = renderEnd - viewportTop;
 			const ghostLinesVisible = renderEndScreenRow < height - 1;
 			if (ghostLinesVisible) {
@@ -1617,11 +1606,7 @@ export class TUI extends Container {
 		// hardwareCursorRow tracks actual terminal cursor position (for movement)
 		this.cursorRow = Math.max(0, newLines.length - 1);
 		this.hardwareCursorRow = finalCursorRow;
-		if (clampedToViewport && newLines.length < this.maxLinesRendered) {
-			this.maxLinesRendered = newLines.length;
-		} else {
-			this.maxLinesRendered = Math.max(this.maxLinesRendered, newLines.length);
-		}
+		this.maxLinesRendered = Math.max(this.maxLinesRendered, newLines.length);
 		this.previousViewportTop = getViewportTop(this.maxLinesRendered);
 
 		// Position hardware cursor for IME

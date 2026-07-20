@@ -11,7 +11,7 @@
  */
 
 import { existsSync } from "node:fs";
-import { join } from "node:path";
+import { basename, isAbsolute, join, relative } from "node:path";
 
 import type { CompleteTaskParams, EscalationArtifact } from "../types.js";
 import { isClosedStatus } from "../status-guards.js";
@@ -37,12 +37,15 @@ import {
   gsdProjectionRoot,
   clearPathCache,
   legacyMilestonesDir,
+  relMilestoneFile,
+  resolveMilestoneFile,
   resolveMilestonePath,
   resolveSlicePath,
+  targetMilestoneFile,
 } from "../paths.js";
 import { resolveCanonicalMilestoneRoot } from "../worktree-manager.js";
 import { checkOwnership, taskUnitKey } from "../unit-ownership.js";
-import { saveFile, clearParseCache } from "../files.js";
+import { saveFile, clearParseCache, normalizePlannedFileReference } from "../files.js";
 import { invalidateStateCache } from "../state.js";
 import { renderPlanCheckboxes } from "../markdown-renderer.js";
 import {
@@ -135,6 +138,15 @@ async function repairMissingTaskSummaryProjection(
     taskRow.id,
   );
   const summaryMd = renderSummaryContent(taskRow, taskRow.slice_id, taskRow.milestone_id, []);
+  const skipRoadmap = taskReferencesMilestoneRoadmap(
+    artifactBasePath,
+    taskRow.milestone_id,
+    [
+      ...taskRow.expected_output,
+      ...taskRow.files,
+      ...taskRow.key_files,
+    ],
+  );
   let stale = false;
 
   try {
@@ -154,7 +166,7 @@ async function repairMissingTaskSummaryProjection(
   clearParseCache();
 
   try {
-    const rendered = await renderMilestoneShellProjections(artifactBasePath, taskRow.milestone_id);
+    const rendered = await renderMilestoneShellProjections(artifactBasePath, taskRow.milestone_id, { skipRoadmap });
     stale ||= rendered.stale;
   } catch (projErr) {
     stale = true;
@@ -215,6 +227,50 @@ function satisfiesBlockingReworkFinding(resolution: ReturnType<typeof normalizeR
   if (resolution.evidence.trim().length === 0) return false;
   if (resolution.status === "resolved") return true;
   return (resolution.decisionRef ?? "").trim().length > 0;
+}
+
+function normalizeTaskFileReference(value: string, basePath: string): string {
+  const cleaned = normalizePlannedFileReference(value).trim().replace(/^['"]|['"]$/g, "");
+  if (!cleaned) return "";
+
+  if (isAbsolute(cleaned)) {
+    const rel = relative(basePath, cleaned).replace(/\\/g, "/");
+    if (rel && rel !== "." && rel !== ".." && !rel.startsWith("../")) {
+      return rel.replace(/^\.\//, "").toLowerCase();
+    }
+  }
+
+  return cleaned.replace(/\\/g, "/").replace(/^\.\//, "").toLowerCase();
+}
+
+function taskReferencesMilestoneRoadmap(
+  basePath: string,
+  milestoneId: string,
+  references: string[],
+): boolean {
+  if (references.length === 0) return false;
+
+  const milestone = getMilestone(milestoneId);
+  const roadmapPath = resolveMilestoneFile(basePath, milestoneId, "ROADMAP")
+    ?? targetMilestoneFile(basePath, milestoneId, "ROADMAP", milestone?.title);
+  if (!existsSync(roadmapPath)) return false;
+
+  const normalizedRoadmapPath = roadmapPath.replace(/\\/g, "/").toLowerCase();
+  const relFromProjectionRoot = relative(gsdProjectionRoot(basePath), roadmapPath)
+    .replace(/\\/g, "/")
+    .replace(/^\.\//, "");
+  const exactMatches = new Set([
+    relative(basePath, roadmapPath).replace(/\\/g, "/").replace(/^\.\//, "").toLowerCase(),
+    relMilestoneFile(basePath, milestoneId, "ROADMAP", milestone?.title).replace(/^\.\//, "").toLowerCase(),
+    `.gsd/${relFromProjectionRoot}`.toLowerCase(),
+    normalizedRoadmapPath,
+  ]);
+  const roadmapFileName = basename(roadmapPath).toLowerCase();
+
+  return references.some((reference) => {
+    const normalized = normalizeTaskFileReference(reference, basePath);
+    return exactMatches.has(normalized) || normalized === roadmapFileName;
+  });
 }
 
 function paramsToTaskRow(params: CompleteTaskParams, completedAt: string): TaskRow {
@@ -315,6 +371,7 @@ export async function handleCompleteTask(
   let guardError: string | null = null;
   let summaryMd = "";
   let repairTaskSummaryRow: TaskRow | null = null;
+  let skipRoadmapProjectionAfterCompletion = false;
   const workflowDbPath = getWorkflowDatabasePath();
 
   // ── ADR-011 Phase 2: validate escalation payload BEFORE any side effects ─
@@ -385,6 +442,18 @@ export async function handleCompleteTask(
     }
 
     const existingTask = getTask(params.milestoneId, params.sliceId, params.taskId);
+    // If this task just produced the ROADMAP projection, preserve its verified
+    // content instead of immediately regenerating it from stale DB rows (#1433).
+    skipRoadmapProjectionAfterCompletion = taskReferencesMilestoneRoadmap(
+      artifactBasePath,
+      params.milestoneId,
+      [
+        ...(existingTask?.expected_output ?? []),
+        ...(existingTask?.files ?? []),
+        ...(existingTask?.key_files ?? []),
+        ...normalizeListParam(params.keyFiles),
+      ],
+    );
     const unresolvedRework = getUnresolvedBlockingReworkFindingsForTask(params.milestoneId, params.sliceId, params.taskId);
     const resolvedFindingIds = new Set(
       reworkResolutions
@@ -607,7 +676,9 @@ export async function handleCompleteTask(
   // the event log entry (critical for worktree reconciliation).
   let projectionStale = false;
   try {
-    const rendered = await renderMilestoneShellProjections(artifactBasePath, params.milestoneId);
+    const rendered = await renderMilestoneShellProjections(artifactBasePath, params.milestoneId, {
+      skipRoadmap: skipRoadmapProjectionAfterCompletion,
+    });
     projectionStale = rendered.stale;
   } catch (projErr) {
     projectionStale = true;

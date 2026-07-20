@@ -14,6 +14,9 @@ gsd headless next
 # With timeout for CI
 gsd headless --timeout 600000 auto
 
+# Auto shorthand with session-level model and thinking overrides
+gsd auto --model claude-code/sonnet --thinking medium
+
 # Force a specific phase
 gsd headless dispatch plan
 
@@ -42,6 +45,7 @@ echo "Build a CLI tool" | gsd headless new-milestone --context -
 | `--max-restarts N` | 3 | Auto-restart on crash (0 to disable) |
 | `--json` | — | Stream events as JSONL to stdout |
 | `--model ID` | — | Override model for this session |
+| `--thinking LEVEL` | — | Override thinking level for this session (`off`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`) |
 | `--context <file>` | — | Context file for `new-milestone` (use `-` for stdin) |
 | `--context-text <text>` | — | Inline context for `new-milestone` |
 | `--auto` | — | Chain into auto mode after milestone creation |

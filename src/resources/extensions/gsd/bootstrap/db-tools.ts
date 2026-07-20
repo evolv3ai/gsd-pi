@@ -105,6 +105,12 @@ function formatToolErrorText(result: any, details: any): string {
   return typeof message === "string" && message.startsWith("Error") ? message : `Error: ${message}`;
 }
 
+const UAT_EVIDENCE_KIND_VALUES = ["gsd_uat_exec", "gsd_exec", "screenshot", "log", "url", "browser"] as const;
+const UAT_EVIDENCE_REF_DESCRIPTION =
+  "Kind-specific evidence ref: gsd_uat_exec/gsd_exec use an evidence id or .gsd/exec/*.meta.json path; " +
+  "screenshot/log use a path under .gsd/exec/, .gsd/uat/, or .artifacts/browser/; " +
+  "url uses an http(s) URL; browser uses an http(s) URL or .artifacts/browser/ path.";
+
 export function registerDbTools(pi: ExtensionAPI): void {
   // ─── gsd_decision_save (formerly gsd_save_decision) ─────────────────────
 
@@ -391,15 +397,15 @@ export function registerDbTools(pi: ExtensionAPI): void {
     name: "gsd_summary_save",
     label: "Save Summary",
     description:
-      "Save a summary, research, context, or assessment artifact to the GSD database and write it to disk. " +
+      "Save a summary, research, UI spec, context, or assessment artifact to the GSD database and write it to disk. " +
       "Computes the file path from milestone/slice/task IDs automatically.",
-    promptSnippet: "Save a GSD artifact (summary/research/context/assessment) to DB and disk",
+    promptSnippet: "Save a GSD artifact (summary/research/UI spec/context/assessment) to DB and disk",
     promptGuidelines: [
-      "Use gsd_summary_save to persist structured artifacts (SUMMARY, RESEARCH, CONTEXT, ASSESSMENT, CONTEXT-DRAFT, PROJECT, PROJECT-DRAFT, REQUIREMENTS, REQUIREMENTS-DRAFT).",
+      "Use gsd_summary_save to persist structured artifacts (SUMMARY, RESEARCH, UI-SPEC, CONTEXT, ASSESSMENT, CONTEXT-DRAFT, PROJECT, PROJECT-DRAFT, REQUIREMENTS, REQUIREMENTS-DRAFT).",
       "milestone_id is required for milestone/slice/task artifacts. Omit milestone_id only for root-level PROJECT/PROJECT-DRAFT/REQUIREMENTS/REQUIREMENTS-DRAFT.",
       "The tool computes the relative path automatically: milestones/M001/M001-SUMMARY.md, milestones/M001/slices/S01/S01-SUMMARY.md, etc.",
       "Root-level artifact paths are PROJECT.md, PROJECT-DRAFT.md, REQUIREMENTS.md, and REQUIREMENTS-DRAFT.md.",
-      "artifact_type must be one of: SUMMARY, RESEARCH, CONTEXT, ASSESSMENT, CONTEXT-DRAFT, PROJECT, PROJECT-DRAFT, REQUIREMENTS, REQUIREMENTS-DRAFT.",
+      "artifact_type must be one of: SUMMARY, RESEARCH, UI-SPEC, CONTEXT, ASSESSMENT, CONTEXT-DRAFT, PROJECT, PROJECT-DRAFT, REQUIREMENTS, REQUIREMENTS-DRAFT.",
       "Use CONTEXT-DRAFT for incremental draft persistence; use CONTEXT for the final milestone context after depth verification.",
       `Keep each content payload under ${SUMMARY_SAVE_CONTENT_MAX_LENGTH} characters; save large context incrementally with CONTEXT-DRAFT/PROJECT-DRAFT/REQUIREMENTS-DRAFT instead of one oversized call.`,
     ],
@@ -407,7 +413,7 @@ export function registerDbTools(pi: ExtensionAPI): void {
       milestone_id: Type.Optional(Type.String({ description: "Milestone ID (e.g. M001). Omit only for root-level PROJECT/PROJECT-DRAFT/REQUIREMENTS/REQUIREMENTS-DRAFT artifacts." })),
       slice_id: Type.Optional(Type.String({ description: "Slice ID (e.g. S01)" })),
       task_id: Type.Optional(Type.String({ description: "Task ID (e.g. T01)" })),
-      artifact_type: StringEnum(["SUMMARY", "RESEARCH", "CONTEXT", "ASSESSMENT", "CONTEXT-DRAFT", "PROJECT", "PROJECT-DRAFT", "REQUIREMENTS", "REQUIREMENTS-DRAFT"], { description: "Artifact type to save" }),
+      artifact_type: StringEnum(["SUMMARY", "RESEARCH", "UI-SPEC", "CONTEXT", "ASSESSMENT", "CONTEXT-DRAFT", "PROJECT", "PROJECT-DRAFT", "REQUIREMENTS", "REQUIREMENTS-DRAFT"], { description: "Artifact type to save" }),
       content: Type.String({
         description: `The full markdown content of the artifact. Maximum ${SUMMARY_SAVE_CONTENT_MAX_LENGTH} characters per save.`,
         maxLength: SUMMARY_SAVE_CONTENT_MAX_LENGTH,
@@ -442,8 +448,8 @@ export function registerDbTools(pi: ExtensionAPI): void {
   };
 
   const uatEvidenceRef = Type.Object({
-    kind: StringEnum(["gsd_uat_exec", "gsd_exec", "screenshot", "log", "url", "browser"], { description: "Evidence kind" }),
-    ref: Type.String({ description: "Evidence ID, approved .gsd path, or URL" }),
+    kind: StringEnum(UAT_EVIDENCE_KIND_VALUES, { description: `Evidence kind. Valid values: ${UAT_EVIDENCE_KIND_VALUES.join(", ")}` }),
+    ref: Type.String({ description: UAT_EVIDENCE_REF_DESCRIPTION }),
     note: Type.Optional(Type.String({ description: "Short evidence note" })),
     unitType: Type.Optional(Type.String({ description: "Unit that produced the evidence" })),
     tool: Type.Optional(Type.String({ description: "Tool that produced the evidence" })),

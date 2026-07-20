@@ -29,6 +29,7 @@ interface HeadlessOptions {
   json: boolean
   outputFormat: OutputFormat
   model?: string
+  thinking?: HeadlessThinkingLevel
   command: string
   commandArgs: string[]
   context?: string
@@ -43,6 +44,9 @@ interface HeadlessOptions {
   resumeSession?: string
   bare?: boolean
 }
+
+type HeadlessThinkingLevel = 'off' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'max'
+const VALID_THINKING_LEVELS = new Set<HeadlessThinkingLevel>(['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'])
 
 function parseHeadlessArgs(argv: string[]): HeadlessOptions {
   const options: HeadlessOptions = {
@@ -76,6 +80,12 @@ function parseHeadlessArgs(argv: string[]): HeadlessOptions {
         }
       } else if (arg === '--model' && i + 1 < args.length) {
         options.model = args[++i]
+      } else if (arg === '--thinking' && i + 1 < args.length) {
+        const level = args[++i]
+        if (!VALID_THINKING_LEVELS.has(level as HeadlessThinkingLevel)) {
+          throw new Error(`Invalid thinking level: ${level}`)
+        }
+        options.thinking = level as HeadlessThinkingLevel
       } else if (arg === '--context' && i + 1 < args.length) {
         options.context = args[++i]
       } else if (arg === '--context-text' && i + 1 < args.length) {
@@ -185,6 +195,28 @@ test('--resume parses session ID', () => {
 test('no --resume means undefined', () => {
   const opts = parseHeadlessArgs(['node', 'gsd', 'headless', 'auto'])
   assert.equal(opts.resumeSession, undefined)
+})
+
+// ─── --thinking flag ───────────────────────────────────────────────────────
+
+test('--thinking parses valid level without shifting command', () => {
+  const opts = parseHeadlessArgs(['node', 'gsd', 'headless', '--thinking', 'medium', 'auto'])
+  assert.equal(opts.thinking, 'medium')
+  assert.equal(opts.command, 'auto')
+  assert.deepEqual(opts.commandArgs, [])
+})
+
+test('--thinking preserves following positional command', () => {
+  const opts = parseHeadlessArgs(['node', 'gsd', 'headless', '--thinking', 'high', 'next'])
+  assert.equal(opts.thinking, 'high')
+  assert.equal(opts.command, 'next')
+})
+
+test('--thinking rejects invalid level', () => {
+  assert.throws(
+    () => parseHeadlessArgs(['node', 'gsd', 'headless', '--thinking', 'ultra', 'auto']),
+    /Invalid thinking level: ultra/,
+  )
 })
 
 // ─── Exit code constants ───────────────────────────────────────────────────

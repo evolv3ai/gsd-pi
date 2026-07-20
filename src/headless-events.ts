@@ -121,6 +121,7 @@ function isBlockingCommandBlock(event: Record<string, unknown>): boolean {
 }
 
 export function isTerminalNotification(event: Record<string, unknown>): boolean {
+  if (isOrchestratorPausedEvent(event)) return true
   if (isBlockingCommandBlock(event)) return true
   if (event.type !== 'extension_ui_request' || event.method !== 'notify') return false
   const message = String(event.message ?? '').toLowerCase()
@@ -137,10 +138,23 @@ export function isTerminalNotification(event: Record<string, unknown>): boolean 
 }
 
 export function isBlockedNotification(event: Record<string, unknown>): boolean {
+  if (isOrchestratorPausedEvent(event)) return true
   if (isBlockingCommandBlock(event)) return true
   if (event.type !== 'extension_ui_request' || event.method !== 'notify') return false
   // Recoverable pauses need operator intervention in headless mode.
   return isBlockedNoticeMessage(String(event.message ?? '').toLowerCase())
+}
+
+function isOrchestratorPausedEvent(event: Record<string, unknown>): boolean {
+  const data = event.data as Record<string, unknown> | undefined
+  const eventType = String(event.eventType ?? '')
+  const name = String(data?.name ?? '')
+  const reason = String(data?.reason ?? '').toLowerCase()
+  return (
+    eventType === 'orchestrator-guard-block' && name === 'advance-paused'
+  ) || (
+    eventType === 'orchestrator-terminal' && name === 'stop' && reason === 'pause'
+  )
 }
 
 export function isMilestoneReadyNotification(event: Record<string, unknown>): boolean {

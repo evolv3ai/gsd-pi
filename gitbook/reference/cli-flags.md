@@ -7,6 +7,7 @@
 | `gsd` | Start a new interactive session |
 | `gsd --continue` (`-c`) | Resume the most recent session |
 | `gsd --model <id>` | Override the default model for this session |
+| `gsd --thinking <level>` | Override thinking level for this session (`off`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`) |
 | `gsd --web [path]` | Start browser-based web interface |
 | `gsd --worktree` (`-w`) [name] | Start in a git worktree |
 | `gsd --no-session` | Disable session persistence |
@@ -29,6 +30,8 @@
 | Command | Description |
 |---------|-------------|
 | `gsd sessions` | Interactive session picker — list and resume saved sessions |
+| `gsd --session <path\|id>` | Resume a specific session file or session ID |
+| `gsd --session-dir <dir>` | Store and look up sessions in a custom directory |
 | `gsd --list-models [search]` | List available models and exit |
 
 ## Configuration
@@ -47,6 +50,7 @@
 | `gsd headless --max-restarts N` | Auto-restart on crash (default: 3) |
 | `gsd headless --json` | Stream events as JSONL |
 | `gsd headless --model ID` | Override model |
+| `gsd headless --thinking LEVEL` | Override thinking level (`off`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`) |
 | `gsd headless --context <file>` | Context file for `new-milestone` |
 | `gsd headless --context-text <text>` | Inline context for `new-milestone` |
 | `gsd headless --auto` | Chain into auto mode after milestone creation |

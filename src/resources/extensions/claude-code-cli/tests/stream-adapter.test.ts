@@ -2,7 +2,7 @@
 import { describe, mock, test } from "node:test";
 import { clearGuidedUnitContext, setGuidedUnitContext } from "../../gsd/guided-unit-context.ts";
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
@@ -36,6 +36,9 @@ import {
 	parseClaudeLookupOutput,
 	resolveBundledClaudeCliPath,
 	normalizeClaudePathForSdk,
+	isClaudeCodeSdkProcessArgv,
+	findConcurrentClaudeCodeProcesses,
+	buildConcurrentClaudeCodeProcessWarning,
 	roundResultToElicitationContent,
 	autoInitClaudeCodeWorkflowMcp,
 	inferGsdPhaseFromContext,
@@ -152,6 +155,28 @@ const askUserQuestionsRequest = {
 		},
 	},
 };
+
+function makeSdkSuccessResult(result = "done") {
+	return {
+		type: "result",
+		subtype: "success",
+		uuid: "result-1",
+		session_id: "session-1",
+		duration_ms: 1,
+		duration_api_ms: 1,
+		is_error: false,
+		num_turns: 1,
+		result,
+		stop_reason: "end_turn",
+		total_cost_usd: 0,
+		usage: {
+			input_tokens: 0,
+			output_tokens: 0,
+			cache_read_input_tokens: 0,
+			cache_creation_input_tokens: 0,
+		},
+	};
+}
 
 // ---------------------------------------------------------------------------
 // Existing tests — exhausted stream fallback (#2575)
@@ -3626,6 +3651,102 @@ describe("stream-adapter — Windows Claude path lookup (#3770)", () => {
 		const resolved = resolveBundledClaudeCliPath();
 		assert.ok(resolved, "expected sdk cli.js to be resolvable in test workspace");
 		assert.match(resolved!, /[\\/]@anthropic-ai[\\/]claude-agent-sdk[\\/]cli\.js$/);
+	});
+});
+
+describe("stream-adapter — concurrent Claude Code process warning (#1464)", () => {
+	test("identifies Claude Code SDK stream-json command lines", () => {
+		assert.equal(
+			isClaudeCodeSdkProcessArgv(["claude", "--output-format", "stream-json", "--input-format", "stream-json"]),
+			true,
+		);
+		assert.equal(
+			isClaudeCodeSdkProcessArgv(["node", "/repo/node_modules/@anthropic-ai/claude-agent-sdk/cli.js", "--output-format=stream-json", "--input-format=stream-json"]),
+			true,
+		);
+		assert.equal(isClaudeCodeSdkProcessArgv(["claude", "--version"]), false);
+	});
+
+	test("finds only other SDK processes in the same cwd from proc entries", () => {
+		const projectRoot = realpathSync(mkdtempSync(join(tmpdir(), "claude-sdk-concurrent-project-")));
+		const otherRoot = realpathSync(mkdtempSync(join(tmpdir(), "claude-sdk-concurrent-other-")));
+		const procRoot = mkdtempSync(join(tmpdir(), "claude-sdk-proc-"));
+
+		function writeProc(pid: number, cwd: string, argv: string[]): void {
+			const dir = join(procRoot, String(pid));
+			mkdirSync(dir, { recursive: true });
+			symlinkSync(cwd, join(dir, "cwd"), process.platform === "win32" ? "junction" : "dir");
+			writeFileSync(join(dir, "cmdline"), `${argv.join("\0")}\0`, "utf-8");
+		}
+
+		try {
+			writeProc(100, projectRoot, ["claude", "--output-format", "stream-json", "--input-format", "stream-json"]);
+			writeProc(101, projectRoot, ["claude", "--version"]);
+			writeProc(102, otherRoot, ["claude", "--output-format", "stream-json", "--input-format", "stream-json"]);
+			writeProc(200, projectRoot, ["claude", "--output-format", "stream-json", "--input-format", "stream-json"]);
+
+			const matches = findConcurrentClaudeCodeProcesses(projectRoot, { procRoot, currentPid: 200 });
+
+			assert.deepEqual(matches.map((processInfo) => processInfo.pid), [100]);
+			assert.equal(matches[0]?.cwd, projectRoot);
+		} finally {
+			rmSync(projectRoot, { recursive: true, force: true });
+			rmSync(otherRoot, { recursive: true, force: true });
+			rmSync(procRoot, { recursive: true, force: true });
+		}
+	});
+
+	test("emits a visible startup warning before continuing the SDK session", async () => {
+		const cwd = realpathSync(mkdtempSync(join(tmpdir(), "claude-sdk-concurrent-warning-")));
+		const events: any[] = [];
+		const notifications: Array<{ message: string; type?: string }> = [];
+
+		try {
+			const stream = streamViaClaudeCode(
+				{ id: "claude-sonnet-4-6" } as any,
+				{ messages: [{ role: "user", content: "Continue." } as Message] },
+				{
+					cwd,
+					extensionUIContext: {
+						notify(message: string, type?: string) {
+							notifications.push({ message, type });
+						},
+					},
+					_findConcurrentClaudeCodeProcessesForTest: () => [{
+						pid: 1234,
+						cwd,
+						command: "claude --output-format stream-json --input-format stream-json",
+					}],
+					async *_sdkQueryForTest() {
+						yield makeSdkSuccessResult("finished");
+					},
+				} as any,
+			);
+
+			for await (const event of stream) {
+				events.push(event);
+			}
+
+			const warningText = events
+				.filter((event) => event.type === "text_delta")
+				.map((event) => event.delta)
+				.join("\n");
+			assert.match(warningText, /Another Claude Code SDK process is already running/);
+			assert.match(warningText, /PID 1234/);
+			assert.match(warningText, /TaskList\/TaskGet\/TaskOutput/);
+			assert.deepEqual(notifications, [{
+				message: buildConcurrentClaudeCodeProcessWarning(cwd, [{
+					pid: 1234,
+					cwd,
+					command: "claude --output-format stream-json --input-format stream-json",
+				}]),
+				type: "warning",
+			}]);
+			const done = events.find((event) => event.type === "done");
+			assert.deepEqual(done?.message.content, [{ type: "text", text: "finished" }]);
+		} finally {
+			rmSync(cwd, { recursive: true, force: true });
+		}
 	});
 });
 

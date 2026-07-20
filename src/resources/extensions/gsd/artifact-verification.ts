@@ -26,11 +26,12 @@ import {
   resolveMilestoneFile,
   clearPathCache,
   resolveGsdRootFile,
+  phaseDirMatchesMilestoneId,
 } from "./paths.js";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { execFileSync } from "node:child_process";
-import { LAYOUT_SEGMENTS } from "./layout-policy.js";
-import { dirname, join, resolve } from "node:path";
+import { LAYOUT_SEGMENTS, milestoneIdToPhaseNum, milestoneIdUniqueSuffix } from "./layout-policy.js";
+import { basename, dirname, join, resolve } from "node:path";
 import {
   resolveExpectedArtifactPath,
   resolveExistingSliceResearchPath,
@@ -160,6 +161,43 @@ function hasLegacyCheckedTaskCompletion(base: string, mid: string, sid: string, 
   const planContent = readFileSync(planAbs, "utf-8");
   const cbRe = new RegExp(`^\\s*-\\s+\\[[xX]\\]\\s+\\*\\*${escapeRegExp(tid)}(?:\\*\\*)?:`, "m");
   return cbRe.test(planContent);
+}
+
+function findExistingSiblingPhaseArtifact(
+  absPath: string,
+  unitId: string,
+  allowTeamSuffixProjections = false,
+): string | null {
+  const { milestone } = parseUnitId(unitId);
+  if (!MILESTONE_ID_RE.test(milestone)) return null;
+
+  const expectedDir = dirname(absPath);
+  const phasesDir = dirname(expectedDir);
+  if (basename(phasesDir) !== LAYOUT_SEGMENTS.level1) return null;
+
+  const expectedFile = basename(absPath);
+  const expectedDirName = basename(expectedDir);
+  const phaseNum = milestoneIdToPhaseNum(milestone);
+  const phasePrefix = `${String(phaseNum).padStart(2, "0")}-`;
+  if (!expectedDirName.startsWith(phasePrefix)) return null;
+
+  try {
+    for (const entry of readdirSync(phasesDir, { withFileTypes: true })) {
+      if (!entry.isDirectory()) continue;
+      if (entry.name === expectedDirName) continue;
+      const matchesPrimary = phaseDirMatchesMilestoneId(entry.name, milestone, phaseNum);
+      const matchesFallback = allowTeamSuffixProjections
+        && !milestoneIdUniqueSuffix(milestone)
+        && phaseDirMatchesMilestoneId(entry.name, milestone, phaseNum, true);
+      if (!matchesPrimary && !matchesFallback) continue;
+      const candidate = join(phasesDir, entry.name, expectedFile);
+      if (existsSync(candidate)) return candidate;
+    }
+  } catch {
+    return null;
+  }
+
+  return null;
 }
 
 /**
@@ -343,6 +381,7 @@ export function verifyExpectedArtifact(
   }
 
   const artifactBase = resolveArtifactVerificationBase(unitId, base);
+  const allowSiblingTeamSuffixProjections = unitType === "execute-task";
   let absPath = resolveExpectedArtifactPath(unitType, unitId, artifactBase);
   if (!absPath || !existsSync(absPath)) {
     const projectRoot = resolve(resolveWorktreeProjectRoot(artifactBase));
@@ -350,12 +389,27 @@ export function verifyExpectedArtifact(
       const projectPath = resolveExpectedArtifactPath(unitType, unitId, projectRoot);
       if (projectPath && existsSync(projectPath)) {
         absPath = projectPath;
+      } else if (projectPath) {
+        const siblingPath = findExistingSiblingPhaseArtifact(
+          projectPath,
+          unitId,
+          allowSiblingTeamSuffixProjections,
+        );
+        if (siblingPath) absPath = siblingPath;
       }
     }
   }
   if (!absPath) {
     logWarning("recovery", `verify-fail ${unitType} ${unitId}: resolveExpectedArtifactPath returned null (no artifact contract registered for this unit type)`);
     return false;
+  }
+  if (!existsSync(absPath)) {
+    const siblingPath = findExistingSiblingPhaseArtifact(
+      absPath,
+      unitId,
+      allowSiblingTeamSuffixProjections,
+    );
+    if (siblingPath) absPath = siblingPath;
   }
   if (!existsSync(absPath)) {
     const worktreeFailure = diagnoseWorktreeIntegrityFailure(artifactBase);

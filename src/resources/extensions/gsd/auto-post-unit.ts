@@ -122,6 +122,7 @@ const _worktreeProjection = new WorktreeStateProjection();
 
 /** Maximum verification retry attempts before escalating to blocker placeholder (#2653). */
 const MAX_VERIFICATION_RETRIES = 3;
+const MAX_GIT_COMMIT_REMEDIATION_RETRIES = 2;
 /** Keep failure toasts short while still showing concrete examples. */
 const MAX_NOTIFICATION_DETAILS = 3;
 const NOTIFICATION_BULLET = "•";
@@ -395,6 +396,10 @@ function persistGitActionFailure(basePath: string, action: TurnGitActionMode, me
   mkdirSync(logDir, { recursive: true });
   appendFileSync(logPath, entry, "utf-8");
   return logPath;
+}
+
+function gitCommitRemediationRetryKey(unitType: string, unitId: string): string {
+  return `git-commit:${verificationRetryKey(unitType, unitId)}`;
 }
 
 function stripKnownIdPrefix(value: string | undefined | null, id: string): string | undefined {
@@ -1175,14 +1180,14 @@ export async function autoCommitUnit(
  * Execute the turn-level git action (commit, snapshot, or status-only).
  *
  * @param opts.softFailure - Defaults to false. When true, retry git failures,
- * warn, and continue without pausing auto-mode; use for best-effort deferred
- * closeout work where a git failure should not block the run.
+ * warn, and continue only for transient git failures. Deterministic task
+ * commit hook failures are routed through task remediation instead.
  */
 async function runCloseoutGitAction(
   pctx: PostUnitContext,
   unit: NonNullable<AutoSession["currentUnit"]>,
   opts?: { softFailure?: boolean },
-): Promise<"continue" | "dispatched"> {
+): Promise<"continue" | "retry" | "dispatched"> {
   const { s, ctx, pi, pauseAuto } = pctx;
   const prefs = loadEffectiveGSDPreferences()?.preferences;
   const uokFlags = resolveUokFlags(prefs);
@@ -1255,7 +1260,11 @@ async function runCloseoutGitAction(
         taskContext,
         targetRepositories,
       });
-      for (let attempt = 1; gitResult.status === "failed" && attempt < maxAttempts; attempt++) {
+      for (
+        let attempt = 1;
+        gitResult.status === "failed" && gitResult.failureClass === "transient" && attempt < maxAttempts;
+        attempt++
+      ) {
         await new Promise((resolve) => setTimeout(resolve, 250 * attempt));
         gitResult = runTurnGitAction({
           basePath: s.basePath,
@@ -1286,6 +1295,7 @@ async function runCloseoutGitAction(
             commitMessage: gitResult.commitMessage,
             commitMessages: gitResult.commitMessages,
             commitErrors: gitResult.commitErrors,
+            failureClass: gitResult.failureClass,
             skippedRepositories: gitResult.skippedRepositories,
             snapshotLabel: gitResult.snapshotLabel,
           },
@@ -1323,21 +1333,70 @@ async function runCloseoutGitAction(
         }
 
         const failureMsg = `Git ${turnAction} failed: ${fullError.split("\n")[0]} (full details: ${failureLogPath})`;
-        ctx.ui.notify(failureMsg, opts?.softFailure ? "warning" : "error");
         debugLog("postUnit", {
           phase: opts?.softFailure ? "git-action-failed-soft" : "git-action-failed-blocking",
           action: turnAction,
           error: fullError,
+          failureClass: gitResult.failureClass,
           failureLogPath,
         });
-        if (opts?.softFailure) {
+        const hasPartialCommits = Object.keys(gitResult.commitMessages ?? {}).length > 0;
+        if (
+          opts?.softFailure &&
+          turnAction === "commit" &&
+          unit.type === "execute-task" &&
+          gitResult.failureClass === "hook-content" &&
+          !hasPartialCommits
+        ) {
+          const retryKey = gitCommitRemediationRetryKey(unit.type, unit.id);
+          const attempt = (s.verificationRetryCount.get(retryKey) ?? 0) + 1;
+          if (attempt <= MAX_GIT_COMMIT_REMEDIATION_RETRIES) {
+            s.verificationRetryCount.set(retryKey, attempt);
+            s.pendingVerificationRetry = {
+              unitId: unit.id,
+              failureContext:
+                "Git commit failed after task verification. The commit hook rejected the staged task changes; " +
+                "fix the reported issue and complete the task again so GSD can retry the commit.\n\n" +
+                fullError,
+              signature: `git-commit:${attempt}:${fullError}`,
+              attempt,
+            };
+            ctx.ui.notify(
+              `Git ${turnAction} failed: ${fullError.split("\n")[0]}. Retrying task remediation (attempt ${attempt}/${MAX_GIT_COMMIT_REMEDIATION_RETRIES}).`,
+              "warning",
+            );
+            debugLog("postUnit", {
+              phase: "git-action-remediation-retry",
+              action: turnAction,
+              unitType: unit.type,
+              unitId: unit.id,
+              attempt,
+              failureLogPath,
+            });
+            return "retry";
+          }
+
+          s.pendingVerificationRetry = null;
+          s.verificationRetryCount.delete(retryKey);
+          ctx.ui.notify(
+            `Git ${turnAction} failed after ${MAX_GIT_COMMIT_REMEDIATION_RETRIES} remediation attempts: ${fullError.split("\n")[0]} (full details: ${failureLogPath}). Pausing auto-mode.`,
+            "error",
+          );
+          await pauseAuto(ctx, pi);
+          return "dispatched";
+        }
+        if (opts?.softFailure && gitResult.failureClass === "transient") {
+          ctx.ui.notify(failureMsg, "warning");
           return "continue";
         }
+        ctx.ui.notify(failureMsg, "error");
         await pauseAuto(ctx, pi);
         return "dispatched";
       }
 
       s.lastGitActionStatus = "ok";
+      s.verificationRetryCount.delete(gitCommitRemediationRetryKey(unit.type, unit.id));
+      s.verificationRetryFailureHashes.delete(verificationRetryKey(unit.type, unit.id));
 
       if (turnAction === "commit" && gitResult.commitMessage) {
         ctx.ui.notify(formatPostUnitStatusCard("✓ Commit", gitResult.commitMessage.split("\n")[0]), "info");
@@ -1439,6 +1498,9 @@ export async function postUnitPreVerification(pctx: PostUnitContext, opts?: PreV
       const gitActionResult = await runCloseoutGitAction(pctx, unit);
       if (gitActionResult === "dispatched") {
         return "dispatched";
+      }
+      if (gitActionResult === "retry") {
+        return "retry";
       }
     }
 
@@ -2425,7 +2487,7 @@ export async function postUnitPreVerification(pctx: PostUnitContext, opts?: PreV
  * Returns:
  * - "continue" — proceed to sidecar drain / normal dispatch
  * - "step-wizard" — step mode, show wizard instead
- * - "retry" — planner-owned pre-execution validation failed; retry the planning unit with injected failure context
+ * - "retry" — verification/pre-execution/git remediation failed; retry the unit with injected failure context
  * - "stopped" — stopAuto/pauseAuto was called
  */
 export async function postUnitPostVerification(pctx: PostUnitContext): Promise<"continue" | "step-wizard" | "retry" | "stopped"> {
@@ -2436,6 +2498,9 @@ export async function postUnitPostVerification(pctx: PostUnitContext): Promise<"
       const gitActionResult = await runCloseoutGitAction(pctx, s.currentUnit, { softFailure: true });
       if (gitActionResult === "dispatched") {
         return "stopped";
+      }
+      if (gitActionResult === "retry") {
+        return "retry";
       }
     }
 
