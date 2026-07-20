@@ -170,7 +170,7 @@ test("after markCompleted, a fresh claim for the same unit succeeds", (t) => {
   assert.equal(first.ok, true);
   if (!first.ok) return;
   markRunning(first.dispatchId);
-  markCompleted(first.dispatchId);
+  assert.equal(markCompleted(first.dispatchId), true);
 
   // Re-dispatch
   const second = recordDispatchClaim({
@@ -208,11 +208,11 @@ test("markFailed records error_summary and retry metadata", (t) => {
   assert.equal(claim.ok, true);
   if (!claim.ok) return;
   markRunning(claim.dispatchId);
-  markFailed(claim.dispatchId, {
+  assert.equal(markFailed(claim.dispatchId, {
     errorSummary: "boom",
     errorCode: "test-fail",
     retryAfterMs: 5000,
-  });
+  }), true);
 
   const row = getLatestForUnit("M001/S01")!;
   assert.equal(row.status, "failed");
@@ -233,7 +233,7 @@ test("markStuck and markCanceled set their respective statuses", (t) => {
   });
   assert.equal(a.ok, true);
   if (!a.ok) return;
-  markStuck(a.dispatchId, "test-stuck");
+  assert.equal(markStuck(a.dispatchId, "test-stuck"), true);
   assert.equal(getLatestForUnit("M001/S01")!.status, "stuck");
 
   const b = recordDispatchClaim({
@@ -242,7 +242,7 @@ test("markStuck and markCanceled set their respective statuses", (t) => {
   });
   assert.equal(b.ok, true);
   if (!b.ok) return;
-  markCanceled(b.dispatchId, "user-cancel");
+  assert.equal(markCanceled(b.dispatchId, "user-cancel"), true);
   assert.equal(getLatestForUnit("M001/S01/T01")!.status, "canceled");
 });
 
@@ -292,9 +292,10 @@ test("terminal transitions do not overwrite an already terminal dispatch", (t) =
   if (!claim.ok) return;
 
   markRunning(claim.dispatchId);
-  markCompleted(claim.dispatchId, { exitReason: "done" });
-  markFailed(claim.dispatchId, { errorSummary: "late-failure" });
-  markStuck(claim.dispatchId, "late-stuck");
+  assert.equal(markCompleted(claim.dispatchId, { exitReason: "done" }), true);
+  assert.equal(markFailed(claim.dispatchId, { errorSummary: "late-failure" }), false);
+  assert.equal(markStuck(claim.dispatchId, "late-stuck"), false);
+  assert.equal(markCanceled(claim.dispatchId, "late-cancel"), false);
 
   const row = getLatestForUnit("M001/S09")!;
   assert.equal(row.status, "completed");

@@ -338,6 +338,7 @@ import {
   isBlockedStopReason,
   stopNoticeDisplayReason,
 } from "./stop-notice.js";
+import { abortActiveUnitTurn } from "./auto/unit-turn-abort.js";
 
 // ── ENCAPSULATION INVARIANT ─────────────────────────────────────────────────
 // ALL mutable auto-mode state lives in the AutoSession class (auto/session.ts).
@@ -723,6 +724,8 @@ export {
 function closeOutSignalInterruptedUnit(currentBasePath: string): void {
   const currentUnit = s.currentUnit;
   if (!currentUnit) return;
+
+  abortActiveUnitTurn(s.cmdCtx);
 
   const reason = "Auto-mode process received a termination signal";
   const errorContext: ErrorContext = {

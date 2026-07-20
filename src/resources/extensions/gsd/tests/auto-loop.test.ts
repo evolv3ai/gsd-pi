@@ -1637,6 +1637,32 @@ test("autoLoop exits when s.active is set to false", async (t) => {
   );
 });
 
+test("autoLoop aborts the active unit turn when dispatch crashes", async () => {
+  _resetPendingResolve();
+
+  const ctx = makeMockCtx();
+  ctx.ui.setStatus = () => {};
+  let abortCalls = 0;
+  ctx.abort = () => {
+    abortCalls += 1;
+  };
+  const pi = makeMockPi();
+  const s = makeLoopSession();
+
+  const deps = makeMockDeps({
+    taskExecutionBoundary: async () => {
+      throw new Error("dispatch crashed");
+    },
+    stopAuto: async () => {
+      s.active = false;
+    },
+  });
+
+  await autoLoop(ctx, pi, s, deps);
+
+  assert.ok(abortCalls > 0, "crashed unit closeout must abort the active SDK turn");
+});
+
 test("autoLoop stops before dispatch when command context lacks newSession", async () => {
   _resetPendingResolve();
 
