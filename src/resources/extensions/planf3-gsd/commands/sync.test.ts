@@ -237,3 +237,51 @@ describe("runSync — M4 correlation + binding persistence", () => {
     assert.equal(manifest.mapping.phases[1].gsdSlice, "S2");
   });
 });
+
+describe("runSync — completion sweep validation upkeep (F6.0-8)", () => {
+  test("completion sync upserts validation.lastStatus=passed + lastSyncedAt, and says so", async () => {
+    const { tmp, manifestPath } = await makeProject();
+    const r = await runSync(null, false, { cwd: tmp, spawn: completedSpawn, now: NOW });
+    assert.equal(r.kind, "synced");
+    assert.ok(r.bound.includes("validation.lastStatus → passed"), `summary must mention the upsert: ${JSON.stringify(r.bound)}`);
+    const manifest = JSON.parse(await readFile(manifestPath, "utf8"));
+    assert.equal(manifest.validation.lastStatus, "passed");
+    assert.equal(manifest.validation.lastSyncedAt, "2026-07-11T09:00:00Z");
+  });
+
+  test("idempotent: second completion sync leaves the manifest byte-identical (no re-write)", async () => {
+    const { tmp, manifestPath } = await makeProject();
+    await runSync(null, false, { cwd: tmp, spawn: completedSpawn, now: NOW });
+    const afterFirst = await readFile(manifestPath, "utf8");
+    const r2 = await runSync(null, false, { cwd: tmp, spawn: completedSpawn, now: () => "2026-07-12T00:00:00Z" });
+    assert.equal(r2.kind, "no-change");
+    assert.equal(await readFile(manifestPath, "utf8"), afterFirst, "already-passed must not rewrite (lastSyncedAt frozen)");
+  });
+
+  test("dry-run on a completed milestone persists nothing", async () => {
+    const { tmp, manifestPath } = await makeProject();
+    const before = await readFile(manifestPath, "utf8");
+    const r = await runSync(null, true, { cwd: tmp, spawn: completedSpawn, now: NOW });
+    assert.equal(r.kind, "dry-run");
+    assert.equal(await readFile(manifestPath, "utf8"), before);
+  });
+
+  test("non-completed sync never touches validation", async () => {
+    const { tmp, manifestPath } = await makeProject();
+    await runSync("specs/minimal.html", false, { cwd: tmp, spawn: activeSpawn, now: NOW });
+    const manifest = JSON.parse(await readFile(manifestPath, "utf8"));
+    assert.equal(manifest.validation, undefined);
+  });
+
+  test("a pre-existing validation object is upserted in place (lastStatus running → passed), other keys kept", async () => {
+    const { tmp, manifestPath } = await makeProject();
+    const manifest = JSON.parse(await readFile(manifestPath, "utf8"));
+    manifest.validation = { lastStatus: "running", lastRunAt: "2026-07-11T08:00:00Z" };
+    await writeFile(manifestPath, JSON.stringify(manifest), "utf8");
+    await runSync(null, false, { cwd: tmp, spawn: completedSpawn, now: NOW });
+    const after = JSON.parse(await readFile(manifestPath, "utf8"));
+    assert.equal(after.validation.lastStatus, "passed");
+    assert.equal(after.validation.lastRunAt, "2026-07-11T08:00:00Z", "unrelated validation keys survive");
+    assert.equal(after.validation.lastSyncedAt, "2026-07-11T09:00:00Z");
+  });
+});
