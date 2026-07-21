@@ -11,11 +11,11 @@
 // dispatch" mechanism for reopen reasons — a lightweight, file-based sibling of
 // escalation.js#claimOverrideForInjection, keyed by (milestone, slice, task).
 
-import { existsSync, mkdirSync, readFileSync, unlinkSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 
 import { legacyMilestonesDir, resolveSlicePath, resolveTasksDir } from "./paths.js";
-import { atomicWriteSync } from "./atomic-write.js";
+import { atomicWriteSync, removeProjectionFileSync } from "./atomic-write.js";
 import { logWarning } from "./workflow-logger.js";
 
 interface ReopenReasonArtifact {
@@ -91,7 +91,7 @@ export function claimReopenReasonForInjection(
   }
   // Claim (delete) regardless of validity so a malformed artifact doesn't
   // wedge every future dispatch of this task.
-  try { unlinkSync(path); } catch { /* already gone */ }
+  try { removeProjectionFileSync(path); } catch { /* already gone */ }
   if (!art) return null;
   return { injectionBlock: formatReopenReasonBlock(art) };
 }

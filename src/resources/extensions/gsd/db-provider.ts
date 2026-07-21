@@ -1,35 +1,55 @@
 // Project/App: gsd-pi
-// File Purpose: SQLite provider loading and fallback helpers for the GSD database facade.
+// File Purpose: SQLite provider loading and lifecycle helpers for the GSD database facade.
 
-export type DbProviderName = "node:sqlite" | "better-sqlite3";
+import { closeSync, openSync } from "node:fs";
 
-export const BETTER_SQLITE3_PACKAGE = ["better", "sqlite3"].join("-");
+export type DbProviderName = "node:sqlite";
+
+export const MIN_SQLITE_NODE_VERSION = "22.18.0";
 
 export interface SqliteProviderDeps {
   tryRequireNodeSqlite(): unknown;
-  tryRequireBetterSqlite3(): unknown;
   suppressSqliteWarning(): void;
   nodeVersion: string;
   writeStderr(message: string): void;
 }
 
-export interface SqliteFallbackOpen {
-  providerName: "better-sqlite3";
-  providerModule: unknown;
-  rawDb: unknown;
-}
-
-type NodeSqliteModule = {
-  DatabaseSync?: new (path: string) => unknown;
+type RawDatabase = {
+  exec(sql: string): void;
+  prepare(sql: string): {
+    run(...params: unknown[]): unknown;
+    get(...params: unknown[]): Record<string, unknown> | undefined;
+    all(...params: unknown[]): unknown[];
+  };
+  close(): void;
 };
 
-type BetterSqliteModule =
-  | (new (path: string) => unknown)
-  | { default?: new (path: string) => unknown };
+type NodeSqliteModule = {
+  DatabaseSync?: new (path: string, options?: { readOnly?: boolean }) => RawDatabase;
+};
+
+function isClosedDatabaseError(error: unknown): boolean {
+  return /database (?:is )?not open|database is closed/iu.test(String(error));
+}
+
+function versionTuple(version: string): [number, number, number] | null {
+  const match = version.match(/^(\d+)\.(\d+)\.(\d+)/);
+  if (!match) return null;
+  return [Number(match[1]), Number(match[2]), Number(match[3])];
+}
+
+export function supportsRequiredSqliteApi(version: string): boolean {
+  const actual = versionTuple(version);
+  const minimum = versionTuple(MIN_SQLITE_NODE_VERSION)!;
+  if (!actual) return false;
+  for (let index = 0; index < minimum.length; index += 1) {
+    if (actual[index] !== minimum[index]) return actual[index] > minimum[index];
+  }
+  return true;
+}
 
 export function suppressSqliteWarning(): void {
   const origEmit = process.emit;
-  // Override via loose cast: Node's overloaded emit signature is not directly assignable.
   (process as any).emit = function (event: string, ...args: unknown[]): boolean {
     if (
       event === "warning" &&
@@ -47,9 +67,50 @@ export function suppressSqliteWarning(): void {
   };
 }
 
+function withReadOnlyCloseGuard(writable: RawDatabase, readOnlyGuard: RawDatabase): RawDatabase {
+  let writableClosed = false;
+  let guardClosed = false;
+
+  function closeHandle(database: RawDatabase): void {
+    try {
+      database.close();
+    } catch (error) {
+      try {
+        database.prepare("PRAGMA schema_version").get();
+      } catch (probeError) {
+        if (isClosedDatabaseError(probeError)) return;
+      }
+      throw error;
+    }
+  }
+
+  return {
+    exec(sql): void {
+      writable.exec(sql);
+    },
+    prepare(sql) {
+      return writable.prepare(sql);
+    },
+    close(): void {
+      if (guardClosed) return;
+      if (!writableClosed) {
+        try {
+          readOnlyGuard.prepare("PRAGMA schema_version").get();
+        } catch (error) {
+          const journalMode = writable.prepare("PRAGMA journal_mode").get()?.["journal_mode"];
+          if (journalMode !== "delete") throw error;
+        }
+        closeHandle(writable);
+        writableClosed = true;
+      }
+      closeHandle(readOnlyGuard);
+      guardClosed = true;
+    },
+  };
+}
+
 export class SqliteProviderLoader {
-  private providerName: DbProviderName | null = null;
-  private providerModule: unknown = null;
+  private providerModule: NodeSqliteModule | null = null;
   private loadAttempted = false;
   private readonly deps: SqliteProviderDeps;
 
@@ -61,86 +122,49 @@ export class SqliteProviderLoader {
     if (this.loadAttempted) return;
     this.loadAttempted = true;
 
-    try {
-      this.deps.suppressSqliteWarning();
-      const mod = this.deps.tryRequireNodeSqlite() as NodeSqliteModule;
-      if (mod.DatabaseSync) {
-        this.providerModule = mod;
-        this.providerName = "node:sqlite";
-        return;
+    const supportedRuntime = supportsRequiredSqliteApi(this.deps.nodeVersion);
+    if (supportedRuntime) {
+      try {
+        this.deps.suppressSqliteWarning();
+        const mod = this.deps.tryRequireNodeSqlite() as NodeSqliteModule;
+        if (mod.DatabaseSync) {
+          this.providerModule = mod;
+          return;
+        }
+      } catch {
+        this.providerModule = null;
       }
-    } catch {
-      // unavailable
     }
 
-    const betterSqlite = this.loadBetterSqliteModule();
-    if (betterSqlite) {
-      this.providerModule = betterSqlite;
-      this.providerName = "better-sqlite3";
-      return;
-    }
-
-    const nodeMajor = parseInt(this.deps.nodeVersion.split(".")[0], 10);
-    const versionHint = nodeMajor < 22
-      ? ` GSD requires Node >= 22.0.0 (current: v${this.deps.nodeVersion}). Upgrade Node to fix this.`
-      : "";
-    this.deps.writeStderr(
-      `gsd-db: No SQLite provider available (tried node:sqlite, better-sqlite3).${versionHint}\n`,
-    );
+    const versionHint = supportedRuntime
+      ? " Use a Node build with node:sqlite enabled."
+      : ` GSD requires Node >= ${MIN_SQLITE_NODE_VERSION} for node:sqlite (current: v${this.deps.nodeVersion}). Upgrade Node to fix this.`;
+    this.deps.writeStderr(`gsd-db: No SQLite provider available.${versionHint}\n`);
   }
 
   getProviderName(): DbProviderName | null {
-    return this.providerName;
+    return this.providerModule ? "node:sqlite" : null;
   }
 
   openRaw(path: string): unknown {
     this.load();
-    if (!this.providerModule || !this.providerName) return null;
+    const DatabaseSync = this.providerModule?.DatabaseSync;
+    if (!DatabaseSync) return null;
+    if (path === ":memory:") return new DatabaseSync(path);
 
-    if (this.providerName === "node:sqlite") {
-      const { DatabaseSync } = this.providerModule as {
-        DatabaseSync: new (path: string) => unknown;
-      };
-      return new DatabaseSync(path);
+    closeSync(openSync(path, "a"));
+    const readOnlyGuard = new DatabaseSync(path, { readOnly: true });
+    try {
+      return withReadOnlyCloseGuard(new DatabaseSync(path), readOnlyGuard);
+    } catch (error) {
+      readOnlyGuard.close();
+      throw error;
     }
-
-    const Database = this.providerModule as new (path: string) => unknown;
-    return new Database(path);
-  }
-
-  tryOpenBetterSqliteFallback(path: string): SqliteFallbackOpen | null {
-    if (this.providerName !== "node:sqlite") return null;
-
-    const Database = this.loadBetterSqliteModule();
-    if (!Database) return null;
-
-    return {
-      providerName: "better-sqlite3",
-      providerModule: Database,
-      rawDb: new Database(path),
-    };
-  }
-
-  commitFallback(fallback: SqliteFallbackOpen): void {
-    this.providerName = fallback.providerName;
-    this.providerModule = fallback.providerModule;
   }
 
   reset(): void {
     this.loadAttempted = false;
     this.providerModule = null;
-    this.providerName = null;
-  }
-
-  private loadBetterSqliteModule(): (new (path: string) => unknown) | null {
-    try {
-      const mod = this.deps.tryRequireBetterSqlite3() as BetterSqliteModule;
-      if (typeof mod === "function") return mod;
-      if (mod && typeof mod.default === "function") return mod.default;
-    } catch {
-      // unavailable
-    }
-    return null;
   }
 }
 

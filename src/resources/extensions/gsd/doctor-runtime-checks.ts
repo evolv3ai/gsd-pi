@@ -17,6 +17,11 @@ import { splitCompletedKey } from "./forensics.js";
 import { findMilestoneIds } from "./milestone-ids.js";
 import { getAllMilestones, isDbAvailable } from "./gsd-db.js";
 import { loadEffectiveGSDPreferences } from "./preferences.js";
+import { removeLegacyProjectionTreeSync, removeProjectionTreeSync } from "./atomic-write.js";
+import {
+  loadUnboundProjectionEvidence,
+  previewUnboundProjectionEvidenceResolution,
+} from "./managed-projection-history.js";
 
 const MAX_UAT_ATTEMPTS = 3;
 
@@ -37,8 +42,38 @@ export async function checkRuntimeHealth(
   shouldFix: (code: DoctorIssueCode) => boolean,
 ): Promise<void> {
   const root = gsdRoot(basePath);
+  const hadDatabaseAtStart = existsSync(join(root, "gsd.db"));
   const gitPrefs = loadEffectiveGSDPreferences(basePath)?.preferences?.git;
   const manageGitignore = gitPrefs?.manage_gitignore;
+
+  if (existsSync(root)) {
+    try {
+      for (const evidence of loadUnboundProjectionEvidence(basePath)) {
+        const discard = previewUnboundProjectionEvidenceResolution(basePath, evidence.evidenceId, "discard");
+        const preserve = previewUnboundProjectionEvidenceResolution(basePath, evidence.evidenceId, "preserve");
+        const restore = previewUnboundProjectionEvidenceResolution(basePath, evidence.evidenceId, "restore");
+        issues.push({
+          severity: "error",
+          code: "unresolved_projection_evidence",
+          scope: "project",
+          unitId: "project",
+          message: `Unresolved ${evidence.scope} projection evidence for ${evidence.logicalPath} is retained at .gsd/${evidence.evidencePath}. Review exact content ${discard.contentDigest}. Resolve by ID: /gsd doctor resolve-evidence ${evidence.evidenceId} --action=discard --consent=${discard.consent}; --action=preserve --consent=${preserve.consent} retains it at .gsd/${preserve.destinationPath}; or --action=restore --consent=${restore.consent} restores it to .gsd/${restore.destinationPath}.`,
+          file: `.gsd/${evidence.evidencePath}`,
+          fixable: false,
+        });
+      }
+    } catch (error) {
+      issues.push({
+        severity: "error",
+        code: "unresolved_projection_evidence",
+        scope: "project",
+        unitId: "project",
+        message: `Projection recovery evidence could not be assessed: ${error instanceof Error ? error.message : String(error)}`,
+        file: ".gsd/migration/unbound-projection-evidence.json",
+        fixable: false,
+      });
+    }
+  }
 
   // ── Stale crash lock ──────────────────────────────────────────────────
   // Phase C pt 2: the lock state lives in the workers + unit_dispatches
@@ -704,7 +739,7 @@ export async function checkRuntimeHealth(
   // for a phantom forward-reference. Surface as a fixable warning.
   try {
     const milestoneIds = findMilestoneIds(basePath);
-    const hasDbFile = existsSync(join(root, "gsd.db"));
+    const hasDbFile = hadDatabaseAtStart;
     for (const mid of milestoneIds) {
       const isOrphan = isReusableGhostMilestone(basePath, mid)
         || (!hasDbFile && isGhostMilestone(basePath, mid));
@@ -721,8 +756,11 @@ export async function checkRuntimeHealth(
 
         if (shouldFix("orphan_milestone_dir")) {
           try {
-            const orphanPath = join(milestonesDir(basePath), mid);
-            rmSync(orphanPath, { recursive: true, force: true });
+            const orphanPath = hasDbFile
+              ? join(milestonesDir(basePath), mid)
+              : join(root, "milestones", mid);
+            if (hasDbFile) removeProjectionTreeSync(orphanPath);
+            else removeLegacyProjectionTreeSync(basePath, orphanPath);
             fixesApplied.push(`removed orphan milestone directory: ${mid}`);
           } catch {
             // Non-fatal — leave for manual cleanup

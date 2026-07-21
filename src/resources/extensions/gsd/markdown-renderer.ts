@@ -9,7 +9,8 @@
 // Critical invariant: rendered markdown must round-trip through
 // parseRoadmap(), parsePlan(), parseSummary() in files.ts.
 
-import { readFileSync, existsSync, mkdirSync, statSync, unlinkSync } from "node:fs";
+import { readFileSync, existsSync, mkdirSync, statSync } from "node:fs";
+import { createProjectionDirectorySync, removeProjectionFileSync } from "./atomic-write.js";
 import { logWarning } from "./workflow-logger.js";
 import { isClosedStatus, toStatus } from "./status-guards.js";
 import { dirname, join } from "node:path";
@@ -194,7 +195,7 @@ async function writeAndStore(
     slice_id?: string;
     task_id?: string;
   },
-  basePath?: string,
+  basePath: string,
 ): Promise<void> {
   await saveFile(absPath, content);
 
@@ -485,7 +486,7 @@ export async function renderPlanFromDb(
   const existingPlanPath = resolveSliceFile(basePath, milestoneId, sliceId, "PLAN");
   const defaultPlanPath = existingPlanPath ?? join(basePath, relSliceFile(basePath, milestoneId, sliceId, "PLAN", milestoneTitle));
   const absPath = outputPath ?? defaultPlanPath;
-  mkdirSync(dirname(absPath), { recursive: true });
+  createProjectionDirectorySync(dirname(absPath));
   const artifactPath = toArtifactPath(absPath, basePath);
   const sliceGates = getGateResults(milestoneId, sliceId, "slice");
   const content = renderSlicePlanMarkdown(slice, tasks, sliceGates);
@@ -587,7 +588,7 @@ export async function renderRoadmapFromDb(
     const absPath = targetMilestoneFile(basePath, milestoneId, "ROADMAP", milestone.title);
     if (existsSync(absPath)) {
       const artifactPath = toArtifactPath(absPath, basePath);
-      unlinkSync(absPath);
+      removeProjectionFileSync(absPath);
       try {
         deleteArtifactByPath(artifactPath);
       } catch {
@@ -659,7 +660,7 @@ export async function renderMilestoneArtifactsFromDb(
     await writeAndStore(absPath, artifactPath, artifact.full_content, {
       artifact_type: artifact.artifact_type,
       milestone_id: milestoneId,
-    });
+    }, basePath);
     wrote = true;
   }
 
@@ -714,7 +715,7 @@ export async function renderSliceArtifactsFromDb(
     if (artifactType === "PLAN" && isAutoRecoveryPlaceholderPlan(artifact.full_content)) continue;
 
     const absPath = join(basePath, relSliceFile(basePath, milestoneId, sliceId, artifactType));
-    mkdirSync(dirname(absPath), { recursive: true });
+    createProjectionDirectorySync(dirname(absPath));
     const artifactPath = toArtifactPath(absPath, basePath);
     await writeAndStore(absPath, artifactPath, artifact.full_content, {
       artifact_type: artifactType,
@@ -964,7 +965,7 @@ export async function renderAllFromDb(basePath: string): Promise<RenderAllResult
   }
 
   // Re-project root DECISIONS.md from the authoritative decision records so a
-  // full DB → markdown re-projection (recover, rebuild) also heals decisions
+  // full DB → markdown re-projection (rebuild or reconcile) also heals decisions
   // drift — e.g. a worktree merge that accepted one branch's DECISIONS.md while
   // the DB holds the union of both branches' decisions.
   try {

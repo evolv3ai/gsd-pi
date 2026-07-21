@@ -38,7 +38,7 @@ import { GATE_REGISTRY } from "../gate-registry.js";
 import { generateRequirementsMd, saveArtifactToDb } from "../db-writer.js";
 import { clearPathCache, normalizeRealPath, relMilestoneFile, relSliceFile, relSlicePath, resolveGsdPathContract, resolveMilestoneFile, resolveSliceFile } from "../paths.js";
 import { saveFile, clearParseCache } from "../files.js";
-import { unlinkSync } from "node:fs";
+import { removeProjectionFileSync } from "../atomic-write.js";
 import { hostname } from "node:os";
 import { join } from "node:path";
 import type { CompleteMilestoneParams } from "./complete-milestone.js";
@@ -109,6 +109,12 @@ export type {
   UatEvidenceRef,
   UatPresentationInput,
 } from "../uat-run.js";
+
+function removeContextDraftProjection(path: string): void {
+  removeProjectionFileSync(path);
+}
+
+export const _removeContextDraftProjectionForTest = removeContextDraftProjection;
 
 export const SUPPORTED_SUMMARY_ARTIFACT_TYPES = [
   "SUMMARY",
@@ -684,7 +690,7 @@ export async function executeSummarySave(
         const draftFile = params.slice_id
           ? resolveSliceFile(basePath, params.milestone_id!, params.slice_id, "CONTEXT-DRAFT")
           : resolveMilestoneFile(basePath, params.milestone_id!, "CONTEXT-DRAFT");
-        if (draftFile) unlinkSync(draftFile);
+        if (draftFile) removeContextDraftProjection(draftFile);
       } catch (e) {
         logWarning("tool", `CONTEXT-DRAFT.md unlink failed: ${(e as Error).message}`);
       }

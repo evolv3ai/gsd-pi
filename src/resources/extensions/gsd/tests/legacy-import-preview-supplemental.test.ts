@@ -2,7 +2,7 @@
 // File Purpose: Exact retained-byte integration contract for unified supplemental legacy interpretation.
 
 import assert from "node:assert/strict";
-import { cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -18,7 +18,7 @@ import {
   collectLegacyImportDatabaseTargetEvidence,
   LegacyImportDatabaseTargetError,
 } from "../legacy-import-preview-database-target.ts";
-import { inspectLegacyImportDatabaseTarget } from "../legacy-import-database-target-inspector.ts";
+import { inspectLegacyImportDatabaseTarget, LegacyImportDatabaseTargetInspectionError } from "../legacy-import-database-target-inspector.ts";
 import type { LegacyImportInterpretation } from "../legacy-import-preview-interpretation.ts";
 import {
   captureLegacyImportSourceSet,
@@ -461,5 +461,102 @@ describe("legacy supplemental captured-byte integration", () => {
         && error.stage === "interpret"
         && error.code === "LEGACY_IMPORT_DATABASE_EVIDENCE_SOURCE_INCONSISTENT",
     );
+  });
+
+  test("database inspector surfaces copy tampering over cleanup failure", (t) => {
+    const { capture } = captureComposite(t);
+    const source = capture.entries.find((candidate) => candidate.logical_path === ".gsd/gsd.db");
+    assert.ok(source?.payload_id && source.sha256 && source.byte_size !== undefined);
+    const payload = capture.payloads.find((candidate) => candidate.payload_id === source.payload_id);
+    assert.ok(payload);
+    const request = {
+      root_kind: "project" as const,
+      logical_path: source.logical_path,
+      capture_hash: capture.capture_hash,
+      source_id: source.source_id,
+      source_sha256: source.sha256,
+      source_byte_size: source.byte_size,
+      bytes: Buffer.from(payload.bytes_base64, "base64"),
+    };
+    let reads = 0;
+    const scratch = mkdtempSync(join(tmpdir(), "gsd-supplemental-inspect-"));
+    t.after(() => rmSync(scratch, { recursive: true, force: true }));
+    let observed: unknown;
+    try {
+      inspectLegacyImportDatabaseTarget(request, {
+        makeTemporaryDirectory: () => scratch,
+        writePrivateFile: (path, bytes) => writeFileSync(path, bytes, { mode: 0o600 }),
+        readFile: (path) => {
+          reads += 1;
+          const current = readFileSync(path);
+          if (reads === 1) return current;
+          const altered = Buffer.from(current);
+          altered[altered.length - 1] ^= 1;
+          return altered;
+        },
+        removeTemporaryDirectory: (path) => {
+          rmSync(path, { recursive: true, force: true });
+          throw new Error("cleanup boom");
+        },
+        openReadOnly: () => {
+          throw new Error("sqlite provider not needed for this test");
+        },
+      });
+    } catch (error) {
+      observed = error;
+    }
+    assert.ok(
+      observed instanceof LegacyImportDatabaseTargetInspectionError,
+      `expected COPY_CHANGED, received ${String(observed)}`,
+    );
+    assert.equal(observed.code, "LEGACY_IMPORT_DATABASE_INSPECTION_COPY_CHANGED");
+    assert.equal(observed.stage, "cleanup");
+    assert.equal(observed.retryable, false);
+    assert.equal(observed.context.cleanup_also_failed, "true");
+    assert.equal(observed.context.logical_path, ".gsd/gsd.db");
+    assert.equal(existsSync(scratch), false);
+  });
+
+  test("does not label a boilerplate secrets manifest containing secret material as sanitized", (t) => {
+    const source = join(temporaryDirectory(t), ".gsd");
+    mkdirSync(source, { recursive: true });
+    writeFileSync(
+      join(source, "SECRETS-MANIFEST.md"),
+      [
+        "# Secrets Manifest",
+        "",
+        "No credential material is included in this repository.",
+        "",
+        "- Required environment keys: none",
+        "",
+        "-----BEGIN OPENSSH PRIVATE KEY-----",
+        "b3BlbnNzaC1rZXktdjEAAAAABG5vbmUAAAAEbm9uZQ",
+        "-----END OPENSSH PRIVATE KEY-----",
+        "",
+      ].join("\n"),
+    );
+    const capture = captureLegacyImportSourceSet({
+      roots: [{
+        id: "project",
+        kind: "project",
+        physical_path: source,
+        logical_path: ".gsd",
+        presence: "required",
+      }],
+    });
+    rmSync(source, { recursive: true, force: true });
+
+    const interpretation = interpretLegacySupplementalCapture(capture);
+    const manifest = interpretation.candidates.find((candidate) => (
+      candidate.target.kind === "artifact" && candidate.target.key === ".gsd/SECRETS-MANIFEST.md"
+    ));
+    assert.ok(manifest);
+    assert.deepEqual(manifest.normalized, {
+      path: ".gsd/SECRETS-MANIFEST.md",
+      preservation: "verbatim",
+      role: "secrets-manifest",
+    });
+    assert.equal(manifest.reason_code, "secrets-manifest-preserved");
+    assert.doesNotMatch(canonicalLegacyImportJson(manifest.normalized), /OPENSSH|contains_secrets/u);
   });
 });

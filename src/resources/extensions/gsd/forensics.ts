@@ -9,7 +9,7 @@
  */
 
 import type { ExtensionAPI, ExtensionCommandContext } from "@gsd/pi-coding-agent";
-import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { join, dirname, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 import { gsdHome } from "./gsd-home.js";
@@ -28,6 +28,7 @@ import { deriveState } from "./state.js";
 import { isAutoActive } from "./auto.js";
 import { loadPrompt } from "./prompt-loader.js";
 import { gsdRoot } from "./paths.js";
+import { atomicWriteSync } from "./atomic-write.js";
 import { isDbAvailable, getHierarchyCompletionCounts } from "./gsd-db.js";
 import { formatDuration } from "../shared/format-utils.js";
 import { getAutoWorktreePath } from "./auto-worktree-path-resolution.js";
@@ -269,7 +270,7 @@ async function writeForensicsDedupPref(ctx: ExtensionCommandContext, enabled: bo
     }
   }
 
-  writeFileSync(prefsPath, `---\n${frontmatter}---${body}`, "utf-8");
+  atomicWriteSync(prefsPath, `---\n${frontmatter}---${body}`, "utf-8");
   clearGSDPreferencesCache();
 }
 
@@ -1180,7 +1181,7 @@ function saveForensicReport(basePath: string, report: ForensicReport, problemDes
     }
   }
 
-  writeFileSync(filePath, sections.join("\n"), "utf-8");
+  atomicWriteSync(filePath, sections.join("\n"), "utf-8");
   return filePath;
 }
 
@@ -1204,7 +1205,7 @@ export function writeForensicsMarker(basePath: string, reportPath: string, promp
     promptContent,
     createdAt: new Date().toISOString(),
   };
-  writeFileSync(join(dir, "active-forensics.json"), JSON.stringify(marker), "utf-8");
+  atomicWriteSync(join(dir, "active-forensics.json"), JSON.stringify(marker), "utf-8");
 }
 
 /**

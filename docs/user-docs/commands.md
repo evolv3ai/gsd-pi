@@ -86,6 +86,7 @@ After writing the file, GSD attempts to open it in a browser using the local pla
 | `/gsd config` | (deprecated) Set tool API keys — use `/gsd keys` (tool keys) or `/gsd setup` (provider wizard) instead |
 | `/gsd keys` | API key manager — list, add, remove, test, rotate, doctor |
 | `/gsd doctor` | Runtime health checks with auto-fix — issues surface in real time across widget, visualizer, and HTML reports |
+| `/gsd doctor resolve-evidence <evidence-id> --action=<discard\|preserve\|restore> --consent=<printed-consent>` | Resolve retained projection evidence using the exact ID and action-specific consent printed by `/gsd doctor` |
 | `/gsd inspect` | Show SQLite DB diagnostics |
 | `/gsd show-config` | Show effective configuration, including models, routing, and toggles |
 | `/gsd init` | Project init wizard — detect, configure, bootstrap `.gsd/`; if `.gsd/` already exists, opens an "Already Initialized" menu with `Re-configure preferences`, `Suggest & install skills`, or `Cancel` |
@@ -100,7 +101,7 @@ After writing the file, GSD attempts to open it in a browser using the local pla
 | `/gsd hooks` | Show configured post-unit and pre-dispatch hooks |
 | `/gsd run-hook` | Manually trigger a specific hook |
 | `/gsd migrate` | Migrate a v1 `.planning` directory to `.gsd` format |
-| `/gsd recover --confirm` | Explicitly reset legacy hierarchy plus persisted validation and quality-gate state, then reconstruct from rendered markdown; refuses to replace adopted canonical lifecycle history |
+| `/gsd recover` | Preview an explicit legacy markdown import, then approve the exact hash shown with `/gsd recover --preview=<sha256>` |
 | `/gsd rebuild markdown` | Rebuild markdown projections from the canonical database; stale completion projections are quarantined, not imported |
 | `/gsd rebuild database` | Reserved for DB-native rebuilds; does not import markdown projections |
 | `/gsd language <language\|off\|clear>` | Set or clear the global response language |
@@ -467,7 +468,7 @@ echo "Build a CLI tool" | gsd headless new-milestone --context -
 | `--context-text <text>` | Inline context text for `new-milestone` |
 | `--auto` | Chain into auto-mode after milestone creation |
 
-**Exit codes:** `0` = complete, `1` = error or timeout, `2` = blocked.
+**Exit codes:** `0` = complete, `1` = error or timeout, `10` = blocked, `11` = cancelled.
 
 In JSON output summaries, headless can also return `status: "no-work-deterministic"` for repeatable no-progress tails (for example select → input → cancelled). This status exits with code `1` and suppresses automatic restart loops.
 
@@ -475,13 +476,17 @@ Any `/gsd` subcommand works as a positional argument — `gsd headless status`, 
 
 ### `gsd headless recover`
 
-Non-TTY equivalent of `/gsd recover --confirm` — resets the legacy DB hierarchy plus persisted validation and quality-gate state, then reconstructs from rendered markdown. It refuses to replace adopted canonical lifecycle history. Designed for CI, cron, and any environment where the interactive recover prompt cannot run.
+Non-TTY equivalent of the `/gsd recover` preview and evidence-bound approval flow. It fingerprints legacy markdown and the current database, creates and verifies a retained backup only after the exact `--preview=<sha256>` approval, applies the unchanged preview through one atomic Import Application, and prints the recommended recovery action plus its exact evidence. Existing database rows absent from markdown are preserved. Designed for CI, cron, and any environment where the interactive recover prompt cannot run.
 
 ```bash
 gsd headless recover
 ```
 
-Exits non-zero if recovery fails. Pair with `gsd headless query` afterwards to verify the rebuilt state.
+The first call prints the sealed Import Preview and exits without applying the import. Review that output, then rerun with the exact `--preview=<preview-hash>` value it prints. That approved run performs the Import Application and assessment.
+
+If assessment recommends destructive restore, rerun with the printed `--application=<operation-id> --restore --consent=proceed:destructive-database-restore:<evidence-hash>` values. Restore is permanently unavailable after any later canonical write or Authority Epoch cutover; follow the printed `--application=<operation-id> --forward-repair` route instead. When Forward Repair reports genuine overlap, supply one printed evidence-bound `--choice` for each target.
+
+Exit codes key on the assessment decision: `restore-consent-required`, `forward-repair-required`, and `already-restored` exit `0` (the printed next step is expected follow-up input, not a failure). A Forward Repair that still requires overlap choices exits `1`. Every other decision — `refused`, `transaction-rollback-only`, or `temporarily-unavailable` — fails closed: it exits non-zero and prints no `gsd-recover: recovered` marker, as do setup and action errors. Pair with `gsd headless query` afterwards to inspect canonical state.
 
 ### `gsd headless query`
 

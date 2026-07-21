@@ -14,7 +14,9 @@ import {
   readdirSync,
   realpathSync,
   rmSync,
+  symlinkSync,
   unlinkSync,
+  utimesSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -308,6 +310,8 @@ describe("legacy import backup restore drill", () => {
     );
     assert.deepEqual(readdirSync(state.drillParent), []);
 
+    // The drill body failure stays primary; the cleanup failure must be
+    // chained as its cause rather than silently discarding the original.
     assert.throws(
       () => testApi()(state.input, {
         makeDrillDirectory: () => makeDrillDirectory(state.drillParent),
@@ -318,8 +322,67 @@ describe("legacy import backup restore drill", () => {
           throw new Error("injected cleanup failure");
         },
       }),
-      /cleanup/i,
+      (error: unknown) => {
+        assert.ok(error instanceof Error);
+        assert.match(error.message, /original failure/);
+        const cleanupCause = error.cause;
+        assert.ok(cleanupCause instanceof LegacyImportBackupError);
+        assert.equal(
+          (cleanupCause as LegacyImportBackupError).code,
+          "LEGACY_IMPORT_BACKUP_STAGING_CLEANUP_FAILED",
+        );
+        assert.equal((cleanupCause as LegacyImportBackupError).stage, "cleanup");
+        return true;
+      },
     );
+
+    assert.throws(
+      () => testApi()(state.input, {
+        makeDrillDirectory: () => makeDrillDirectory(state.drillParent),
+        removeDrillDirectory() {
+          throw new Error("injected cleanup failure");
+        },
+      }),
+      (error: unknown) => error instanceof LegacyImportBackupError
+        && error.code === "LEGACY_IMPORT_BACKUP_STAGING_CLEANUP_FAILED",
+    );
+  });
+
+  test("drill start sweeps only stale exact-prefix residue directories", (t) => {
+    const state = fixture(t);
+    const sweep = (restoreDrill as unknown as {
+      _sweepStaleRestoreDrillDirectoriesForTest?: (root: string, nowMs: number) => void;
+    })._sweepStaleRestoreDrillDirectoriesForTest;
+    assert.ok(sweep, "restore drill residue janitor test seam must be implemented");
+
+    const now = Date.now();
+    const staleTime = new Date(now - 25 * 60 * 60 * 1000);
+    const staleDir = join(state.drillParent, "gsd-legacy-import-restore-drill-stale");
+    const freshDir = join(state.drillParent, "gsd-legacy-import-restore-drill-fresh");
+    const foreignDir = join(state.drillParent, "unrelated-residue");
+    const prefixFile = join(state.drillParent, "gsd-legacy-import-restore-drill-file");
+    mkdirSync(staleDir);
+    writeFileSync(join(staleDir, "restore-stage.sqlite"), "crashed drill residue");
+    mkdirSync(freshDir);
+    mkdirSync(foreignDir);
+    writeFileSync(prefixFile, "not a directory");
+    utimesSync(staleDir, staleTime, staleTime);
+    utimesSync(prefixFile, staleTime, staleTime);
+
+    sweep(state.drillParent, now);
+
+    assert.equal(existsSync(staleDir), false, "stale drill residue must be swept");
+    assert.equal(existsSync(freshDir), true, "a live drill directory must survive");
+    assert.equal(existsSync(foreignDir), true, "foreign entries must survive");
+    assert.equal(existsSync(prefixFile), true, "a non-directory entry must survive");
+
+    if (process.platform !== "win32") {
+      const prefixLink = join(state.drillParent, "gsd-legacy-import-restore-drill-link");
+      symlinkSync(foreignDir, prefixLink, "dir");
+      sweep(state.drillParent, now);
+      assert.equal(existsSync(prefixLink), true, "a symbolic link must never be swept");
+      unlinkSync(prefixLink);
+    }
   });
 
   test("real SIGKILL leaves at most private residue and a fresh invocation still converges", {

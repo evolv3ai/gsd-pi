@@ -3,7 +3,7 @@
 
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import {
   existsSync,
   linkSync,
@@ -20,7 +20,6 @@ import {
   symlinkSync,
   writeFileSync,
 } from "node:fs";
-import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -37,7 +36,6 @@ import {
   type LegacyImportBaseSnapshot,
 } from "../legacy-import-preview-base.ts";
 import { createDbAdapter, type DbAdapter, type DbStatement } from "../db-adapter.ts";
-import { createSqliteProviderLoader } from "../db-provider.ts";
 import {
   createLegacyImportPreview,
   hashLegacyImportBytes,
@@ -69,7 +67,7 @@ import {
   validateLegacyImportSourceRoots,
   type LegacyImportSourceRoot,
 } from "../legacy-import-preview-source.ts";
-import { openSqliteReadOnly } from "../sqlite-readonly.ts";
+import { openSqliteReadOnly, SqliteReadOnlyConfigurationError } from "../sqlite-readonly.ts";
 
 const EMPTY_HASH = hashLegacyImportValue([]);
 const BACKUP_HASH = `sha256:${"b".repeat(64)}` as LegacyImportSha256;
@@ -1907,57 +1905,6 @@ describe("legacy import backup snapshot", () => {
     realProviderSnapshotTest("node-sqlite", (path) => new DatabaseSync(path), t);
   });
 
-  test("includes committed WAL content through the deterministic better-sqlite3 fallback adapter", (t) => {
-    class BetterSqlite3CompatibleDatabase {
-      readonly database: DatabaseSync;
-
-      constructor(path: string) {
-        this.database = new DatabaseSync(path);
-      }
-
-      exec(sql: string): void {
-        this.database.exec(sql);
-      }
-
-      prepare(sql: string) {
-        return this.database.prepare(sql);
-      }
-
-      close(): void {
-        this.database.close();
-      }
-    }
-
-    const loader = createSqliteProviderLoader({
-      tryRequireNodeSqlite() { throw new Error("node:sqlite disabled for fallback proof"); },
-      tryRequireBetterSqlite3() { return BetterSqlite3CompatibleDatabase; },
-      suppressSqliteWarning() {},
-      nodeVersion: process.versions.node,
-      writeStderr(message) { throw new Error(message); },
-    });
-    loader.load();
-    assert.equal(loader.getProviderName(), "better-sqlite3");
-    realProviderSnapshotTest("better-sqlite3-fallback", (path) => loader.openRaw(path), t);
-  });
-
-  const require = createRequire(import.meta.url);
-  let BetterSqlite3: (new (path: string) => unknown) | null = null;
-  try {
-    const loaded = require("better-sqlite3") as (
-      (new (path: string) => unknown) | { default?: new (path: string) => unknown }
-    );
-    BetterSqlite3 = typeof loaded === "function" ? loaded : loaded.default ?? null;
-  } catch {
-    BetterSqlite3 = null;
-  }
-
-  test("includes committed WAL content with better-sqlite3 across quoted Unicode paths", {
-    skip: BetterSqlite3 === null ? "better-sqlite3 is not installed in this workspace" : false,
-  }, (t) => {
-    assert.ok(BetterSqlite3);
-    const Provider = BetterSqlite3;
-    realProviderSnapshotTest("better-sqlite3", (path) => new Provider(path), t);
-  });
 });
 
 interface LegacyImportBackupPreparationInputForTest {
@@ -2075,6 +2022,12 @@ function visibleBackupPaths(destinationDirectory: string): string[] {
     .map((name) => join(destinationDirectory, name));
 }
 
+function stagingDirectoryPaths(destinationDirectory: string): string[] {
+  return readdirSync(destinationDirectory)
+    .filter((name) => name.startsWith("."))
+    .map((name) => join(destinationDirectory, name));
+}
+
 function assertIndependentlyValidFinal(path: string): void {
   const database = new DatabaseSync(path, { readOnly: true });
   try {
@@ -2169,7 +2122,13 @@ describe("legacy import backup preparation", () => {
 
     const sourceDrift = preparationFixture(t);
     writeFileSync(sourceDrift.sourcePath, "# State\n\nChanged after approval.\n");
-    assert.throws(() => prepare(sourceDrift.input));
+    assert.throws(
+      () => prepare(sourceDrift.input),
+      (error: unknown) => error instanceof LegacyImportBackupError
+        && error.code === "LEGACY_IMPORT_BACKUP_CONTRACT_INVALID"
+        && error.stage === "contract"
+        && !error.retryable,
+    );
     assert.deepEqual(readdirSync(sourceDrift.destinationDirectory), []);
 
     closeDatabase();
@@ -2178,7 +2137,15 @@ describe("legacy import backup preparation", () => {
       INSERT INTO decisions (id, decision) VALUES ('D-PREPARE-DRIFT', 'Changed after approval')
     `).run();
     const changesAfterFixtureMutation = preparationLineage(baseDrift.database)?.["total_changes"];
-    assert.throws(() => prepare(baseDrift.input));
+    // Base drift changes the sealed Preview hash, so it is rejected at preview
+    // revalidation (contract stage) before the base capture boundary is reached.
+    assert.throws(
+      () => prepare(baseDrift.input),
+      (error: unknown) => error instanceof LegacyImportBackupError
+        && error.code === "LEGACY_IMPORT_BACKUP_CONTRACT_INVALID"
+        && error.stage === "contract"
+        && !error.retryable,
+    );
     assert.deepEqual(readdirSync(baseDrift.destinationDirectory), []);
     assert.equal(preparationLineage(baseDrift.database)?.["total_changes"], changesAfterFixtureMutation);
   });
@@ -2327,6 +2294,18 @@ describe("legacy import backup preparation", () => {
       assert.equal(recovered.backup_ref, finals[0]);
       closeDatabase();
     }
+  });
+
+  test("unsupported directory durability fails publication closed", (t) => {
+    const fixture = preparationFixture(t);
+    assert.throws(
+      () => _prepareLegacyImportBackupForTest(fixture.input, preparationDependencies({
+        syncDirectory: () => "unsupported",
+      })),
+      (error: unknown) => error instanceof LegacyImportBackupError
+        && error.code === "LEGACY_IMPORT_BACKUP_SYNC_FAILED"
+        && error.stage === "sync",
+    );
   });
 
   test("metadata or post-snapshot source failure creates no published final", (t) => {
@@ -2511,6 +2490,64 @@ describe("legacy import backup preparation", () => {
     assert.deepEqual(readdirSync(fixture.destinationDirectory), []);
   });
 
+  test("sweeps stale private staging directories from a terminated run before publication", (t) => {
+    const fixture = preparationFixture(t);
+    const stale = join(
+      fixture.destinationDirectory,
+      `.${fixture.input.label}.staging-${randomUUID()}`,
+    );
+    mkdirSync(stale);
+    writeFileSync(join(stale, "snapshot.sqlite"), "stale bytes");
+    const otherLabel = join(fixture.destinationDirectory, `.other-label.staging-${randomUUID()}`);
+    mkdirSync(otherLabel);
+    const nonUuid = join(fixture.destinationDirectory, `.${fixture.input.label}.staging-not-a-uuid`);
+    mkdirSync(nonUuid);
+
+    const result = prepareBackupApi()(fixture.input);
+
+    assert.equal(existsSync(stale), false, "stale staging directory for this label is swept");
+    assert.equal(lstatSync(otherLabel).isDirectory(), true, "staging directories of other labels are kept");
+    assert.equal(lstatSync(nonUuid).isDirectory(), true, "non-uuid staging names are kept");
+    assert.deepEqual(visibleBackupPaths(fixture.destinationDirectory), [result.backup_ref]);
+    assertIndependentlyValidFinal(result.backup_ref);
+  });
+
+  test("rejects a published name that hardlinks the live database instead of reusing it", (t) => {
+    const fixture = preparationFixture(t);
+    const first = prepareBackupApi()(fixture.input);
+    rmSync(first.backup_ref);
+    linkSync(fixture.databasePath, first.backup_ref);
+
+    assert.throws(
+      () => prepareBackupApi()(fixture.input),
+      (error: unknown) => error instanceof LegacyImportBackupError
+        && error.code === "LEGACY_IMPORT_BACKUP_DESTINATION_ALIASES_DATABASE"
+        && error.stage === "publication"
+        && !error.retryable,
+    );
+    assert.equal(lstatSync(first.backup_ref).isFile(), true, "the aliasing final is left untouched");
+  });
+
+  test("maps an existing final's read-only configuration failure to the verification code", (t) => {
+    const fixture = preparationFixture(t);
+    const first = prepareBackupApi()(fixture.input);
+    let opens = 0;
+    assert.throws(
+      () => _prepareLegacyImportBackupForTest(fixture.input, preparationDependencies({
+        openReadOnly() {
+          opens += 1;
+          throw new SqliteReadOnlyConfigurationError();
+        },
+      })),
+      (error: unknown) => error instanceof LegacyImportBackupError
+        && error.code === "LEGACY_IMPORT_BACKUP_READ_ONLY_CONFIGURATION_FAILED"
+        && error.stage === "verification"
+        && !error.retryable,
+    );
+    assert.equal(opens, 1);
+    assert.deepEqual(visibleBackupPaths(fixture.destinationDirectory), [first.backup_ref]);
+  });
+
   test("legacy import backup restart converges after true termination before or after publication", {
     concurrency: false,
   }, (t) => {
@@ -2554,6 +2591,12 @@ describe("legacy import backup preparation", () => {
       const afterTermination = visibleBackupPaths(fixture.destinationDirectory);
       assert.equal(afterTermination.length, boundary === "after-publish" ? 1 : 0);
       if (afterTermination[0] !== undefined) assertIndependentlyValidFinal(afterTermination[0]);
+      const staleAfterTermination = stagingDirectoryPaths(fixture.destinationDirectory);
+      assert.equal(
+        staleAfterTermination.length,
+        1,
+        "true termination must visibly leak one private staging directory",
+      );
 
       assert.equal(openDatabase(fixture.databasePath), true);
       const restartedDatabase = _getAdapter();
@@ -2565,6 +2608,11 @@ describe("legacy import backup preparation", () => {
       const restarted = prepareBackupApi()(fixture.input);
       const converged = visibleBackupPaths(fixture.destinationDirectory);
       assert.deepEqual(converged, [restarted.backup_ref]);
+      assert.deepEqual(
+        stagingDirectoryPaths(fixture.destinationDirectory),
+        [],
+        "preparation sweeps the staging directory leaked by true termination",
+      );
       assertIndependentlyValidFinal(restarted.backup_ref);
       if (afterTermination[0] !== undefined) {
         assert.equal(restarted.backup_ref, afterTermination[0]);

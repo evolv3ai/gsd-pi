@@ -22,7 +22,7 @@ import {
   resolveGsdRootFile, relGsdRootFile, relSliceFile,
   relMilestoneFile,
 } from "./paths.js";
-import { readFileSync, writeFileSync, existsSync } from "node:fs";
+import { readFileSync, existsSync } from "node:fs";
 import { atomicWriteSync } from "./atomic-write.js";
 import { nativeAddPaths, nativeCommit } from "./native-git-bridge.js";
 import { loadEffectiveGSDPreferences } from "./preferences.js";
@@ -484,9 +484,11 @@ function removeDependsOnFromContextFiles(
     const newContent = newFm.trim()
       ? `---\n${newFm}\n---${body}`
       : body.replace(/^\n+/, "");
-    writeFileSync(contextFile, newContent, "utf-8");
+    atomicWriteSync(contextFile, newContent, "utf-8");
   }
 }
+
+export const _removeDependsOnFromContextFilesForTest = removeDependsOnFromContextFiles;
 
 function syncProjectMdSequence(
   basePath: string,

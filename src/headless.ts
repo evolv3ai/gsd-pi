@@ -405,13 +405,12 @@ async function runHeadlessOnce(options: HeadlessOptions, restartCount: number): 
     }
   }
 
-  // Recover: rebuild DB hierarchy from on-disk markdown projections, no RPC
-  // child needed. This is the one mutating headless subcommand — required for
-  // CI / automation that needs to reconcile DB state from markdown without
-  // launching an interactive TTY-bound runtime.
+  // Recover: apply a verified legacy import and assess or execute its recovery
+  // action, with no RPC child needed. This is the one mutating headless
+  // subcommand, for CI and automation without an interactive TTY-bound runtime.
   if (options.command === 'recover') {
     const { handleRecover } = await import('./headless-recover.js')
-    const result = await handleRecover(process.cwd())
+    const result = await handleRecover(process.cwd(), options.commandArgs)
     process.exit(result.exitCode)
   }
 

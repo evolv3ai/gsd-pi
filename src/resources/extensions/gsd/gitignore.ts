@@ -8,10 +8,11 @@
 
 import { join } from "node:path";
 import { execFileSync } from "node:child_process";
-import { existsSync, lstatSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, readFileSync } from "node:fs";
 import { nativeRmCached, nativeLsFiles } from "./native-git-bridge.js";
 import { gsdRoot } from "./paths.js";
 import { GIT_NO_PROMPT_ENV } from "./git-constants.js";
+import { atomicWriteSync } from "./atomic-write.js";
 
 /**
  * GSD runtime patterns for git index cleanup.
@@ -27,9 +28,13 @@ import { GIT_NO_PROMPT_ENV } from "./git-constants.js";
 export const GSD_RUNTIME_PATTERNS = [
   ".gsd-worktrees/",
   ".gsd-backups/",
+  ".gsd-migration-import-*/",
   ".gsd/activity/",
   ".gsd/audit/",
+  ".gsd/backups/",
   ".gsd/forensics/",
+  ".gsd/migration-applications/",
+  ".gsd/recovery-applications/",
   ".gsd/runtime/",
   ".gsd/worktrees/",
   ".gsd/parallel/",
@@ -249,7 +254,7 @@ export function ensureGitignore(
 
   // Ensure existing content ends with a newline before appending
   const prefix = existing && !existing.endsWith("\n") ? "\n" : "";
-  writeFileSync(gitignorePath, existing + prefix + block, "utf-8");
+  atomicWriteSync(gitignorePath, existing + prefix + block, "utf-8");
 
   return true;
 }
@@ -342,6 +347,6 @@ custom_instructions:
 \`\`\`
 `;
 
-  writeFileSync(preferencesPath, template, "utf-8");
+  atomicWriteSync(preferencesPath, template, "utf-8");
   return true;
 }

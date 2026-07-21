@@ -128,25 +128,28 @@ test("checkNodeVersion rejects below-minimum versions and accepts at-or-above", 
   // Calls the actual pure function the loader invokes. If loader.ts ever
   // weakens the minimum (e.g. drops the < check), this test fails because
   // an old Node version would be incorrectly accepted.
-  const { checkNodeVersion, MIN_NODE_MAJOR } = await import("../runtime-checks.ts");
+  const { checkNodeVersion, MIN_NODE_VERSION } = await import("../runtime-checks.ts");
 
   // Below minimum → not ok, surfaces the actual major
-  const tooOld = checkNodeVersion("18.19.0", MIN_NODE_MAJOR);
+  const tooOld = checkNodeVersion("18.19.0", MIN_NODE_VERSION);
   assert.strictEqual(tooOld.ok, false, "Node 18 must be rejected when min is 22+");
   if (tooOld.ok === false) {
-    assert.strictEqual(tooOld.actualMajor, 18, "reports actual major from input");
+    assert.strictEqual(tooOld.actualVersion, "18.19.0", "reports actual version from input");
   }
 
+  const belowMinor = checkNodeVersion("22.17.9", MIN_NODE_VERSION);
+  assert.strictEqual(belowMinor.ok, false, "Node 22 before the required sqlite API must be rejected");
+
   // Exactly minimum → ok
-  const exactlyMin = checkNodeVersion(`${MIN_NODE_MAJOR}.0.0`, MIN_NODE_MAJOR);
+  const exactlyMin = checkNodeVersion(MIN_NODE_VERSION, MIN_NODE_VERSION);
   assert.strictEqual(exactlyMin.ok, true, "version equal to minimum must be accepted");
 
   // Above minimum → ok
-  const above = checkNodeVersion(`${MIN_NODE_MAJOR + 5}.10.2`, MIN_NODE_MAJOR);
+  const above = checkNodeVersion("24.0.0", MIN_NODE_VERSION);
   assert.strictEqual(above.ok, true, "version above minimum must be accepted");
 
   // Malformed version string is a precondition violation — must throw
-  assert.throws(() => checkNodeVersion("not-a-version", MIN_NODE_MAJOR), /cannot parse major/);
+  assert.throws(() => checkNodeVersion("not-a-version", MIN_NODE_VERSION), /cannot parse version/);
 });
 
 test("requireGit returns false when exec throws and true when it succeeds", async () => {
@@ -203,23 +206,22 @@ test("gitAvailableOnPath finds git via a $PATH scan without spawning a subproces
   );
 });
 
-test("loader MIN_NODE_MAJOR matches package.json engines field exactly", async () => {
-  // Imports the actual exported constant from runtime-checks.ts (the same
-  // module loader.ts consumes) and asserts STRICT equality with the major
-  // version parsed from package.json's engines.node range.
-  const { MIN_NODE_MAJOR } = await import("../runtime-checks.ts");
+test("loader MIN_NODE_VERSION matches package.json engines field exactly", async () => {
+  // Imports the actual minimum used by the loader and SQLite provider.
+  const { MIN_NODE_VERSION } = await import("../runtime-checks.ts");
+  const { MIN_SQLITE_NODE_VERSION } = await import("../resources/extensions/gsd/db-provider.ts");
 
   const pkg = JSON.parse(readFileSync(join(projectRoot, "package.json"), "utf-8"));
   const engineRange: string = pkg.engines?.node ?? "";
-  const match = engineRange.match(/(\d+)/);
-  assert.ok(match, `package.json engines.node must declare a major version, got: ${JSON.stringify(engineRange)}`);
-  const engineMajor = parseInt(match[1], 10);
+  const match = engineRange.match(/^>=(\d+\.\d+\.\d+)$/);
+  assert.ok(match, `package.json engines.node must declare an exact minimum, got: ${JSON.stringify(engineRange)}`);
 
   assert.strictEqual(
-    MIN_NODE_MAJOR,
-    engineMajor,
-    `runtime-checks MIN_NODE_MAJOR (${MIN_NODE_MAJOR}) must equal package.json engines.node major (${engineMajor})`,
+    MIN_NODE_VERSION,
+    match[1],
+    `runtime-checks minimum (${MIN_NODE_VERSION}) must equal package.json engines.node (${match[1]})`,
   );
+  assert.strictEqual(MIN_NODE_VERSION, MIN_SQLITE_NODE_VERSION);
 });
 
 test("gsd update and upgrade bypass the managed-resource-mismatch gate; other commands trigger it", async (t) => {

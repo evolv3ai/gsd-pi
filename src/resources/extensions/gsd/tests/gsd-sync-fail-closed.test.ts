@@ -210,7 +210,7 @@ test("/gsd sync blocks modeled .gsd drift without importing or rendering over it
 
   await handleSync(ctx, base);
 
-  assertFailClosedGuidance(notifications, /\/gsd recover --confirm/);
+  assertFailClosedGuidance(notifications, /\/gsd recover/);
   assert.deepEqual(markerBytes(base), markerBefore, "sync does not advance the stale marker baseline");
   assert.deepEqual(
     projectionTreeSnapshot(join(base, ".gsd")),
@@ -308,5 +308,5 @@ test("/gsd sync still accepts active .planning passthrough drift", async () => {
   assert.equal(notifications.length, 1);
   assert.equal(notifications[0]?.level, "info");
   assert.match(notifications[0]?.message ?? "", /passthrough/);
-  assert.doesNotMatch(notifications[0]?.message ?? "", /\/gsd rebuild markdown|\/gsd recover --confirm/);
+  assert.doesNotMatch(notifications[0]?.message ?? "", /\/gsd rebuild markdown|\/gsd recover/);
 });

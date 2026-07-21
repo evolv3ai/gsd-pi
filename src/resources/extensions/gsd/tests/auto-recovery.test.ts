@@ -47,6 +47,7 @@ function makeTmpBase(): string {
 }
 
 function cleanup(base: string): void {
+  closeDatabase();
   try { rmSync(base, { recursive: true, force: true }); } catch { /* */ }
 }
 

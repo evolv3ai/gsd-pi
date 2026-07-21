@@ -1,10 +1,10 @@
 # Switching between gsd-core and gsd-pi
 
-Both `@opengsd/gsd-core` and `@opengsd/gsd-pi` read and write the same `.gsd/` directory. You can open a project in either tool, switch freely, and even interleave them across sessions. This doc explains the workflow and what to do when the two tools disagree.
+Both `@opengsd/gsd-core` and `@opengsd/gsd-pi` use the same `.gsd/` directory, but they do not share an authority model. Switching requires an explicit handoff when modeled markdown changes. This doc explains that workflow and what to do when the two tools disagree.
 
 ## The shared contract
 
-`.gsd/*.md` files are the interchange contract between the two tools. gsd-core treats them as the source of truth. gsd-pi imports eligible external edits into SQLite during bootstrap, then treats the database as runtime authority and projects back to the same `.md` files. Once planning has adopted a milestone's canonical lifecycle, bulk Markdown hierarchy replacement is refused; use gsd-pi's planning or reopen tools for further structural and lifecycle changes. For pre-adoption status checkboxes, gsd-pi scopes Markdown authority to the drifted file's recorded milestone entities, so unrelated stale projections keep the DB status.
+gsd-core treats `.gsd/*.md` files as the source of truth. gsd-pi treats its SQLite database as canonical and uses those files only as projections. It never imports modeled markdown implicitly during startup or `/gsd sync`; use gsd-pi's planning and reopen tools for ordinary changes, or the verified `/gsd recover` Preview/Application flow when markdown is intentionally replacing missing or damaged database state.
 
 ## Recommended workflow: commit before switching
 
@@ -15,18 +15,18 @@ git add .gsd/
 git commit -m "wip: switching to gsd-pi"
 ```
 
-Then open the other tool. If anything goes wrong, `git reset --hard` restores the pre-switch state. This is the simplest and safest workflow.
+Then open the other tool. The commit preserves reviewable markdown edits, but it does not back up gsd-pi's gitignored database. Do not use `git reset --hard` as database recovery; use the verified backup and recovery action printed by `/gsd recover` when database recovery is required.
 
 ## What gsd-pi does on startup
 
 When you open a project in gsd-pi, it runs a reconciliation pass that:
 
 1. Compares every `.gsd/*.md` file against its recorded baseline in `.gsd/.compat.json`.
-2. Imports eligible files that changed since the last gsd-pi session (e.g., gsd-core edits), with status changes scoped to the milestone entities recorded for that drifted file. It refuses a hierarchy replacement that would erase adopted canonical lifecycle history.
-3. Re-projects all markdown from the DB.
-4. Updates `.gsd/.compat.json` with the new baseline.
+2. Blocks modeled external edits instead of importing or overwriting them.
+3. Re-projects markdown from the DB only when no blocker is present.
+4. Updates `.gsd/.compat.json` after a successful projection.
 
-This is automatic — you don't need to do anything special. gsd-pi will not silently overwrite gsd-core edits.
+This is automatic. When modeled files drift, review the blocker and make an explicit authority choice before continuing.
 
 ## `/gsd sync` — mid-session switch
 
@@ -36,7 +36,7 @@ If you switch tools while gsd-pi is running (e.g., a teammate edits `.gsd/plan.m
 /gsd sync
 ```
 
-This re-runs the reconciliation pipeline, imports eligible external edits, and re-projects. Use `--dry-run` to preview what would change:
+This checks projections against the database. Modeled drift blocks without importing, rendering over the edit, or advancing the marker; safe `.planning/` passthrough changes only refresh their checksums. With no blockers, sync re-projects from the database. Use `--dry-run` to inspect without repairs, projection, or marker writes:
 
 ```
 /gsd sync --dry-run
@@ -62,11 +62,11 @@ gsd-core is unaware of gsd-pi. It sees `.gsd/*.md` as ordinary markdown and edit
 
 ## `.planning/` projects
 
-If your project uses gsd-core's `.planning/` layout (flat `phases/NN-name/` directories, root `ROADMAP.md` / `STATE.md`), gsd-pi projects DB state back to `.planning/` automatically — you don't need to run `/gsd migrate`.
+If your project uses gsd-core's `.planning/` layout (flat `phases/NN-name/` directories, root `ROADMAP.md` / `STATE.md`), import it explicitly with `/gsd migrate`. After migration, gsd-pi can project canonical DB state back to the recorded layout.
 
-- The first time gsd-pi sees a `.planning/` project, it imports the hierarchy into the database and records the layout in `.gsd/.compat.json` under `planning.layout` only after that import succeeds. A failed import leaves compatibility inactive so later projection cannot overwrite the unimported `.planning/` content.
+- `/gsd migrate` previews and imports the hierarchy through a verified Import Application, then records the layout in `.gsd/.compat.json` only after publication succeeds.
 - On every projection, gsd-pi writes back to `.planning/` using that recorded layout. Cancelled slices and tasks are omitted, and obsolete tracked phase plan files are removed.
-- `/gsd sync` imports gsd-core's `.planning/` edits; `/gsd doctor` reports `.planning/` drift separately from `.gsd/` drift.
+- `/gsd sync` blocks modeled gsd-core `.planning/` edits and points to the explicit migration flow; `/gsd doctor` reports `.planning/` drift separately from `.gsd/` drift.
 
 **Un-modeled docs** (phase `DISCUSSION-LOG.md`, `PATTERNS.md`, `REVIEWS.md`, `codebase/`, `research/`) are pass-through: gsd-pi detects edits to them but never overwrites them. They are gsd-core-owned.
 
@@ -74,7 +74,7 @@ If your project uses gsd-core's `.planning/` layout (flat `phases/NN-name/` dire
 
 ## Conflicts: same entity edited in both
 
-Before canonical lifecycle adoption, if both tools edit the *same* entity (e.g., both change the status of slice `S01`) between syncs, the last imported writer wins and gsd-pi surfaces the resolution in `/gsd sync`. After adoption, the database lifecycle wins: sync refuses a Markdown hierarchy replacement rather than reopening, cancelling, or deleting adopted work. Use the matching gsd-pi planning or reopen tool, then re-project before switching back. A stale projection that did not drift is never allowed to reopen or close unrelated DB rows. Git review remains the final safety net — that's why the "commit before switching" workflow matters.
+If both tools edit the *same* entity, gsd-pi does not choose a last writer: `/gsd sync` blocks the modeled markdown drift and preserves both the database and edited files. Use the matching gsd-pi planning or reopen tool when the database is correct. If markdown intentionally contains state missing from a damaged database, use the evidence-bound `/gsd recover` flow; use `/gsd migrate` for `.planning/`. Git review remains the final safety net — that's why the "commit before switching" workflow matters.
 
 ## Troubleshooting
 

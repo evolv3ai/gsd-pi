@@ -113,8 +113,6 @@ export function renderPlanProjection(basePath: string, milestoneId: string, slic
   }
 
   const content = renderPlanContent(sliceRow, taskRows);
-  const dir = dirname(planPath);
-  mkdirSync(dir, { recursive: true });
   atomicWriteSync(planPath, content);
 }
 
@@ -171,7 +169,6 @@ export function renderRoadmapProjection(basePath: string, milestoneId: string): 
 
   const content = renderRoadmapContent(milestoneRow, sliceRows);
   const dir = join(basePath, ".gsd", "milestones", milestoneId);
-  mkdirSync(dir, { recursive: true });
   atomicWriteSync(join(dir, `${milestoneId}-ROADMAP.md`), content);
 }
 
@@ -182,8 +179,7 @@ function milestoneStatusGlyph(status: string): string {
   return "\u2B1C";
 }
 
-export function renderTopLevelRoadmapFromDb(basePath: string): void {
-  const milestones = getAllMilestones();
+export function renderTopLevelRoadmapContent(milestones: readonly MilestoneRow[]): string {
   const lines: string[] = ["# Roadmap", "", "## Milestones", ""];
 
   for (const milestone of milestones) {
@@ -195,9 +191,14 @@ export function renderTopLevelRoadmapFromDb(basePath: string): void {
   }
 
   lines.push("");
+  return lines.join("\n");
+}
+
+export function renderTopLevelRoadmapFromDb(basePath: string): void {
+  const content = renderTopLevelRoadmapContent(getAllMilestones());
   const dir = join(basePath, ".gsd");
   mkdirSync(dir, { recursive: true });
-  atomicWriteSync(join(dir, "ROADMAP.md"), lines.join("\n"));
+  atomicWriteSync(join(dir, "ROADMAP.md"), content);
 }
 
 export function renderTopLevelQueueFromDb(basePath: string): void {

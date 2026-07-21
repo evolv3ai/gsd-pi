@@ -23,6 +23,7 @@ import { mergeMilestoneToMain } from "../auto-worktree-merge.ts";
 import { _resetServiceCache } from "../worktree.ts";
 import { _clearGsdRootCache } from "../paths.ts";
 import { seedMergeReadyMilestone } from "./merge-ready-fixture.ts";
+import { closeDatabase } from "../gsd-db.ts";
 
 function git(args: string[], cwd: string): string {
   return execFileSync("git", args, { cwd, stdio: ["ignore", "pipe", "pipe"], encoding: "utf-8" }).trim();
@@ -87,6 +88,7 @@ function assertSelfMergeRefRecoversToMain(recordedIntegrationBranch: string): vo
     assert.notEqual(mainHeadAfter, mainHeadBefore, "main must advance via merge-back");
     assert.equal(git(["rev-parse", "HEAD"], tempDir), mainHeadAfter, "repo remains on main after merge-back");
   } finally {
+    closeDatabase();
     process.chdir(savedCwd);
     process.env.HOME = originalHome;
     _clearGsdRootCache();

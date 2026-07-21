@@ -735,4 +735,72 @@ describe("legacy preview planning", () => {
       3,
     );
   });
+
+  test("legacy preview planning preserves blank project content without an authoritative milestone", (t) => {
+    for (const content of ["", "  \n\n"]) {
+      const interpretation = interpretLegacyPlanningCapture(captureFiles(t, {
+        "PROJECT.md": content,
+        "ROADMAP.md": "# Roadmap\n\n- [ ] 01 — Safe\n",
+      }));
+      const label = JSON.stringify(content);
+      assert.equal(
+        interpretation.candidates.some((candidate) => (
+          candidate.target.kind === "milestone" && candidate.classification === "compare"
+        )),
+        false,
+        label,
+      );
+      const project = interpretation.candidates.find((candidate) => (
+        candidate.target.kind === "legacy-artifact" && candidate.target.key === ".planning/PROJECT.md"
+      ));
+      assert.ok(project, label);
+      assert.equal(project.classification, "preserve", label);
+      assert.equal(project.reason_code, "malformed-project-preserve", label);
+      assert.equal(
+        interpretation.sources.find((source) => source.path === ".planning/PROJECT.md")?.outcome,
+        "unparsed",
+        label,
+      );
+      const blockers = interpretation.diagnoses.filter((diagnosis) => diagnosis.code === "malformed-project");
+      assert.equal(blockers.length, 1, label);
+      assert.equal(blockers[0].severity, "blocker", label);
+      assert.deepEqual(
+        interpretation.resolutions.find((resolution) => resolution.diagnosis_id === blockers[0].diagnosis_id),
+        { diagnosis_id: blockers[0].diagnosis_id, disposition: "requires-user" },
+        label,
+      );
+      if (content.length === 0) {
+        assert.deepEqual(project.raw.locator, { start_byte: 0, end_byte: 0, line: 1 }, label);
+        assert.deepEqual(blockers[0].locator, { start_byte: 0, end_byte: 0, line: 1 }, label);
+      }
+    }
+  });
+
+  test("legacy preview planning points a plan-only summary conflict at the frontmatter plan line", (t) => {
+    const interpretation = interpretLegacyPlanningCapture(captureFiles(t, {
+      "ROADMAP.md": "# Roadmap\n\n- [ ] 01 — Safe\n",
+      "phases/01-safe/01-01-SUMMARY.md": "---\nplan: \"99\"\n---\n\n# Summary\n\nDo not complete.\n",
+    }));
+    const conflict = interpretation.diagnoses.find((diagnosis) => diagnosis.code === "summary-identity-conflict");
+    assert.ok(conflict);
+    assert.deepEqual(conflict.locator, { start_byte: 4, end_byte: 14, line: 2 });
+    assert.equal(interpretation.candidates.some((candidate) => candidate.target.kind === "task"), false);
+    assert.equal(
+      interpretation.candidates.some((candidate) => (
+        candidate.target.kind === "legacy-artifact"
+        && candidate.target.key === ".planning/phases/01-safe/01-01-SUMMARY.md"
+        && candidate.classification === "preserve"
+      )),
+      true,
+    );
+  });
+
+  test("legacy preview planning fails loud on empty phase number segments", (t) => {
+    assert.throws(
+      () => interpretLegacyPlanningCapture(captureFiles(t, {
+        "ROADMAP.md": "# Roadmap\n\n- [ ] 1..2 — Broken\n",
+      })),
+      /empty segment/u,
+    );
+  });
 });

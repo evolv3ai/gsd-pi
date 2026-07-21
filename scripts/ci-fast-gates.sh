@@ -6,6 +6,8 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 
+pnpm run verify:gsd-projection-mutations
+
 # shellcheck source=scripts/ci-fetch-diff-base.sh
 source "${ROOT}/scripts/ci-fetch-diff-base.sh"
 

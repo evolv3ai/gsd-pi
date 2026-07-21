@@ -1,6 +1,6 @@
 import { describe, it, afterEach } from "node:test";
 import assert from "node:assert/strict";
-import { mkdirSync, readFileSync, rmSync, writeFileSync, promises as fsPromises } from "node:fs";
+import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { randomUUID } from "node:crypto";
@@ -15,6 +15,7 @@ import {
 } from "../gsd-db.js";
 import { clearPathCache } from "../paths.js";
 import { clearParseCache } from "../files.js";
+import { _setManagedMutationBoundaryForTest } from "../atomic-write.js";
 
 function makeTmpBase(): string {
   const base = join(tmpdir(), `gsd-ct-rollback-${randomUUID()}`);
@@ -87,13 +88,12 @@ describe("complete-task projection failures preserve committed DB completion", (
       "# S01 Plan\n\n## Tasks\n\n- [ ] **T01: Test task**\n",
     );
 
-    const originalRename = fsPromises.rename.bind(fsPromises);
     let closedAfterSummaryWrite = false;
-    t.mock.method(fsPromises, "rename", async (...args: Parameters<typeof fsPromises.rename>) => {
-      await originalRename(...args);
-      const target = String(args[1]);
-      if (!closedAfterSummaryWrite && target.endsWith("T01-SUMMARY.md")) {
+    t.after(() => _setManagedMutationBoundaryForTest(null));
+    _setManagedMutationBoundaryForTest((boundary, target) => {
+      if (boundary === "after-write" && !closedAfterSummaryWrite && target.endsWith("T01-SUMMARY.md")) {
         closedAfterSummaryWrite = true;
+        _setManagedMutationBoundaryForTest(null);
         closeDatabase();
       }
     });

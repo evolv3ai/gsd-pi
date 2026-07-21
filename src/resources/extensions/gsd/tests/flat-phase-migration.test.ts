@@ -8,7 +8,7 @@ import { tmpdir } from "node:os";
 import { randomUUID } from "node:crypto";
 
 import {
-  _setFlatPhaseMigrationFsOpsForTest,
+  _setFlatPhaseMigrationBoundaryForTest,
   migrateToFlatPhase,
   needsFlatPhaseMigration,
   pruneStaleFlatPhaseBackups,
@@ -41,6 +41,7 @@ function makeTmp(options: { withTask?: boolean } = {}): string {
   return base;
 }
 afterEach(() => {
+  _setFlatPhaseMigrationBoundaryForTest(null);
   closeDatabase();
   for (const d of tmpDirs) { try { rmSync(d, { recursive: true, force: true }); } catch { /* */ } }
   tmpDirs.length = 0;
@@ -108,26 +109,13 @@ test("migrateToFlatPhase ignores and removes stale phase dirs from prior aborted
   assert.equal(existsSync(stalePhaseDir), false, "stale pre-existing phase dir should be removed");
 });
 
-test("migrateToFlatPhase falls back to copy-delete when legacy rename is blocked", async (t) => {
+test("migrateToFlatPhase moves the legacy tree through the managed boundary", async () => {
   const base = makeTmp();
   const milestonesPath = join(base, ".gsd", "milestones");
   const migratingPath = join(base, ".gsd", "milestones.migrating");
-  let blockedRenameAttempts = 0;
-
-  const restoreFsOps = _setFlatPhaseMigrationFsOpsForTest({
-    renameSync(src, dst) {
-      if (src === milestonesPath && dst === migratingPath) {
-        blockedRenameAttempts++;
-        throw Object.assign(new Error("simulated busy handle"), { code: "EPERM" });
-      }
-      return renameSync(src, dst);
-    },
-  });
-  t.after(restoreFsOps);
 
   await migrateToFlatPhase(base);
 
-  assert.equal(blockedRenameAttempts, 1, "test should exercise the rename fallback path");
   assert.ok(existsSync(join(base, ".gsd", "phases", "01-foundation")), "flat phase should render");
   assert.equal(existsSync(milestonesPath), false, "legacy milestones dir should be removed");
   assert.equal(existsSync(migratingPath), false, "staging dir should be removed after success");
@@ -159,28 +147,24 @@ test("migrateToFlatPhase removes disposable phases snapshot after successful mig
   );
 });
 
-test("failed migration restores pre-existing phases projection from backup", async (t) => {
+test("failed migration restores pre-existing phases projection from backup", async () => {
   const base = makeTmp();
   const phasesPath = join(base, ".gsd", "phases");
   const reviewPath = join(phasesPath, "01-foundation", "PLAN-REVIEW.md");
   mkdirSync(join(phasesPath, "01-foundation"), { recursive: true });
   writeFileSync(reviewPath, "# Plan Review\n\nHand-authored review.", "utf-8");
 
-  let sabotagedClear = false;
-  const restoreFsOps = _setFlatPhaseMigrationFsOpsForTest({
-    rmSync(target, opts) {
-      rmSync(target, opts as never);
-      if (target === phasesPath && !sabotagedClear) {
-        sabotagedClear = true;
-        writeFileSync(phasesPath, "not a directory", "utf-8");
-      }
-    },
+  let interruptedClear = false;
+  _setFlatPhaseMigrationBoundaryForTest((stage, target) => {
+    if (stage === "after-remove" && target === phasesPath && !interruptedClear) {
+      interruptedClear = true;
+      throw new Error("simulated interruption after projection clear");
+    }
   });
-  t.after(restoreFsOps);
 
-  await assert.rejects(migrateToFlatPhase(base), /flat-phase migration render failed/);
+  await assert.rejects(migrateToFlatPhase(base), /simulated interruption/);
 
-  assert.equal(sabotagedClear, true, "test should force a post-clear render failure");
+  assert.equal(interruptedClear, true, "test should interrupt after clearing the projection");
   assert.equal(
     readFileSync(reviewPath, "utf-8"),
     "# Plan Review\n\nHand-authored review.",
@@ -193,22 +177,18 @@ test("failed migration restores pre-existing phases projection from backup", asy
   assert.equal(leaked.length, 0, "rollback should still clean the backup it created");
 });
 
-test("failed migration rolls back without leaking a .gsd-backups/migrate-* dir", async (t) => {
+test("failed migration rolls back without leaking a .gsd-backups/migrate-* dir", async () => {
   const base = makeTmp();
   const milestonesPath = join(base, ".gsd", "milestones");
   const phasesPath = join(base, ".gsd", "phases");
 
   // Fail the pre-render clear of phases/ to drive the rollback path, which by
   // this point has already created the .gsd-backups/migrate-<ts>/ backup.
-  const restoreFsOps = _setFlatPhaseMigrationFsOpsForTest({
-    rmSync(target, opts) {
-      if (target === phasesPath) {
-        throw Object.assign(new Error("simulated locked phases/"), { code: "EPERM" });
-      }
-      return rmSync(target, opts as never);
-    },
+  _setFlatPhaseMigrationBoundaryForTest((stage, target) => {
+    if (stage === "before-remove" && target === phasesPath) {
+      throw Object.assign(new Error("simulated locked phases/"), { code: "EPERM" });
+    }
   });
-  t.after(restoreFsOps);
 
   await assert.rejects(migrateToFlatPhase(base), /simulated locked/);
 
@@ -218,6 +198,23 @@ test("failed migration rolls back without leaking a .gsd-backups/migrate-* dir",
     ? readdirSync(backupRoot).filter((d) => d.startsWith("migrate-"))
     : [];
   assert.equal(leaked.length, 0, "rollback must delete the migrate-* backup it created");
+});
+
+test("failed migration restores arbitrary legacy artifact bytes", async () => {
+  const base = makeTmp();
+  const binaryPath = join(base, ".gsd", "milestones", "M001", "evidence.bin");
+  const binary = Buffer.from([0xff, 0xfe, 0x00, 0x80, 0x61]);
+  writeFileSync(binaryPath, binary);
+  const phasesPath = join(base, ".gsd", "phases");
+
+  _setFlatPhaseMigrationBoundaryForTest((stage, target) => {
+    if (stage === "before-remove" && target === phasesPath) {
+      throw new Error("simulated binary rollback");
+    }
+  });
+
+  await assert.rejects(migrateToFlatPhase(base), /simulated binary rollback/);
+  assert.deepEqual(readFileSync(binaryPath), binary);
 });
 
 test("resumed migration removes disposable phases snapshot after success", async () => {
@@ -366,7 +363,7 @@ test("re-fired migration reuses the existing backup instead of leaking a new mig
   assert.equal(existsSync(join(base, ".gsd", "milestones")), false, "legacy milestones/ removed again");
 });
 
-test("rollback after a re-fired migration preserves the reused migrate-* backup", async (t) => {
+test("rollback after a re-fired migration preserves the reused migrate-* backup", async () => {
   const base = makeTmp();
   await migrateToFlatPhase(base);
   const backupRoot = join(base, ".gsd-backups");
@@ -377,15 +374,11 @@ test("rollback after a re-fired migration preserves the reused migrate-* backup"
   const milestonesPath = join(base, ".gsd", "milestones");
   const phasesPath = join(base, ".gsd", "phases");
 
-  const restoreFsOps = _setFlatPhaseMigrationFsOpsForTest({
-    rmSync(target, opts) {
-      if (target === phasesPath) {
-        throw Object.assign(new Error("simulated locked phases/"), { code: "EPERM" });
-      }
-      return rmSync(target, opts as never);
-    },
+  _setFlatPhaseMigrationBoundaryForTest((stage, target) => {
+    if (stage === "before-remove" && target === phasesPath) {
+      throw Object.assign(new Error("simulated locked phases/"), { code: "EPERM" });
+    }
   });
-  t.after(restoreFsOps);
 
   await assert.rejects(migrateToFlatPhase(base), /simulated locked/);
 
@@ -433,7 +426,7 @@ test("migrateToFlatPhase leaves unrepresented slice sidecars for explicit recove
 
   await assert.rejects(
     () => migrateToFlatPhase(base),
-    /Recommended: run `\/gsd recover --confirm`/,
+    /Recommended: run `\/gsd recover`/,
   );
 
   assert.equal(existsSync(join(base, ".gsd", "phases")), false);

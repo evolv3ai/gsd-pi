@@ -18,7 +18,7 @@ Inspired by [Oh My Pi's pi-natives](https://github.com/can1357/oh-my-pi), adapte
 ## Prerequisites
 
 - **Rust** (stable, 1.70+): https://rustup.rs
-- **Node.js** (22.0.0+)
+- **Node.js** (22.18.0+)
 
 ## Build
 
@@ -56,9 +56,38 @@ Native clipboard access for reading and writing system clipboard contents.
 
 Fuzzy text matching and unified diff generation. Provides efficient comparison of text content with configurable matching thresholds.
 
+### directory-sync
+
+Directory durability helper used by database and projection publication paths. It exposes `syncDirectoryEntry(path)` from `@gsd/native/directory-sync` and the root `@gsd/native` export. The wrapper opens the directory and calls the native durability primitive so callers can fail closed when a parent directory cannot be flushed after a rename or backup publication.
+
 ### fd
 
 Fuzzy file path discovery. Locates files by partial name matching across the project tree.
+
+### file-identity
+
+Identity-bound file and projection-root locking for database recovery, markdown projection publication, and migration safety.
+
+**Functions:**
+
+- `acquireSqliteFileIdentityLock(path, create)` — open and hold a native SQLite file identity lock, optionally creating the file first; currently available on Windows
+- `acquireProjectionRootIdentityLock(path, expectedDevice, expectedInode)` — bind a projection root to the expected device/inode identity and return guarded file/tree mutation helpers
+
+**TypeScript usage:**
+
+```typescript
+import { acquireProjectionRootIdentityLock } from "@gsd/native/file-identity";
+import { syncDirectoryEntry } from "@gsd/native/directory-sync";
+
+const lock = acquireProjectionRootIdentityLock(rootPath, deviceId, inodeId);
+try {
+  lock.writeFile("STATE.md", Buffer.from(renderedState));
+  lock.syncFile("STATE.md");
+  syncDirectoryEntry(rootPath);
+} finally {
+  lock.close();
+}
+```
 
 ### fs_cache
 

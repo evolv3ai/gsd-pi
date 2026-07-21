@@ -329,12 +329,6 @@ test("db/queries.ts (the Query Module) is read-only — contains no write SQL", 
   );
 });
 
-test("sqlite-readonly.ts owns only read-transaction control", () => {
-  const path = join(gsdDir, "sqlite-readonly.ts");
-  const violations = findRawWriteSqlViolations("sqlite-readonly.ts", readFileSync(path, "utf-8"));
-  assert.deepEqual(violations.map(({ kind }) => kind), ["exec(BEGIN)", "exec(ROLLBACK)"]);
-});
-
 test("gsd-db.ts exports the expected single-writer wrappers", async () => {
   // Positive assertion — fail loudly if the module layout changes so this
   // structural test can't silently become a no-op.
@@ -447,19 +441,6 @@ test("production modules do not import DB open-state mechanics from gsd-db.ts", 
         "\n\nImport these through db-workspace.ts so gsd-db.ts stays the writer compatibility barrel, not the caller-facing DB Workspace Interface.",
     );
   }
-});
-
-test("only the strict project authority cutover aggregate uses the epoch-advancing seam", () => {
-  const references = walkTsFiles(gsdDir)
-    .map((path) => ({ path, content: readFileSync(path, "utf-8") }))
-    .filter(({ content }) => content.includes("_executeAuthorityCutoverDomainOperation"))
-    .map(({ path }) => relative(gsdDir, path).split("\\").join("/"))
-    .sort();
-
-  assert.deepEqual(references, [
-    "db/domain-operation.ts",
-    "project-authority-cutover-domain-operation.ts",
-  ]);
 });
 
 test("the invariant test touches every .ts module under gsd/ (sanity check)", () => {

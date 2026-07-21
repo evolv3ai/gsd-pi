@@ -4,8 +4,8 @@ import assert from 'node:assert/strict';
 // Markdown-importer characterization kept below the public entrypoint boundary.
 
 import { createHash } from 'node:crypto';
-import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { basename, join } from 'node:path';
 import { tmpdir } from 'node:os';
 
 import {
@@ -29,6 +29,22 @@ import { handleRecover } from '../commands-maintenance.ts';
 import { captureCurrentLegacyImportBaseSnapshot } from '../legacy-import-preview-base.ts';
 import { createLegacyImportPreview } from '../legacy-import-preview.ts';
 import { fingerprintLegacyImportCorpusTree } from './helpers/legacy-import-corpus.ts';
+import { executeDomainOperation } from '../db/domain-operation.ts';
+import {
+  _setRecoverManifestSyncForTest,
+  applyPreparedVerifiedRecoverApplication,
+  applyVerifiedRecoverApplication,
+  loadVerifiedRecoverApplication,
+  openWorkflowDatabase,
+  persistVerifiedRecoverRestoreApproval,
+  prepareVerifiedRecoverApplication,
+} from '../db-workspace.ts';
+import { executeLegacyImportRecoveryAction } from '../legacy-import-recovery-action.ts';
+import { _restoreLegacyImportLiveForTest } from '../legacy-import-live-restore.ts';
+import {
+  assessLegacyImportRestore,
+  LEGACY_IMPORT_RESTORE_ASSESSMENT_CONSENT_SCHEMA_VERSION,
+} from '../legacy-import-restore-assessment.ts';
 // ─── Fixture Helpers ───────────────────────────────────────────────────────
 
 function createFixtureBase(): string {
@@ -50,16 +66,22 @@ function cleanup(base: string): void {
 function makeCtx(confirm?: () => Promise<boolean>): {
   ctx: any;
   notes: Array<{ message: string; kind: string }>;
+  prompts: string[];
 } {
   const notes: Array<{ message: string; kind: string }> = [];
+  const prompts: string[] = [];
   return {
     ctx: {
       ui: {
         notify: (message: string, kind: string) => notes.push({ message, kind }),
-        ...(confirm ? { confirm: async () => confirm() } : {}),
+        ...(confirm ? { confirm: async (_title: string, message: string) => {
+          prompts.push(message);
+          return confirm();
+        } } : {}),
       },
     },
     notes,
+    prompts,
   };
 }
 
@@ -202,15 +224,16 @@ function recoverPreview(base: string) {
   });
 }
 
+function previewApproval(base: string): string {
+  return `--preview=${recoverPreview(base).preview_hash}`;
+}
+
 function canonicalRecoverSnapshot(): Record<string, unknown> {
   const db = _getAdapter()!;
-  return {
-    tables: Object.fromEntries(RECOVER_DURABLE_TABLES.map((table) => [
-      table,
-      db.prepare(`SELECT * FROM ${table} ORDER BY rowid`).all(),
-    ])),
-    totalChanges: Number(db.prepare('SELECT total_changes() AS count').get()?.count),
-  };
+  return Object.fromEntries(RECOVER_DURABLE_TABLES.map((table) => [
+    table,
+    db.prepare(`SELECT * FROM ${table} ORDER BY rowid`).all(),
+  ]));
 }
 
 function recoverSourceSnapshot(base: string): Record<string, string | null> {
@@ -533,7 +556,7 @@ describe('gsd-recover', async () => {
     const base = createFixtureBase();
     try {
       writeFile(base, 'milestones/M001/M001-ROADMAP.md', ROADMAP_M001);
-      openDatabase(':memory:');
+      openDatabase(join(base, '.gsd', 'gsd.db'));
       insertMilestone({ id: 'M999', title: 'Existing DB State', status: 'active' });
 
       const { ctx, notes } = makeCtx();
@@ -541,8 +564,9 @@ describe('gsd-recover', async () => {
 
       assert.ok(getMilestone('M999'), 'existing DB row remains when recover is unconfirmed');
       assert.equal(getMilestone('M001'), null, 'markdown milestone is not imported without confirmation');
+      assert.equal(existsSync(join(base, '.gsd', 'backups')), false, 'preview discovery does not create a backup');
       assert.equal(notes.at(-1)?.kind, 'warning');
-      assert.match(notes.at(-1)?.message ?? '', /\/gsd recover --confirm/);
+      assert.match(notes.at(-1)?.message ?? '', /\/gsd recover --preview=sha256:/);
     } finally {
       closeDatabase();
       cleanup(base);
@@ -553,7 +577,7 @@ describe('gsd-recover', async () => {
     const base = createFixtureBase();
     try {
       writeFile(base, 'milestones/M001/M001-ROADMAP.md', ROADMAP_M001);
-      openDatabase(':memory:');
+      openDatabase(join(base, '.gsd', 'gsd.db'));
       insertMilestone({ id: 'M999', title: 'Existing DB State', status: 'active' });
 
       const { ctx, notes } = makeCtx(async () => false);
@@ -561,7 +585,30 @@ describe('gsd-recover', async () => {
 
       assert.ok(getMilestone('M999'), 'existing DB row remains when recover is cancelled');
       assert.equal(getMilestone('M001'), null, 'markdown milestone is not imported after cancellation');
+      assert.equal(existsSync(join(base, '.gsd', 'backups')), false, 'cancellation does not create a backup');
       assert.match(notes.at(-1)?.message ?? '', /cancelled/);
+    } finally {
+      closeDatabase();
+      cleanup(base);
+    }
+  });
+
+  test('prepared recover revalidates the approved Preview before creating a backup', () => {
+    const base = createFixtureBase();
+    try {
+      writeFile(base, 'milestones/M001/M001-ROADMAP.md', ROADMAP_M001);
+      openDatabase(join(base, '.gsd', 'gsd.db'));
+
+      const prepared = prepareVerifiedRecoverApplication(base);
+      assert.equal(existsSync(join(base, '.gsd', 'backups')), false, 'preparation is read-only');
+      writeFile(base, 'milestones/M001/M001-ROADMAP.md', ROADMAP_M001.replace('Recovery Test', 'Changed Recovery Test'));
+
+      assert.throws(
+        () => applyPreparedVerifiedRecoverApplication(prepared, prepared.preview.preview_hash),
+        /preview|approval|changed/i,
+      );
+      assert.equal(existsSync(join(base, '.gsd', 'backups')), false, 'stale approval fails before backup preparation');
+      assert.equal(getMilestone('M001'), null, 'stale approval cannot import changed markdown');
     } finally {
       closeDatabase();
       cleanup(base);
@@ -578,7 +625,7 @@ describe('gsd-recover', async () => {
       const { ctx, notes } = makeCtx();
       // M999 is in the DB but not in the markdown, so recover would delete it:
       // a data-loss recover now requires explicit --allow-data-loss.
-      await handleRecover(ctx, base, '--confirm');
+      await handleRecover(ctx, base, previewApproval(base));
 
       assert.ok(getMilestone('M999'), 'confirmed recover preserves existing canonical rows');
       assert.ok(getMilestone('M001'), 'confirmed recover imports markdown hierarchy');
@@ -597,7 +644,7 @@ describe('gsd-recover', async () => {
       insertMilestone({ id: 'M999', title: 'Existing DB State', status: 'active' });
 
       const { ctx, notes } = makeCtx();
-      await handleRecover(ctx, base, '--confirm --allow-data-loss');
+      await handleRecover(ctx, base, `${previewApproval(base)} --allow-data-loss`);
 
       assert.ok(getMilestone('M999'), 'legacy flag cannot authorize canonical deletion');
       assert.ok(getMilestone('M001'), 'legacy flag still uses the non-destructive Application path');
@@ -617,10 +664,19 @@ describe('gsd-recover', async () => {
       insertMilestone({ id: 'M999', title: 'Existing DB State', status: 'active' });
 
       let call = 0;
-      const { ctx, notes } = makeCtx(async () => { call += 1; return true; });
+      const { ctx, notes, prompts } = makeCtx(async () => { call += 1; return true; });
       await handleRecover(ctx, base, '');
 
       assert.equal(call, 1, 'non-destructive recover has no second deletion acknowledgement');
+      assert.match(prompts[0] ?? '', /Preview hash: sha256:[0-9a-f]{64}/);
+      assert.match(prompts[0] ?? '', /Source set: sha256:[0-9a-f]{64}/);
+      assert.match(prompts[0] ?? '', /Mappings:/);
+      assert.match(prompts[0] ?? '', /Raw locator:/);
+      assert.match(prompts[0] ?? '', /Raw value:/);
+      assert.match(prompts[0] ?? '', /Normalized value:/);
+      assert.match(prompts[0] ?? '', /Provenance:/);
+      assert.match(prompts[0] ?? '', /Diagnoses:/);
+      assert.match(prompts[0] ?? '', /Resolutions:/);
       assert.ok(getMilestone('M999'), 'interactive recover preserves existing canonical rows');
       assert.ok(getMilestone('M001'), 'interactive recover imports approved markdown');
       assert.equal(notes.at(-1)?.kind, 'success');
@@ -657,7 +713,7 @@ describe('gsd-recover', async () => {
       writeFileSync(join(base, '.gsd', 'backups'), 'blocks backup directory creation');
 
       const { ctx, notes } = makeCtx();
-      await handleRecover(ctx, base, '--confirm --allow-data-loss');
+      await handleRecover(ctx, base, `${previewApproval(base)} --allow-data-loss`);
 
       assert.ok(getMilestone('M999'), 'gate failure preserves authoritative DB rows');
       assert.equal(getMilestone('M001'), null, 'gate failure does not import markdown rows');
@@ -677,7 +733,7 @@ describe('gsd-recover', async () => {
       insertMilestone({ id: 'M999', title: 'Authoritative sentinel', status: 'active' });
 
       const { ctx, notes } = makeCtx();
-      await handleRecover(ctx, base, '--confirm --allow-data-loss');
+      await handleRecover(ctx, base, `${previewApproval(base)} --allow-data-loss`);
 
       assert.ok(getMilestone('M999'), 'recovery preserves old hierarchy after the gate');
       assert.ok(getMilestone('M001'), 'recovery imports markdown after the gate');
@@ -709,7 +765,7 @@ describe('gsd-recover', async () => {
       const sourceBefore = recoverSourceSnapshot(base);
       const { ctx, notes } = makeCtx();
 
-      await handleRecover(ctx, base, '--confirm');
+      await handleRecover(ctx, base, previewApproval(base));
 
       const db = _getAdapter()!;
       const operation = db.prepare(`SELECT * FROM workflow_operations
@@ -746,7 +802,279 @@ describe('gsd-recover', async () => {
       assert.equal(db.prepare('SELECT COUNT(*) AS count FROM workflow_recovery_budgets').get()?.count, 0);
       assert.deepEqual(recoverSourceSnapshot(base), sourceBefore);
       assert.equal(notes.at(-1)?.kind, 'success');
+      assert.match(notes.at(-1)?.message ?? '', /I recommend restoring the verified backup\./);
+      assert.match(notes.at(-1)?.message ?? '', /--restore --consent=/);
+      assert.equal(db.prepare('SELECT COUNT(*) AS count FROM workflow_import_restores').get()?.count, 0);
     } finally {
+      closeDatabase();
+      cleanup(base);
+    }
+  });
+
+  test('explicit slash recover can apply its evidence-bound restore recommendation', async () => {
+    const base = createFixtureBase();
+    try {
+      installCorpusCase(base, 'gsd-nested');
+      openDatabase(join(base, '.gsd', 'gsd.db'));
+      insertMilestone({ id: 'M900', title: 'Authoritative sentinel', status: 'active' });
+      const { ctx, notes } = makeCtx();
+
+      await handleRecover(ctx, base, previewApproval(base));
+      const instruction = /--application=\S+ --restore --consent=proceed:destructive-database-restore:sha256:[0-9a-f]{64}/u
+        .exec(notes.at(-1)?.message ?? '')?.[0];
+      assert.ok(instruction, notes.at(-1)?.message);
+      await handleRecover(ctx, base, instruction);
+
+      assert.equal(notes.at(-1)?.kind, 'success', notes.at(-1)?.message);
+      const db = _getAdapter()!;
+      assert.equal(db.prepare('SELECT COUNT(*) AS count FROM workflow_import_applications').get()?.count, 0);
+      assert.equal(db.prepare('SELECT COUNT(*) AS count FROM workflow_import_restores').get()?.count, 1);
+      assert.equal(getMilestone('M001'), null, 'restore returns to the verified pre-import database');
+      assert.ok(getMilestone('M900'), 'restore preserves the pre-import canonical authority');
+      assert.match(notes.at(-1)?.message ?? '', /restore.*committed|restored database/i);
+      assert.match(notes.at(-1)?.message ?? '', /Milestones:\s+1/);
+      assert.match(notes.at(-1)?.message ?? '', /Slices:\s+0/);
+      assert.match(notes.at(-1)?.message ?? '', /Tasks:\s+0/);
+      assert.doesNotMatch(notes.at(-1)?.message ?? '', /Imported fewer rows/);
+
+      await handleRecover(ctx, base, instruction);
+      assert.equal(db.prepare('SELECT COUNT(*) AS count FROM workflow_import_applications').get()?.count, 0);
+      assert.equal(db.prepare('SELECT COUNT(*) AS count FROM workflow_import_restores').get()?.count, 1);
+      assert.match(notes.at(-1)?.message ?? '', /replayed/i);
+    } finally {
+      closeDatabase();
+      cleanup(base);
+    }
+  });
+
+  test('retained manifest resumes a published restore after restart', async () => {
+    const base = realpathSync(createFixtureBase());
+    try {
+      installCorpusCase(base, 'gsd-nested');
+      openDatabase(join(base, '.gsd', 'gsd.db'));
+      insertMilestone({ id: 'M900', title: 'Authoritative sentinel', status: 'active' });
+      const application = applyVerifiedRecoverApplication(base, recoverPreview(base).preview_hash);
+      const consentRequired = assessLegacyImportRestore({
+        applicationIdentityHash: application.receipt.applicationIdentityHash,
+        backup: application.backup,
+      });
+      assert.equal(consentRequired.decision, 'restore-consent-required');
+      const consent = {
+        consentSchemaVersion: LEGACY_IMPORT_RESTORE_ASSESSMENT_CONSENT_SCHEMA_VERSION,
+        decision: 'proceed' as const,
+        destructiveDatabaseRestore: true as const,
+        evidenceHash: consentRequired.evidenceHash,
+      };
+      const assessment = assessLegacyImportRestore({
+        applicationIdentityHash: application.receipt.applicationIdentityHash,
+        backup: application.backup,
+        consent,
+      });
+      assert.equal(assessment.decision, 'restore-eligible');
+      persistVerifiedRecoverRestoreApproval(application, assessment, consent);
+
+      assert.throws(() => _restoreLegacyImportLiveForTest({
+        invocation: {
+          idempotencyKey: `legacy-import/recover-restore/${application.receipt.applicationIdentityHash}`,
+          sourceTransport: 'internal',
+          actorType: 'system',
+          actorId: 'gsd-recover',
+        },
+        applicationIdentityHash: application.receipt.applicationIdentityHash,
+        backup: application.backup,
+        assessment,
+        consent,
+      }, {
+        boundary(point) {
+          if (point === 'before-receipt-commit') throw new Error('simulated restart before receipt commit');
+        },
+      }), /published restore requires exact retry convergence/);
+
+      closeDatabase();
+      assert.equal(openDatabase(join(base, '.gsd', 'gsd.db')), true);
+      const retained = loadVerifiedRecoverApplication(application.receipt.operationId);
+      const resumed = executeLegacyImportRecoveryAction(retained, 'restore', [], consent);
+      assert.equal(resumed.status, 'restored');
+      assert.equal(resumed.result.status, 'committed');
+      assert.equal(_getAdapter()!.prepare('SELECT COUNT(*) AS count FROM workflow_import_restores').get()?.count, 1);
+    } finally {
+      closeDatabase();
+      cleanup(base);
+    }
+  });
+
+  test('explicit slash recover repairs one retained Application and replays its receipt', async () => {
+    const base = createFixtureBase();
+    try {
+      installCorpusCase(base, 'gsd-nested');
+      openDatabase(join(base, '.gsd', 'gsd.db'));
+      insertMilestone({ id: 'M001', title: 'Original authority', status: 'active' });
+      const { ctx, notes } = makeCtx();
+      await handleRecover(ctx, base, previewApproval(base));
+      const db = _getAdapter()!;
+      const application = db.prepare(`SELECT operation_id, resulting_project_revision, resulting_authority_epoch
+        FROM workflow_import_applications`).get()!;
+      executeDomainOperation({
+        operationType: 'milestone.describe',
+        idempotencyKey: 'gsd-recover/later-description',
+        expectedRevision: Number(application.resulting_project_revision),
+        expectedAuthorityEpoch: Number(application.resulting_authority_epoch),
+        actorType: 'agent',
+        sourceTransport: 'internal',
+        payload: { milestoneId: 'M001' },
+      }, () => {
+        db.prepare("UPDATE milestones SET title = 'Accepted later title' WHERE id = 'M001'").run();
+        return {
+          events: [{
+            eventType: 'milestone.described',
+            entityType: 'milestone',
+            entityId: 'M001',
+            payload: { title: 'Accepted later title' },
+            destinations: ['projection'],
+          }],
+          projections: [{ projectionKey: 'milestone/m001', projectionKind: 'markdown', rendererVersion: 'v1' }],
+        };
+      });
+
+      const route = `--application=${application.operation_id} --forward-repair`;
+      const previousWrite = process.stderr.write;
+      const stderr: string[] = [];
+      process.stderr.write = ((chunk: string | Uint8Array) => {
+        stderr.push(String(chunk));
+        return true;
+      }) as typeof process.stderr.write;
+      try {
+        await handleRecover(ctx, base, route);
+      } finally {
+        process.stderr.write = previousWrite;
+      }
+      const choice = /--choice=[A-Za-z0-9_-]+\.preserve-later/u
+        .exec(notes.at(-1)?.message ?? '')?.[0];
+      assert.ok(choice, notes.at(-1)?.message);
+      assert.equal(notes.at(-1)?.kind, 'warning');
+      assert.doesNotMatch(stderr.join(''), /gsd-recover: recovered/);
+      assert.match(notes.at(-1)?.message ?? '', /restore-backup/);
+      assert.match(notes.at(-1)?.message ?? '', /Current canonical value:/);
+      assert.match(notes.at(-1)?.message ?? '', /Proposed backup mutation:/);
+      assert.match(notes.at(-1)?.message ?? '', /Recommended: preserve-later/);
+      assert.match(notes.at(-1)?.message ?? '', /preserves accepted canonical work/i);
+      await handleRecover(ctx, base, `${route} ${choice}`);
+
+      assert.equal(db.prepare('SELECT COUNT(*) AS count FROM workflow_import_applications').get()?.count, 1);
+      assert.equal(db.prepare('SELECT COUNT(*) AS count FROM workflow_import_forward_repairs').get()?.count, 1);
+      assert.equal(getMilestone('M001')?.title, 'Accepted later title');
+      await handleRecover(ctx, base, `${route} ${choice}`);
+      assert.equal(db.prepare('SELECT COUNT(*) AS count FROM workflow_import_applications').get()?.count, 1);
+      assert.equal(db.prepare('SELECT COUNT(*) AS count FROM workflow_import_forward_repairs').get()?.count, 1);
+      assert.match(notes.at(-1)?.message ?? '', /replayed/i);
+    } finally {
+      closeDatabase();
+      cleanup(base);
+    }
+  });
+
+  test('explicit slash recover rejects conflicting recovery actions', async () => {
+    const base = createFixtureBase();
+    try {
+      installCorpusCase(base, 'gsd-nested');
+      openDatabase(join(base, '.gsd', 'gsd.db'));
+      const { ctx, notes } = makeCtx();
+      await handleRecover(ctx, base, '--restore --forward-repair');
+
+      assert.equal(notes.at(-1)?.kind, 'error');
+      assert.match(notes.at(-1)?.message ?? '', /mutually exclusive/);
+      assert.equal(_getAdapter()!.prepare('SELECT COUNT(*) AS count FROM workflow_import_applications').get()?.count, 0);
+    } finally {
+      closeDatabase();
+      cleanup(base);
+    }
+  });
+
+  test('explicit slash recover fails loud on a malformed --choice token', async () => {
+    const base = createFixtureBase();
+    try {
+      installCorpusCase(base, 'gsd-nested');
+      openDatabase(join(base, '.gsd', 'gsd.db'));
+      const { ctx, notes } = makeCtx();
+      await handleRecover(ctx, base, `${previewApproval(base)} --choice=1:milestone:M001:preserve-later`);
+      assert.equal(notes.at(-1)?.kind, 'error');
+      assert.match(notes.at(-1)?.message ?? '', /choice token is invalid/);
+    } finally {
+      closeDatabase();
+      cleanup(base);
+    }
+  });
+
+  test('explicit slash recover does not report success for a refused assessment', async () => {
+    const base = createFixtureBase();
+    const previousWrite = process.stderr.write;
+    const stderr: string[] = [];
+    try {
+      installCorpusCase(base, 'gsd-nested');
+      assert.equal(openWorkflowDatabase(base).ok, true);
+      const { ctx, notes } = makeCtx();
+      await handleRecover(ctx, base, previewApproval(base));
+      const db = _getAdapter()!;
+      const application = db.prepare('SELECT operation_id FROM workflow_import_applications').get()!;
+      db.prepare("UPDATE milestones SET title = 'tampered behind the log' WHERE id = 'M001'").run();
+      process.stderr.write = ((chunk: string | Uint8Array) => {
+        stderr.push(String(chunk));
+        return true;
+      }) as typeof process.stderr.write;
+
+      await handleRecover(ctx, base, `--application=${String(application.operation_id)}`);
+
+      assert.equal(notes.at(-1)?.kind, 'error');
+      assert.match(notes.at(-1)?.message ?? '', /refused \(APPLICATION_STATE_CHANGED\)/);
+      assert.doesNotMatch(stderr.join(''), /gsd-recover: recovered/);
+    } finally {
+      process.stderr.write = previousWrite;
+      closeDatabase();
+      cleanup(base);
+    }
+  });
+
+  test('explicit slash recover resumes an Application after a lost assessment response', async () => {
+    const base = createFixtureBase();
+    try {
+      installCorpusCase(base, 'gsd-nested');
+      openDatabase(join(base, '.gsd', 'gsd.db'));
+      const lost = applyVerifiedRecoverApplication(base, recoverPreview(base).preview_hash);
+      const { ctx, notes } = makeCtx();
+
+      await handleRecover(ctx, base, previewApproval(base));
+
+      const db = _getAdapter()!;
+      assert.equal(db.prepare('SELECT COUNT(*) AS count FROM workflow_import_applications').get()?.count, 1);
+      assert.match(notes.at(-1)?.message ?? '', /loaded retained Import Application/);
+      assert.match(notes.at(-1)?.message ?? '', new RegExp(lost.receipt.operationId));
+    } finally {
+      closeDatabase();
+      cleanup(base);
+    }
+  });
+
+  test('recover manifest persistence fails closed until its parent is durable', async () => {
+    const base = createFixtureBase();
+    try {
+      installCorpusCase(base, 'gsd-nested');
+      openDatabase(join(base, '.gsd', 'gsd.db'));
+      const { ctx, notes } = makeCtx();
+      _setRecoverManifestSyncForTest((path) => {
+        if (basename(path) === '.gsd') throw new Error('parent sync interrupted');
+      });
+
+      await handleRecover(ctx, base, previewApproval(base));
+      assert.equal(notes.at(-1)?.kind, 'error');
+      assert.match(notes.at(-1)?.message ?? '', /parent sync interrupted/);
+      assert.equal(_getAdapter()!.prepare('SELECT COUNT(*) AS count FROM workflow_import_applications').get()?.count, 1);
+
+      _setRecoverManifestSyncForTest(null);
+      await handleRecover(ctx, base, previewApproval(base));
+      assert.equal(notes.at(-1)?.kind, 'success');
+      assert.equal(_getAdapter()!.prepare('SELECT COUNT(*) AS count FROM workflow_import_applications').get()?.count, 1);
+    } finally {
+      _setRecoverManifestSyncForTest(null);
       closeDatabase();
       cleanup(base);
     }
@@ -763,7 +1091,7 @@ describe('gsd-recover', async () => {
       const sourceBefore = recoverSourceSnapshot(base);
       const { ctx, notes } = makeCtx();
 
-      await handleRecover(ctx, base, '--confirm');
+      await handleRecover(ctx, base, previewApproval(base));
 
       assert.deepEqual(canonicalRecoverSnapshot(), before);
       assert.deepEqual(recoverSourceSnapshot(base), sourceBefore);

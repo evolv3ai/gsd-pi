@@ -1,6 +1,8 @@
 // Project/App: gsd-pi
 // File Purpose: Shared byte-backed interpretation primitives for legacy import previews.
 
+import { compareText, deepFreeze } from "./legacy-import-utils.js";
+
 import { isUtf8 } from "node:buffer";
 
 import type {
@@ -100,10 +102,6 @@ export interface LegacyImportCaptureDecoder {
   parserVersion: string;
 }
 
-function compareText(left: string, right: string): number {
-  return left < right ? -1 : left > right ? 1 : 0;
-}
-
 function isNonblankString(value: unknown): value is string {
   return typeof value === "string" && value.length > 0;
 }
@@ -167,13 +165,6 @@ function finalizeCompleteRowSets(
     canonicalLegacyImportJson(completeRowSetOrderValue(left)),
     canonicalLegacyImportJson(completeRowSetOrderValue(right)),
   ));
-}
-
-function deepFreeze<T>(value: T, seen = new Set<object>()): T {
-  if (value === null || typeof value !== "object" || seen.has(value)) return value;
-  seen.add(value);
-  for (const child of Object.values(value)) deepFreeze(child, seen);
-  return Object.freeze(value);
 }
 
 function linesFor(bytes: Buffer): LegacyImportSourceLine[] {
@@ -454,7 +445,7 @@ export function finalizeLegacyImportInterpretation(
   diagnoses: LegacyImportPendingDiagnosis[],
   completeRowSets: readonly LegacyImportPendingCompleteRowSet[] = [],
 ): LegacyImportInterpretation {
-  const orderedPending = candidates.sort((left, right) => compareText(
+  const orderedPending = [...candidates].sort((left, right) => compareText(
     canonicalLegacyImportJson(candidateOrderValue(left)),
     canonicalLegacyImportJson(candidateOrderValue(right)),
   ));
@@ -463,7 +454,7 @@ export function finalizeLegacyImportInterpretation(
     ordinal: index + 1,
     ...candidate,
   }));
-  const orderedDiagnoses = diagnoses.sort((left, right) => {
+  const orderedDiagnoses = [...diagnoses].sort((left, right) => {
     const { resolution: _leftResolution, ...leftValue } = left;
     const { resolution: _rightResolution, ...rightValue } = right;
     return compareText(canonicalLegacyImportJson(leftValue), canonicalLegacyImportJson(rightValue));

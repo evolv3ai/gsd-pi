@@ -8,7 +8,9 @@ import {
   mkdtempSync,
   readFileSync,
   readdirSync,
+  readSync,
   realpathSync,
+  renameSync,
   rmSync,
   statSync,
   writeFileSync,
@@ -55,6 +57,7 @@ interface VerificationDependencies {
   openReadOnly(path: string): SqliteReadOnlyConnection;
   configureReadOnly?(connection: SqliteReadOnlyConnection): void;
   removeStagingDirectory?(path: string): void;
+  read?(fd: number, buffer: Uint8Array, offset: number, length: number): number;
 }
 
 interface VerificationResult {
@@ -618,8 +621,13 @@ test("legacy import backup verification rejects header drift identity replacemen
 
   const identityFixture = snapshotFixture(t);
   const originalBytes = readFileSync(identityFixture.snapshotPath);
-  rmSync(identityFixture.snapshotPath);
-  writeFileSync(identityFixture.snapshotPath, originalBytes);
+  // Allocate the replacement before removing the original: holding the old
+  // inode while the new file is created guarantees a different dev:ino
+  // identity on every filesystem (a plain rm+write can immediately reuse
+  // the freed inode on Linux, which would leave the identity unchanged).
+  const stagingPath = `${identityFixture.snapshotPath}-staging`;
+  writeFileSync(stagingPath, originalBytes);
+  renameSync(stagingPath, identityFixture.snapshotPath);
   expectVerificationError(
     () => testVerify(identityFixture.input, { openReadOnly: openSqliteReadOnly }),
     "snapshot",
@@ -640,6 +648,28 @@ test("legacy import backup verification rejects header drift identity replacemen
     "snapshot",
     "LEGACY_IMPORT_BACKUP_SNAPSHOT_CHANGED",
   );
+});
+
+test("legacy import backup verification reads the rollback-journal header through injectable ops", (t) => {
+  const { testVerify } = verificationApi();
+  const fixture = snapshotFixture(t);
+  const readLengths: number[] = [];
+  expectVerificationError(
+    () => testVerify(fixture.input, {
+      openReadOnly: openSqliteReadOnly,
+      read(fd, buffer, offset, length) {
+        readLengths.push(length);
+        if (length === 20) {
+          buffer.fill(0, offset, offset + length);
+          return length;
+        }
+        return readSync(fd, buffer, offset, length, null);
+      },
+    }),
+    "snapshot",
+    "LEGACY_IMPORT_BACKUP_SNAPSHOT_INVALID",
+  );
+  assert.ok(readLengths.includes(20), "header bytes are read through the injected ops.read");
 });
 
 test("legacy import backup verification rejects non-exact input before independent open", (t) => {

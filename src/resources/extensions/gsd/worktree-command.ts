@@ -31,9 +31,10 @@ import {
 } from "./worktree-manager.js";
 import { inferCommitType } from "./git-service.js";
 import type { FileLineStat } from "./worktree-manager.js";
-import { existsSync, realpathSync, readdirSync, rmSync, unlinkSync } from "node:fs";
+import { existsSync, realpathSync, readdirSync } from "node:fs";
 import { nativeMergeAbort } from "./native-git-bridge.js";
 import { join } from "node:path";
+import { removeProjectionFileSync, removeProjectionTreeSync } from "./atomic-write.js";
 import {
   clearWorktreeOriginalCwd,
   ensureWorktreeOriginalCwdFromPath,
@@ -294,7 +295,7 @@ function hasExistingMilestones(wtPath: string): boolean {
 function clearGSDPlans(wtPath: string): void {
   const mDir = milestonesDir(wtPath);
   if (existsSync(mDir)) {
-    rmSync(mDir, { recursive: true, force: true });
+    removeProjectionTreeSync(mDir);
   }
 
   // Remove root planning files — PROJECT.md, DECISIONS.md, QUEUE.md, REQUIREMENTS.md
@@ -304,7 +305,7 @@ function clearGSDPlans(wtPath: string): void {
   for (const file of planningFiles) {
     const filePath = join(root, file);
     if (existsSync(filePath)) {
-      unlinkSync(filePath);
+      removeProjectionFileSync(filePath);
     }
   }
 }

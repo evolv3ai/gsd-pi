@@ -200,6 +200,40 @@ function assertDeepFrozen(value: unknown, seen = new Set<object>()): void {
   for (const child of Object.values(value)) assertDeepFrozen(child, seen);
 }
 
+function expectedInstructionResults(prepared: PreparedApplicationCase): Array<Record<string, unknown>> {
+  return prepared.plan.instructions.map((instruction) => {
+    const identity = {
+      action: instruction.action,
+      targetKind: instruction.targetKind,
+      targetIdentityHash: hashLegacyImportValue({
+        kind: instruction.targetKind,
+        key: instruction.targetKey,
+      }),
+    };
+    if (instruction.action === "replace-slice-dependencies") {
+      const deleted = prepared.base.rows.filter((row) => row.row_set === "slice_dependencies"
+        && row.value["milestone_id"] === instruction.milestoneId
+        && row.value["slice_id"] === instruction.sliceId).length;
+      return {
+        ...identity,
+        expectedAffectedRows: instruction.dependsOnSliceIds.length,
+        affectedRows: deleted + instruction.dependsOnSliceIds.length,
+      };
+    }
+    if (instruction.action === "delete-slice-dependencies") {
+      const deleted = prepared.base.rows.filter((row) => row.row_set === "slice_dependencies"
+        && row.value["milestone_id"] === instruction.milestoneId
+        && (row.value["slice_id"] === instruction.sliceId
+          || row.value["depends_on_slice_id"] === instruction.sliceId)).length;
+      return { ...identity, expectedAffectedRows: 0, affectedRows: deleted };
+    }
+    if (instruction.action === "preserve") {
+      return { ...identity, expectedAffectedRows: 0, affectedRows: 0 };
+    }
+    return { ...identity, expectedAffectedRows: 1, affectedRows: 1 };
+  });
+}
+
 function expectedEventPayload(prepared: PreparedApplicationCase): Record<string, unknown> {
   const identity = createLegacyImportApplicationIdentity(prepared.input);
   return {
@@ -212,6 +246,7 @@ function expectedEventPayload(prepared: PreparedApplicationCase): Record<string,
     planSchemaVersion: prepared.plan.planSchemaVersion,
     eventFacts: prepared.plan.eventFacts,
     projectionKeys: prepared.plan.projectionKeys,
+    instructionResults: expectedInstructionResults(prepared),
   };
 }
 
@@ -977,6 +1012,19 @@ test("relevant canonical base drift without an authority increment is stale and 
 test("an active worker blocks by status even with an expired heartbeat", () => {
   const prepared = prepareCase("custom-workflow", () => {
     seedWorker("active-worker", "active");
+  });
+  assertCoordinationBlocked(prepared, { active_workers: 1 });
+});
+
+test("an active worker blocks even when its recorded project root does not match the authority", () => {
+  const prepared = prepareCase("custom-workflow", () => {
+    db().prepare(`INSERT INTO workers (
+        worker_id, host, pid, started_at, version, last_heartbeat_at, status,
+        project_root_realpath
+      ) VALUES (
+        'relocated-worker', 'test-host', 999, '1970-01-01T00:00:00.000Z', 'test',
+        '1970-01-01T00:00:00.000Z', 'active', '/pre-cutover/project-root'
+      )`).run();
   });
   assertCoordinationBlocked(prepared, { active_workers: 1 });
 });

@@ -263,7 +263,6 @@ import {
 import {
   bootstrapAutoSession,
   openProjectDbIfPresent,
-  reconcileMergedMilestonesFromJournal,
   type BootstrapDeps,
 } from "./auto-start.js";
 import { initHealthWidget } from "./health-widget.js";
@@ -2818,7 +2817,6 @@ export async function startAuto(
     if (!getLedger()) initMetrics(base);
     if (s.currentMilestoneId) setActiveMilestoneId(base, s.currentMilestoneId);
     await openProjectDbIfPresent(base);
-    reconcileMergedMilestonesFromJournal(base);
     registerAutoWorkerForSession(s, base);
 
     // Re-register health level notification callback lost across process restart

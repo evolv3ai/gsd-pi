@@ -140,17 +140,6 @@ function alignBareMarkdownIdsWithSuffixedDb(markdownScan: HierarchyScan, dbScan:
   }
 }
 
-/**
- * True when the DB holds any milestone/slice/task identity the markdown lacks —
- * i.e. a `/gsd recover --confirm` (markdown → DB) would DELETE authoritative DB
- * rows. This is identity-based, so it catches equal-count divergence (e.g. DB
- * slice `S99` vs markdown `S01`) that a cardinality-only check misses. Used by
- * the recover data-loss guard.
- */
-export function recoverWouldDeleteDbRows(basePath: string): boolean {
-  return scanHasExtraIdentities(scanDbHierarchy(), scanMarkdownHierarchy(basePath));
-}
-
 export function scanMarkdownHierarchy(basePath: string): HierarchyScan {
   const scan = emptyScan();
   // findMilestoneIds handles both flat-phase (NN-slug) and legacy (M###) dirs.
@@ -245,7 +234,7 @@ export async function checkMarkdownHierarchyAgainstDb(
   // a pre-registration discussion artifact (CONTEXT/CONTEXT-DRAFT only — the
   // queued DB row is inserted only at discussion handoff). Treating it as
   // drift would warn on every live discussion and recommend
-  // `/gsd recover --confirm`, an import that materializes abandoned-discussion
+  // `/gsd recover` with exact Preview approval, an import that materializes abandoned-discussion
   // dirs as ghost active milestones. Exclude such dirs from this comparison
   // only; recover preflights use the raw scans and still see them.
   for (const id of markdownScan.milestonesWithoutRoadmap) {
@@ -271,12 +260,10 @@ export async function checkMarkdownHierarchyAgainstDb(
     return { action: "none", reason: "in-sync", markdown, beforeDb, afterDb: beforeDb };
   }
 
-  // Choose the SAFE repair direction by IDENTITY, not cardinality. Recover
-  // imports markdown → DB and DELETES any DB row markdown lacks, so it must
-  // never be recommended when the DB holds identities the markdown is missing —
-  // including equal-count divergence (DB `S99` vs markdown `S01`), which a
-  // count-only check would wrongly route to recover. Whenever the DB holds rows
-  // markdown lacks, the correct repair is to re-project from the DB (rebuild).
+  // Choose the safe repair direction by identity, not cardinality. Whenever the
+  // authoritative DB holds identities markdown lacks, re-project from the DB.
+  // Reserve explicit legacy import for a lost or corrupt DB whose intended
+  // source is markdown.
   const dbHasExtra = scanHasExtraIdentities(dbScan, markdownScan);
 
   const countsLine =
@@ -284,7 +271,7 @@ export async function checkMarkdownHierarchyAgainstDb(
     `do not match the authoritative DB (${beforeDb.milestones}M/${beforeDb.slices}S/${beforeDb.tasks}T). `;
 
   // The DB holds rows markdown lacks (richer, identity-diverged, or markdown
-  // entirely missing): re-project from the DB. Recover here would destroy data.
+  // entirely missing): re-project from the authoritative DB.
   if (dbHasExtra) {
     return {
       action: "recovery-required",
@@ -297,7 +284,7 @@ export async function checkMarkdownHierarchyAgainstDb(
         countsLine +
         "The DB holds rows the markdown lacks, so the markdown projection is stale. " +
         "Run `/gsd rebuild markdown` to re-project from the authoritative DB. " +
-        "Do NOT run `/gsd recover --confirm` here — it would delete the extra DB rows.",
+        "Do NOT run `/gsd recover` here — legacy import is not a repair for stale markdown projections.",
     };
   }
 
@@ -310,9 +297,9 @@ export async function checkMarkdownHierarchyAgainstDb(
     markdown,
     beforeDb,
     afterDb: beforeDb,
-    recoveryCommand: "/gsd recover --confirm",
+    recoveryCommand: "/gsd recover",
     message:
       countsLine +
-      "Runtime startup will not import markdown automatically; run `/gsd recover --confirm` if markdown should repopulate the database.",
+      "Runtime startup will not import markdown automatically; run `/gsd recover` and approve its exact Preview hash if markdown should repopulate the database.",
   };
 }

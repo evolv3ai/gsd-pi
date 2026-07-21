@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdirSync, rmSync, readFileSync, existsSync, symlinkSync, writeFileSync, unlinkSync, promises as fsPromises } from "node:fs";
-import { join } from "node:path";
+import { mkdirSync, rmSync, readFileSync, existsSync, symlinkSync, writeFileSync, unlinkSync } from "node:fs";
+import { join, relative } from "node:path";
 import { tmpdir } from "node:os";
 import { randomUUID } from "node:crypto";
 
@@ -22,6 +22,7 @@ import { claimMilestoneLease, getMilestoneLease } from "../db/milestone-leases.t
 import { deriveState, invalidateStateCache } from "../state.ts";
 import { autoSession } from "../auto-runtime-state.ts";
 import { normalizeRealPath, relSliceFile, targetMilestoneFile } from "../paths.ts";
+import { _setManagedProjectionWriteFaultForTest } from "../managed-projection-history.ts";
 import { recordUnitHarnessAbort } from "../unit-runtime.ts";
 import { markApprovalGateVerified, markDepthVerified, clearDiscussionFlowState, loadWriteGateSnapshot, setPendingGate } from "../bootstrap/write-gate.ts";
 import {
@@ -48,6 +49,11 @@ import {
   readNotifications,
   _resetNotificationStore,
 } from "../notification-store.ts";
+import {
+  _setManagedProjectionApplyFaultForTest,
+} from "../managed-projection-history.ts";
+import { removeProjectionFileSync } from "../atomic-write.ts";
+import { discardProjectionEvidence } from "./projection-evidence-helpers.ts";
 
 function executePlanMilestone(
   params: Parameters<typeof executePlanMilestoneWithInvocation>[0],
@@ -513,8 +519,12 @@ test("executeTaskComplete surfaces stale readable status and duplicate repair me
   assert.equal(escalated.details.stale, true);
   assert.match(String(escalated.content[0]?.text), /readable status update is pending repair/i);
 
+  // The obstruction gate refuses to journal a write over the foreign ROADMAP.md
+  // directory, so the retry converges once the obstruction is cleared
+  // externally — and provably left no unbound recovery evidence behind.
+  discardProjectionEvidence(base);
   rmSync(roadmapPath, { recursive: true });
-  rmSync(String(ordinary.details.summaryPath));
+  removeProjectionFileSync(String(ordinary.details.summaryPath));
   const repaired = await inProjectDir(base, () => executeTaskComplete(ordinaryParams, base));
 
   assert.equal(repaired.isError, undefined);
@@ -900,7 +910,11 @@ test("executeSkipSlice surfaces projection obstruction and retries the full read
   assert.match(String(obstructed.content[0]?.text), /readable status update.*pending/i);
 
   const roadmapPath = join(base, ".gsd", "ROADMAP.md");
-  assert.equal(existsSync(roadmapPath), true, "the full flush must render the top-level roadmap");
+  assert.equal(existsSync(roadmapPath), true, "an obstructed write must not block independent projection writes");
+  // The obstruction gate refuses to journal a write over the foreign STATE.md
+  // directory, so the retry converges once the obstruction is cleared
+  // externally — and provably left no unbound recovery evidence behind.
+  discardProjectionEvidence(base);
   rmSync(join(base, ".gsd", "STATE.md"), { recursive: true, force: true });
   rmSync(roadmapPath, { force: true });
   const repaired = await inProjectDir(base, () => executeSkipSlice({
@@ -2214,7 +2228,7 @@ test("executeCompleteMilestone returns success for already-complete milestones w
   }
 });
 
-test("executeCompleteMilestone reports pending readable status when summary projection fails", async (t) => {
+test("executeCompleteMilestone recovers a managed summary projection failure", async (t) => {
   const base = makeTmpBase();
   t.after(() => {
     closeDatabase();
@@ -2234,14 +2248,12 @@ test("executeCompleteMilestone reports pending readable status when summary proj
     fullContent: "---\nverdict: pass\nremediation_round: 0\n---\n\n# Validation\nValidated.",
   });
   const summaryPath = targetMilestoneFile(base, "M003", "SUMMARY", "Milestone Three");
-  const originalRename = fsPromises.rename.bind(fsPromises);
   let summaryWriteBlocked = false;
-  t.mock.method(fsPromises, "rename", async (...args: Parameters<typeof fsPromises.rename>) => {
-    if (String(args[1]) === summaryPath) {
-      summaryWriteBlocked = true;
-      throw new Error("simulated milestone summary projection failure");
-    }
-    return originalRename(...args);
+  t.after(() => _setManagedProjectionApplyFaultForTest(null));
+  _setManagedProjectionApplyFaultForTest(() => {
+    summaryWriteBlocked = true;
+    _setManagedProjectionApplyFaultForTest(null);
+    throw new Error("simulated milestone summary projection failure");
   });
 
   const result = await inProjectDir(base, () => executeCompleteMilestone({
@@ -2254,6 +2266,59 @@ test("executeCompleteMilestone reports pending readable status when summary proj
 
   assert.equal(result.isError, undefined);
   assert.equal(summaryWriteBlocked, true, "fixture must obstruct the milestone SUMMARY write itself");
+  assert.equal(existsSync(summaryPath), true, "the managed flush must recover the retained summary mutation");
+  assert.equal(result.details.stale, undefined);
+  assert.doesNotMatch(String(result.content[0]?.text), /readable status update is pending repair/i);
+  assert.match(String(result.content[0]?.text), /summary (?:written|available)/i);
+});
+
+test("executeCompleteMilestone surfaces stale readable status while a managed summary projection failure persists", async (t) => {
+  const base = makeTmpBase();
+  t.after(() => {
+    closeDatabase();
+    cleanup(base);
+  });
+  openTestDb(base);
+  seedMilestone("M003", "Milestone Three");
+  seedSlice("M003", "S03", "complete");
+  _getAdapter()!.prepare(
+    "INSERT OR REPLACE INTO tasks (milestone_id, slice_id, id, title, status) VALUES (?, ?, ?, ?, ?)",
+  ).run("M003", "S03", "T03", "Task T03", "complete");
+  insertAssessment({
+    path: join(".gsd", "milestones", "M003", "M003-VALIDATION.md"),
+    milestoneId: "M003",
+    status: "pass",
+    scope: "milestone-validation",
+    fullContent: "---\nverdict: pass\nremediation_round: 0\n---\n\n# Validation\nValidated.",
+  });
+  const summaryPath = targetMilestoneFile(base, "M003", "SUMMARY", "Milestone Three");
+  // Managed projection writes go through the native journal boundary, not
+  // fsPromises.rename, so obstructing the rename seam no longer obstructs the
+  // SUMMARY write. Fault the managed write seam itself, scoped to exactly the
+  // milestone SUMMARY logical path, on every attempt.
+  const summaryLogicalPath = relative(
+    join(normalizeRealPath(base), ".gsd"),
+    summaryPath,
+  ).replaceAll("\\", "/");
+  const obstructedWrites: string[] = [];
+  _setManagedProjectionWriteFaultForTest((logicalPath) => {
+    if (logicalPath !== summaryLogicalPath) return;
+    obstructedWrites.push(logicalPath);
+    throw new Error("simulated milestone summary projection failure");
+  });
+  t.after(() => _setManagedProjectionWriteFaultForTest(null));
+
+  const result = await inProjectDir(base, () => executeCompleteMilestone({
+    milestoneId: "M003",
+    title: "Milestone Three",
+    oneLiner: "Completed milestone",
+    narrative: "Everything shipped.",
+    verificationPassed: true,
+  }, base));
+
+  assert.equal(result.isError, undefined);
+  assert.ok(obstructedWrites.length > 0, "fixture must obstruct the milestone SUMMARY write itself");
+  assert.deepEqual([...new Set(obstructedWrites)], [summaryLogicalPath]);
   assert.equal(existsSync(summaryPath), false);
   assert.equal(result.details.stale, true);
   assert.match(String(result.content[0]?.text), /readable status update is pending repair/i);

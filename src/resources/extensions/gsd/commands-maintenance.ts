@@ -12,9 +12,22 @@ import { gsdProjectionRoot, gsdRoot } from "./paths.js";
 import { nativeBranchList, nativeDetectMainBranch, nativeBranchListMerged, nativeBranchDelete, nativeForEachRef, nativeUpdateRef } from "./native-git-bridge.js";
 import { logWarning } from "./workflow-logger.js";
 import {
-  applyVerifiedRecoverApplication,
+  applyPreparedVerifiedRecoverApplication,
+  loadRetainedVerifiedRecoverApplication,
+  loadVerifiedRecoverApplication,
+  prepareVerifiedRecoverApplication,
+  type PreparedVerifiedRecoverApplication,
   refreshWorkflowDatabaseFromDisk,
 } from "./db-workspace.js";
+import {
+  executeLegacyImportRecoveryAction,
+  parseLegacyImportRecoveryAction,
+} from "./legacy-import-recovery-action.js";
+import {
+  formatLegacyImportForwardRepairChoice,
+  parseLegacyImportForwardRepairChoices,
+} from "./legacy-import-forward-repair-choice-token.js";
+import { LEGACY_IMPORT_RESTORE_ASSESSMENT_CONSENT_SCHEMA_VERSION, type LegacyImportRestoreAssessmentConsent } from "./legacy-import-restore-assessment.js";
 
 export async function handleCleanupBranches(ctx: ExtensionCommandContext, basePath: string): Promise<void> {
   let branches: string[];
@@ -487,16 +500,23 @@ export async function handleCleanupProjects(args: string, ctx: ExtensionCommandC
 
 type HierarchyCounts = { milestones: number; slices: number; tasks: number };
 
-function recoverConfirmed(args: string): boolean {
-  return args
-    .split(/\s+/)
-    .map((part) => part.trim().toLowerCase())
-    .some((part) => part === "--confirm" || part === "--yes" || part === "confirm");
+function requestedApplication(args: string): string | null {
+  return /(?:^|\s)--application=([^\s]+)(?=\s|$)/u.exec(args)?.[1] ?? null;
+}
+
+function requestedPreviewApproval(args: string): string | null {
+  return /(?:^|\s)--preview=(sha256:[0-9a-f]{64})(?=\s|$)/u.exec(args)?.[1] ?? null;
+}
+
+function requestedRestoreConsent(args: string): LegacyImportRestoreAssessmentConsent | undefined {
+  const evidenceHash = /(?:^|\s)--consent=proceed:destructive-database-restore:(sha256:[0-9a-f]{64})(?=\s|$)/u.exec(args)?.[1];
+  return evidenceHash ? { consentSchemaVersion: LEGACY_IMPORT_RESTORE_ASSESSMENT_CONSENT_SCHEMA_VERSION, decision: "proceed", destructiveDatabaseRestore: true, evidenceHash } : undefined;
 }
 
 async function confirmRecover(
   ctx: ExtensionCommandContext,
-  args: string,
+  prepared: Readonly<PreparedVerifiedRecoverApplication>,
+  approvedPreviewHash: string | null,
   markdown: HierarchyCounts,
   beforeDb: HierarchyCounts,
 ): Promise<boolean> {
@@ -508,10 +528,17 @@ async function confirmRecover(
     "",
     `  Markdown on disk: ${markdown.milestones}M/${markdown.slices}S/${markdown.tasks}T`,
     `  Current DB:       ${beforeDb.milestones}M/${beforeDb.slices}S/${beforeDb.tasks}T`,
+    "",
+    prepared.authorizationText,
   ];
   const warningText = warning.join("\n");
 
-  if (recoverConfirmed(args)) return true;
+  if (approvedPreviewHash !== null) {
+    if (approvedPreviewHash !== prepared.preview.preview_hash) {
+      throw new Error("gsd recover approval does not match the sealed Import Preview");
+    }
+    return true;
+  }
 
   if (typeof ctx.ui.confirm === "function") {
     const confirmed = await ctx.ui.confirm(
@@ -526,14 +553,14 @@ async function confirmRecover(
   }
 
   ctx.ui.notify(
-    `${warningText}\n\nNo database changes made. Re-run /gsd recover --confirm to proceed.`,
+    `${warningText}\n\nNo database changes made. Re-run /gsd recover --preview=${prepared.preview.preview_hash} to approve this exact Preview.`,
     "warning",
   );
   return false;
 }
 
 /**
- * `gsd recover` — Reconstruct DB hierarchy state from rendered markdown on disk.
+ * `gsd recover` — Explicitly import legacy markdown into canonical DB state.
  *
  * Applies one sealed Preview through the verified Import Application boundary,
  * then calls `deriveState()` to verify sanity.
@@ -559,16 +586,48 @@ export async function handleRecover(
   const markdown = countMarkdownHierarchy(basePath);
   const beforeDb = countDbHierarchy();
 
-  if (!(await confirmRecover(ctx, args, markdown, beforeDb))) return;
-
   try {
-    const application = applyVerifiedRecoverApplication(basePath);
-    const { backup, counts } = application;
+    const action = parseLegacyImportRecoveryAction(args.trim().split(/\s+/u).filter(Boolean));
+    const applicationId = requestedApplication(args);
+    if (!applicationId && action !== "assess") {
+      throw new Error("run gsd recover assessment first, then use its --application evidence");
+    }
+    let application = applicationId
+      ? loadVerifiedRecoverApplication(applicationId)
+      : loadRetainedVerifiedRecoverApplication();
+    let appliedPreview = false;
+    if (!application) {
+      const prepared = prepareVerifiedRecoverApplication(basePath);
+      if (!(await confirmRecover(
+        ctx,
+        prepared,
+        requestedPreviewApproval(args),
+        markdown,
+        beforeDb,
+      ))) return;
+      application = applyPreparedVerifiedRecoverApplication(
+        prepared,
+        prepared.preview.preview_hash,
+      );
+      appliedPreview = true;
+    }
+    const { backup } = application;
+    const recoveryAction = executeLegacyImportRecoveryAction(
+      application,
+      action,
+      parseLegacyImportForwardRepairChoices(args),
+      requestedRestoreConsent(args),
+    );
+    const recoveryAssessment = recoveryAction.status === "assessed"
+      || recoveryAction.status === "choice-required"
+      ? recoveryAction.assessment
+      : null;
 
+    const counts = countDbHierarchy();
     invalidateStateCache();
     const state = await deriveState(basePath);
     const lines = [
-      `gsd recover: applied verified markdown Preview`,
+      `gsd recover: ${applicationId || application.receipt.status === "replayed" ? "loaded retained" : "applied verified markdown Preview"} Import Application`,
       `  Milestones: ${counts.milestones}`,
       `  Slices:     ${counts.slices}`,
       `  Tasks:      ${counts.tasks}`,
@@ -578,9 +637,10 @@ export async function handleRecover(
     // Post-import verification: markdown that failed to parse imports as fewer
     // rows than countMarkdownHierarchy saw on disk. Surface the shortfall.
     if (
-      counts.milestones < markdown.milestones ||
-      counts.slices < markdown.slices ||
-      counts.tasks < markdown.tasks
+      appliedPreview
+      && (counts.milestones < markdown.milestones
+        || counts.slices < markdown.slices
+        || counts.tasks < markdown.tasks)
     ) {
       lines.push(
         ``,
@@ -590,6 +650,35 @@ export async function handleRecover(
       );
     }
     lines.push(``, `  Verified backup: ${backup.backup_ref}`);
+    if (recoveryAction.status === "restored") {
+      lines.push(``, `  Restored database: ${recoveryAction.result.status}`);
+    } else if (recoveryAction.status === "forward-repaired") {
+      lines.push(``, `  Forward Repair: ${recoveryAction.result.status}`);
+    } else if (recoveryAction.status === "choice-required") {
+      lines.push(
+        ``,
+        `  ${recoveryAction.assessment.recommendation.recommendationText}`,
+        ...recoveryAction.choices.map((choice) => (
+          `  Review ${choice.reasonCode} at ${choice.instructionIndex}:${choice.targetKind}:${choice.targetKey} (${choice.reviewHash}).\n`
+          + `    Current canonical value: ${choice.currentValueJson}\n`
+          + `    Proposed backup mutation: ${choice.proposedMutationJson}\n`
+          + `    Recommended: ${choice.recommendedDecision} — ${choice.recommendationRationale}\n`
+          + `Use ${formatLegacyImportForwardRepairChoice(choice, "preserve-later")} or `
+          + formatLegacyImportForwardRepairChoice(choice, "restore-backup")
+        )),
+      );
+    } else if (recoveryAssessment) {
+      lines.push(
+        ``,
+        `  ${recoveryAssessment.recommendation.recommendationText}`,
+        `  Application: ${application.receipt.operationId}`,
+      );
+      if (recoveryAssessment.decision === "restore-consent-required") {
+        lines.push(`  To consent: --application=${application.receipt.operationId} --restore --consent=proceed:destructive-database-restore:${recoveryAssessment.evidenceHash}`);
+      } else if (recoveryAssessment.decision === "forward-repair-required") {
+        lines.push(`  Use --application=${application.receipt.operationId} --forward-repair to apply the assessed action.`);
+      }
+    }
     if (state.activeMilestone) {
       lines.push(`  Active:     ${state.activeMilestone.id}: ${state.activeMilestone.title}`);
     }
@@ -600,6 +689,19 @@ export async function handleRecover(
       lines.push(`  Task:       ${state.activeTask.id}: ${state.activeTask.title}`);
     }
 
+    if (recoveryAction.status === "choice-required") {
+      ctx.ui.notify(lines.join("\n"), "warning");
+      return;
+    }
+    if (
+      recoveryAssessment?.decision === "transaction-rollback-only"
+      || recoveryAssessment?.decision === "temporarily-unavailable"
+      || recoveryAssessment?.decision === "refused"
+    ) {
+      lines.push(`  Assessment: ${recoveryAssessment.decision} (${recoveryAssessment.reasonCode})`);
+      ctx.ui.notify(lines.join("\n"), recoveryAssessment.decision === "refused" ? "error" : "warning");
+      return;
+    }
     process.stderr.write(
       `gsd-recover: recovered ${counts.milestones}M/${counts.slices}S/${counts.tasks}T hierarchy\n`,
     );
@@ -846,7 +948,7 @@ export async function handleRebuild(ctx: ExtensionCommandContext, basePath: stri
         "gsd rebuild database is reserved for DB-native rebuilds.",
         "It will not import markdown projections into the DB.",
         "For normal realignment, run /gsd rebuild markdown.",
-        "If the DB is lost or corrupt and markdown is the source to import, run /gsd recover --confirm.",
+        "If the DB is lost or corrupt and markdown is the source to import, run /gsd recover and approve its exact Preview hash.",
       ].join("\n"),
       "warning",
     );

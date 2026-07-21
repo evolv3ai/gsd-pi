@@ -1,7 +1,7 @@
 // Project/App: gsd-pi
 // File Purpose: Shared DB-backed guard for milestone closeout finalization.
 
-import { existsSync, mkdirSync, unlinkSync, writeFileSync } from "node:fs";
+import { existsSync } from "node:fs";
 import { dirname, join } from "node:path";
 
 import {
@@ -33,6 +33,7 @@ import {
 } from "./db/milestone-closeout-readiness.js";
 import { loadEffectiveGSDPreferences } from "./preferences.js";
 import { captureMilestoneVerificationSourceRevision } from "./verification-source-integrity.js";
+import { atomicWriteSync, removeProjectionFileSync } from "./atomic-write.js";
 
 export const CLOSEOUT_CONSISTENCY_BLOCKED_REASON = "closeout-consistency-blocked";
 
@@ -126,8 +127,7 @@ function recordCloseoutPassThroughValidationIfReady(
 
   const validationPath = join(basePath, relMilestoneFile(basePath, milestoneId, "VALIDATION"));
   const content = renderCloseoutPassThroughValidation(milestoneId);
-  mkdirSync(dirname(validationPath), { recursive: true });
-  writeFileSync(validationPath, content, "utf-8");
+  atomicWriteSync(validationPath, content, "utf-8");
 
   try {
     transaction(() => {
@@ -152,7 +152,7 @@ function recordCloseoutPassThroughValidationIfReady(
     });
   } catch (err) {
     try {
-      unlinkSync(validationPath);
+      removeProjectionFileSync(validationPath);
     } catch {
       // best effort cleanup
     }

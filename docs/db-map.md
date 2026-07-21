@@ -42,7 +42,7 @@ gsd-db.ts  ← compatibility barrel over the explicit single-writer allowlist
 db-adapter.ts  ← normalized prepared-statement cache
        │
        ▼
-db-provider.ts  ← node:sqlite (primary) or better-sqlite3 (fallback)
+db-provider.ts  ← node:sqlite
        │
        ▼
 SQLite WAL  (.gsd/gsd.db)
@@ -55,13 +55,12 @@ After commit: regenerate markdown artifacts → write to disk → invalidate cac
 - Keyed by workspace `identityKey` (realpath of project root)
 - Sibling worktrees share the same `.gsd/gsd.db` via SQLite WAL
 - Only one connection is "active" at a time; others cached for fast re-activation
-- On process exit: checkpoint WAL → vacuum → close
+- On process exit: close without checkpointing; coordinated maintenance owns checkpoint and vacuum
 - Before file-backed schema migrations, `db-migration-backup.ts` checkpoints WAL and replaces `.gsd/gsd.db.backup-vN` with a copy of the database being migrated. The copy must report the expected schema version and pass SQLite `quick_check`; checkpoint, copy, or validation failures warn and fail closed before migration DDL.
 
-**Provider fallback chain:**
-1. `node:sqlite` (Node ≥ 22 built-in) — preferred
-2. `better-sqlite3` (npm) — fallback if node:sqlite unavailable
-3. null → DB unavailable. Runtime `deriveState()` fails closed with an explicit blocker; markdown-only recovery is available only through explicit migration/recovery commands.
+**Provider selection:**
+1. `node:sqlite` (Node ≥ 22.18 built-in)
+2. null → DB unavailable. Runtime `deriveState()` fails closed with an explicit blocker; markdown-only recovery is available only through explicit migration/recovery commands.
 
 **Runtime state derivation:** `deriveState()` opens the existing workflow DB through `state/derive/db-open.ts`, projects rows in `state/derive/from-db.ts`, and returns a DB-unavailable blocker instead of implicitly deriving runtime state from markdown projections. Markdown hierarchy import is explicit recovery/migration behavior, not the normal read path. When `GSD_MILESTONE_LOCK` changes, auto-mode invalidates the short-lived derive cache because the cache key is only the base path while the DB projection is lock-filtered.
 
@@ -1663,13 +1662,14 @@ restored_at                             TEXT NOT NULL
 resulting_project_revision              INTEGER NOT NULL
 resulting_authority_epoch               INTEGER NOT NULL
 ```
-- Restore replaces the pre-Application backup and therefore deliberately does
-  not reference the erased Application or its operation by foreign key. The
-  erased identity is retained as checked JSON plus scalar digests.
-- The restored database records one `import.restore` operation at the backup
-  revision plus one without changing the backup Authority Epoch. The erased
-  Application operation and receipt must be absent. Restore receipts and their
-  linked operation are immutable.
+- Restore replaces the live database with the verified pre-Application backup
+  and therefore deliberately does not reference the erased Application or its
+  operation by foreign key. The erased identity is retained as checked JSON
+  plus scalar digests.
+- The restored database records one `import.restore` operation whose resulting
+  project revision is the backup revision plus one, at the unchanged backup
+  Authority Epoch. The erased Application operation and receipt must be absent.
+  Restore receipts and their linked operation are immutable.
 
 #### `workflow_import_forward_repairs`
 ```

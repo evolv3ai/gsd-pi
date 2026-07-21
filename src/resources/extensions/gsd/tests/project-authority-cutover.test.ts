@@ -3,9 +3,9 @@
 
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { afterEach, test, type TestContext } from "node:test";
 
@@ -195,6 +195,7 @@ function seedApplication(): ProjectAuthorityCutoverEvidence {
           planSchemaVersion: plan.planSchemaVersion,
           eventFacts: plan.eventFacts as unknown as DomainJsonValue,
           projectionKeys: [...plan.projectionKeys],
+          instructionResults: [],
         },
         destinations: ["projection"],
       }],
@@ -596,7 +597,8 @@ interface ProcessOutcome {
 function runCutoverProcess(
   databasePath: string,
   request: ProjectAuthorityCutoverInput,
-  startAt: number,
+  readyPath: string,
+  releasePath: string,
 ): Promise<ProcessOutcome> {
   const dbHref = pathToFileURL(join(process.cwd(), "src/resources/extensions/gsd/gsd-db.ts")).href;
   const cutoverHref = pathToFileURL(join(
@@ -604,11 +606,17 @@ function runCutoverProcess(
     "src/resources/extensions/gsd/project-authority-cutover-domain-operation.ts",
   )).href;
   const script = `
+    import { existsSync, writeFileSync } from "node:fs";
     import { openDatabase, closeDatabase } from ${JSON.stringify(dbHref)};
     import { cutoverProjectAuthority } from ${JSON.stringify(cutoverHref)};
-    const [databasePath, encodedRequest, startAt] = process.argv.slice(1);
+    const [databasePath, encodedRequest, readyPath, releasePath] = process.argv.slice(1);
     if (!openDatabase(databasePath)) throw new Error('database open failed');
-    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, Math.max(0, Number(startAt) - Date.now()));
+    writeFileSync(readyPath, 'ready');
+    const deadline = Date.now() + 30000;
+    while (!existsSync(releasePath)) {
+      if (Date.now() >= deadline) throw new Error('timed out waiting for the race release');
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 5);
+    }
     try {
       const result = cutoverProjectAuthority(JSON.parse(encodedRequest));
       console.log(JSON.stringify({ kind: 'result', status: result.status, operationId: result.operationId }));
@@ -622,7 +630,7 @@ function runCutoverProcess(
     const child = spawn(process.execPath, [
       "--import", "./src/resources/extensions/gsd/tests/resolve-ts.mjs",
       "--experimental-strip-types", "--input-type=module", "-e", script,
-      databasePath, JSON.stringify(request), String(startAt),
+      databasePath, JSON.stringify(request), readyPath, releasePath,
     ], { cwd: process.cwd(), env, stdio: ["ignore", "pipe", "pipe"] });
     let stdout = "";
     let stderr = "";
@@ -640,16 +648,42 @@ function runCutoverProcess(
   });
 }
 
+async function waitForPath(path: string, label: string): Promise<void> {
+  const deadline = Date.now() + 30_000;
+  while (!existsSync(path)) {
+    if (Date.now() >= deadline) throw new Error(`timed out waiting for ${label}: ${path}`);
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+}
+
+async function runCutoverRace(
+  databasePath: string,
+  requests: readonly [ProjectAuthorityCutoverInput, ProjectAuthorityCutoverInput],
+): Promise<readonly [ProcessOutcome, ProcessOutcome]> {
+  const barrier = (name: string) => join(dirname(databasePath), name);
+  const readyPaths = [barrier("race-ready-1"), barrier("race-ready-2")] as const;
+  const releasePath = barrier("race-release");
+  const outcomes = [
+    runCutoverProcess(databasePath, requests[0], readyPaths[0], releasePath),
+    runCutoverProcess(databasePath, requests[1], readyPaths[1], releasePath),
+  ];
+  try {
+    await Promise.all(readyPaths.map((path, index) => waitForPath(path, `cutover READY ${index + 1}`)));
+  } catch (error) {
+    writeFileSync(releasePath, "release", "utf8");
+    await Promise.allSettled(outcomes);
+    throw error;
+  }
+  writeFileSync(releasePath, "release", "utf8");
+  return await Promise.all(outcomes) as [ProcessOutcome, ProcessOutcome];
+}
+
 test("same-request processes converge and different requests produce one stale loser", async (t) => {
   let databasePath = openFixture(t);
   let evidence = seedApplication();
   let request = input(evidence);
   closeDatabase();
-  let startAt = Date.now() + 750;
-  const same = await Promise.all([
-    runCutoverProcess(databasePath, request, startAt),
-    runCutoverProcess(databasePath, request, startAt),
-  ]);
+  const same = await runCutoverRace(databasePath, [request, request]);
   assert.deepEqual(same.map((outcome) => outcome.kind).sort(), ["result", "result"]);
   assert.deepEqual(same.map((outcome) => outcome.status).sort(), ["committed", "replayed"]);
   assert.equal(new Set(same.map((outcome) => outcome.operationId)).size, 1);
@@ -658,13 +692,12 @@ test("same-request processes converge and different requests produce one stale l
   evidence = seedApplication();
   request = input(evidence);
   closeDatabase();
-  startAt = Date.now() + 750;
-  const different = await Promise.all([
-    runCutoverProcess(databasePath, request, startAt),
-    runCutoverProcess(databasePath, {
+  const different = await runCutoverRace(databasePath, [
+    request,
+    {
       ...request,
       invocation: { ...request.invocation, idempotencyKey: "cutover/request-2" },
-    }, startAt),
+    },
   ]);
   assert.equal(different.filter((outcome) => outcome.kind === "result").length, 1);
   const loser = different.find((outcome) => outcome.kind === "error");

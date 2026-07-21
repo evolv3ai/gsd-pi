@@ -25,6 +25,7 @@ import {
 import {
   LegacyImportApplicationError,
   applyLegacyImport,
+  createLegacyImportApplicationConsent,
   createLegacyImportApplicationIdentity,
   type LegacyImportApplicationInput,
   type LegacyImportApplicationReceipt,
@@ -66,7 +67,6 @@ const MANIFEST = JSON.parse(
 ) as LegacyImportCorpusManifest;
 
 const ELIGIBLE_CASES = new Set([
-  "action-matrix",
   "custom-workflow",
   "gsd-nested",
   "jsonl-history",
@@ -217,6 +217,19 @@ function prepareCase(root: string, name: string): PreparedCase {
   return { name, caseRoot, source, backupDirectory, databasePath, base, preview, backup, input };
 }
 
+function withPreparedCase(
+  root: string,
+  name: string,
+  run: (prepared: PreparedCase) => void,
+): void {
+  const prepared = prepareCase(root, name);
+  try {
+    run(prepared);
+  } finally {
+    closeDatabase();
+  }
+}
+
 function assertPlanAccounting(prepared: PreparedCase, plan: LegacyImportApplicationPlan): void {
   const changeIds = prepared.preview.preview.changes.map((change) => change.change_id);
   const instructionChangeIds = plan.instructions.flatMap((instruction) => [...instruction.changeIds]);
@@ -292,6 +305,43 @@ function assertLogicalInstruction(instruction: LegacyImportApplicationPlanInstru
       last_operation_id: rows("SELECT operation_id FROM workflow_operations")[0]?.["operation_id"],
     }, instruction.targetKey);
   }
+}
+
+function expectedInstructionResults(
+  prepared: PreparedCase,
+  plan: LegacyImportApplicationPlan,
+): Array<Record<string, unknown>> {
+  return plan.instructions.map((instruction) => {
+    const identity = {
+      action: instruction.action,
+      targetKind: instruction.targetKind,
+      targetIdentityHash: hashLegacyImportValue({
+        kind: instruction.targetKind,
+        key: instruction.targetKey,
+      }),
+    };
+    if (instruction.action === "replace-slice-dependencies") {
+      const deleted = prepared.base.rows.filter((row) => row.row_set === "slice_dependencies"
+        && row.value["milestone_id"] === instruction.milestoneId
+        && row.value["slice_id"] === instruction.sliceId).length;
+      return {
+        ...identity,
+        expectedAffectedRows: instruction.dependsOnSliceIds.length,
+        affectedRows: deleted + instruction.dependsOnSliceIds.length,
+      };
+    }
+    if (instruction.action === "delete-slice-dependencies") {
+      const deleted = prepared.base.rows.filter((row) => row.row_set === "slice_dependencies"
+        && row.value["milestone_id"] === instruction.milestoneId
+        && (row.value["slice_id"] === instruction.sliceId
+          || row.value["depends_on_slice_id"] === instruction.sliceId)).length;
+      return { ...identity, expectedAffectedRows: 0, affectedRows: deleted };
+    }
+    if (instruction.action === "preserve") {
+      return { ...identity, expectedAffectedRows: 0, affectedRows: 0 };
+    }
+    return { ...identity, expectedAffectedRows: 1, affectedRows: 1 };
+  });
 }
 
 function assertDurableCommit(
@@ -376,6 +426,7 @@ function assertDurableCommit(
     planSchemaVersion: plan.planSchemaVersion,
     eventFacts: plan.eventFacts,
     projectionKeys: plan.projectionKeys,
+    instructionResults: expectedInstructionResults(prepared, plan),
   }, prepared.name);
   const outbox = rows(`SELECT outbox_id, event_id, destination FROM workflow_outbox
     WHERE event_id IN (SELECT event_id FROM workflow_domain_events WHERE operation_id = :id)
@@ -414,7 +465,16 @@ function expectUnresolved(run: () => unknown, name: string): LegacyImportApplica
   return observed;
 }
 
-test("public Application commits and exactly replays all 13 eligible fresh corpus cases", (t) => {
+function expectDestructiveConsentRequired(run: () => unknown): void {
+  assert.throws(run, (error) => (
+    error instanceof LegacyImportApplicationError
+    && error.stage === "preview"
+    && error.code === "LEGACY_IMPORT_APPLICATION_DESTRUCTIVE_CONSENT_REQUIRED"
+    && error.retryable === false
+  ));
+}
+
+test("public Application commits and exactly replays all 12 eligible fresh corpus cases", (t) => {
   assert.equal(MANIFEST.cases.length, 26);
   const root = mkdtempSync(join(tmpdir(), "gsd-application-public-eligible-"));
   t.after(() => {
@@ -425,8 +485,7 @@ test("public Application commits and exactly replays all 13 eligible fresh corpu
   const preserveNames: string[] = [];
 
   for (const entry of MANIFEST.cases.filter((candidate) => ELIGIBLE_CASES.has(candidate.name))) {
-    const prepared = prepareCase(root, entry.name);
-    try {
+    withPreparedCase(root, entry.name, (prepared) => {
       const plan = compileLegacyImportApplicationPlan(prepared.preview);
       assertPlanAccounting(prepared, plan);
       const sourceBefore = fingerprintLegacyImportCorpusTree(prepared.source);
@@ -479,16 +538,14 @@ test("public Application commits and exactly replays all 13 eligible fresh corpu
       assert.equal(fingerprintLegacyImportCorpusTree(prepared.backupDirectory), backupBefore, `${entry.name}: backup immutable`);
       assert.deepEqual(treeInventory(prepared.caseRoot), inventoryBefore, `${entry.name}: inventory immutable`);
       committedNames.push(entry.name);
-    } finally {
-      closeDatabase();
-    }
+    });
   }
 
   assert.deepEqual(committedNames.sort(), [...ELIGIBLE_CASES].sort());
   assert.deepEqual(preserveNames.sort(), [...PRESERVE_ONLY_CASES].sort());
 });
 
-test("public Application refuses all 13 unresolved fresh corpus cases with zero residue", (t) => {
+test("public Application refuses all 14 unapproved or unresolved fresh corpus cases with zero residue", (t) => {
   const root = mkdtempSync(join(tmpdir(), "gsd-application-public-refused-"));
   t.after(() => {
     closeDatabase();
@@ -497,17 +554,23 @@ test("public Application refuses all 13 unresolved fresh corpus cases with zero 
   const refusedNames: string[] = [];
 
   for (const entry of MANIFEST.cases.filter((candidate) => !ELIGIBLE_CASES.has(candidate.name))) {
-    const prepared = prepareCase(root, entry.name);
-    try {
-      assert.ok(prepared.preview.preview.counts.unresolved > 0, entry.name);
+    withPreparedCase(root, entry.name, (prepared) => {
       const before = tableSnapshot(DURABLE_TABLES);
       const changesBeforeRefusal = totalChanges();
       const sourceBefore = fingerprintLegacyImportCorpusTree(prepared.source);
       const backupBefore = hashLegacyImportBytes(readFileSync(prepared.backup.backup_ref));
       const inventoryBefore = treeInventory(prepared.caseRoot);
 
-      expectUnresolved(() => compileLegacyImportApplicationPlan(prepared.preview), entry.name);
-      expectUnresolved(() => applyLegacyImport(prepared.input), entry.name);
+      if (entry.name === "action-matrix") {
+        assert.equal(prepared.preview.preview.counts.unresolved, 0, entry.name);
+        assert.equal(prepared.preview.preview.counts.delete, 1, entry.name);
+        assert.doesNotThrow(() => compileLegacyImportApplicationPlan(prepared.preview));
+        expectDestructiveConsentRequired(() => applyLegacyImport(prepared.input));
+      } else {
+        assert.ok(prepared.preview.preview.counts.unresolved > 0, entry.name);
+        expectUnresolved(() => compileLegacyImportApplicationPlan(prepared.preview), entry.name);
+        expectUnresolved(() => applyLegacyImport(prepared.input), entry.name);
+      }
 
       assert.deepEqual(tableSnapshot(DURABLE_TABLES), before, `${entry.name}: zero residue`);
       assert.equal(totalChanges(), changesBeforeRefusal, `${entry.name}: refusal performs no writes`);
@@ -515,14 +578,33 @@ test("public Application refuses all 13 unresolved fresh corpus cases with zero 
       assert.equal(hashLegacyImportBytes(readFileSync(prepared.backup.backup_ref)), backupBefore, `${entry.name}: backup immutable`);
       assert.deepEqual(treeInventory(prepared.caseRoot), inventoryBefore, `${entry.name}: inventory immutable`);
       refusedNames.push(entry.name);
-    } finally {
-      closeDatabase();
-    }
+    });
   }
 
-  assert.equal(refusedNames.length, 13);
+  assert.equal(refusedNames.length, 14);
   assert.deepEqual(refusedNames.sort(), MANIFEST.cases
     .filter((candidate) => !ELIGIBLE_CASES.has(candidate.name))
     .map((candidate) => candidate.name)
     .sort());
+});
+
+test("public Application applies the action matrix only with exact Preview-bound delete consent", (t) => {
+  const root = mkdtempSync(join(tmpdir(), "gsd-application-public-delete-consent-"));
+  t.after(() => {
+    closeDatabase();
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  withPreparedCase(root, "action-matrix", (prepared) => {
+    const consent = createLegacyImportApplicationConsent(prepared.preview);
+    const committed = applyLegacyImport({ ...prepared.input, destructiveConsent: consent });
+
+    assert.equal(committed.status, "committed");
+    const tombstone = rows(`SELECT structured_fields FROM memories
+      WHERE category = 'architecture'
+        AND json_extract(structured_fields, '$.sourceDecisionId') = 'D003'`);
+    assert.equal(tombstone.length, 1);
+    assert.equal(JSON.parse(String(tombstone[0]?.["structured_fields"])).deleted, true);
+    assert.equal(rows("SELECT * FROM workflow_import_applications").length, 1);
+  });
 });

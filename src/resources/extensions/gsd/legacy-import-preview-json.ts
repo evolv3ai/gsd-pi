@@ -1,6 +1,8 @@
 // Project/App: gsd-pi
 // File Purpose: Exact byte-token lookup for retained UTF-8 JSON.
 
+import { deepFreeze } from "./legacy-import-utils.js";
+
 import { isUtf8 } from "node:buffer";
 
 import type { LegacyImportValue } from "./legacy-import-contract.js";
@@ -64,13 +66,6 @@ function canonicalPointer(pointer: string): string {
     return segment.replace(/~1/gu, "/").replace(/~0/gu, "~");
   });
   return `/${decoded.map(pointerSegment).join("/")}`;
-}
-
-function deepFreeze<T>(value: T, seen = new Set<object>()): T {
-  if (value === null || typeof value !== "object" || seen.has(value)) return value;
-  seen.add(value);
-  for (const child of Object.values(value)) deepFreeze(child, seen);
-  return Object.freeze(value);
 }
 
 class JsonByteParser {

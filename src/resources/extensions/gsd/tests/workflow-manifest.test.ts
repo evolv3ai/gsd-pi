@@ -250,7 +250,7 @@ test('workflow-manifest: malformed decision tombstone authority fails loud', () 
       'project', '[]', '{"sourceDecisionId":"D903"'
     )`).run();
 
-    assert.throws(() => snapshotState(), /JSON|decision memory/i);
+    assert.throws(() => snapshotState(), /^Error: decision memory structured fields contain invalid JSON$/);
   } finally {
     closeDatabase();
     cleanupDir(base);

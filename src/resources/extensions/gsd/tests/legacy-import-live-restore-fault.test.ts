@@ -49,7 +49,7 @@ import {
   probeDbWritable,
   vacuumDatabase,
 } from "../db/engine.ts";
-import { _getAdapter, closeDatabase, openDatabase } from "../gsd-db.ts";
+import { _getAdapter, closeDatabase, insertDecision, openDatabase } from "../gsd-db.ts";
 import { createLegacyImportCorpusSourceRoots } from "./helpers/legacy-import-corpus.ts";
 import { openSqliteReadOnly } from "../sqlite-readonly.ts";
 
@@ -467,6 +467,50 @@ test("a writer already holding the SQLite lock wins and forces Forward Repair", 
   assert.equal(database().prepare("SELECT COUNT(*) AS count FROM workflow_import_restores").get()?.["count"], 0);
 });
 
+test("a WAL reader snapshot forces a retryable contention at the detach checkpoint", async () => {
+  const prepared = prepareRestoreCase();
+  closeDatabase();
+
+  const reader = spawnChild(prepared, { action: "wal-reader" });
+  assert.equal(await reader.ready, "reader-snapshot");
+
+  // The reader does not hold the write lock, so the restore claims its
+  // intent; the detach checkpoint then observes busy WAL contention, which
+  // must classify as retryable exactly like claim-time contention.
+  const restore = spawnChild(prepared, {
+    action: "restore",
+    busyTimeoutMs: 0,
+  });
+  const restoreClose = await restore.closed;
+  assert.equal(restoreClose.code, 0);
+  assert.equal(restoreClose.signal, null);
+  assert.deepEqual(restoreClose.outcome && "error" in restoreClose.outcome
+    ? {
+        code: restoreClose.outcome.error.code,
+        stage: restoreClose.outcome.error.stage,
+        retryable: restoreClose.outcome.error.retryable,
+      }
+    : null, {
+    code: "LEGACY_IMPORT_LIVE_RESTORE_INTENT_CONFLICT",
+    stage: "stage",
+    retryable: true,
+  }, JSON.stringify(restoreClose.outcome));
+
+  reader.release();
+  const readerClose = await reader.closed;
+  assert.equal(readerClose.code, 0);
+
+  const retry = spawnChild(prepared, { action: "restore" });
+  const retryClose = await retry.closed;
+  assert.equal(retryClose.outcome && "result" in retryClose.outcome
+    ? retryClose.outcome.result["status"]
+    : null, "committed", JSON.stringify(retryClose.outcome));
+
+  assert.equal(openDatabase(prepared.databasePath), true);
+  assert.equal(database().prepare("SELECT COUNT(*) AS count FROM workflow_import_restores").get()?.["count"], 1);
+  assert.equal(existsSync(getDatabaseReplacementPaths(prepared.databasePath).recoveryDirectory), false);
+});
+
 test("a typed cutover already holding the SQLite lock advances epoch and forces Forward Repair", async () => {
   const prepared = prepareRestoreCase();
   const priorEpoch = prepared.input.assessment.facts.currentAuthorityEpoch;
@@ -629,6 +673,34 @@ test("restore reclaims a crashed maintenance owner by process identity", async (
   assert.equal(existsSync(`${prepared.databasePath}.maintenance.json`), false);
 });
 
+test("restart reclaims a crashed maintenance owner before ordinary writes", async () => {
+  const prepared = prepareRestoreCase();
+  closeDatabase();
+  const maintenance = spawnChild(prepared, {
+    action: "maintenance",
+    pauseAfterClaim: true,
+  });
+  assert.equal(await maintenance.ready, "maintenance-claim");
+  maintenance.process.kill("SIGKILL");
+  assert.equal((await maintenance.closed).signal, "SIGKILL");
+  assert.equal(existsSync(`${prepared.databasePath}.maintenance.json`), true);
+
+  assert.equal(openDatabase(prepared.databasePath), true);
+  insertDecision({
+    id: "D-restart-after-maintenance",
+    when_context: "after restart",
+    scope: "maintenance recovery",
+    decision: "write succeeds",
+    choice: "reclaim stale owner",
+    rationale: "startup proved the previous maintenance process exited",
+    revisable: "no",
+    made_by: "agent",
+    source: "discussion",
+    superseded_by: null,
+  });
+  assert.equal(existsSync(`${prepared.databasePath}.maintenance.json`), false);
+});
+
 test("maintenance publication failures remove only the marker they published", () => {
   for (const boundary of MAINTENANCE_CLAIM_BOUNDARIES) {
     const prepared = prepareRestoreCase();
@@ -700,10 +772,15 @@ test("restart and maintenance remain non-writing while replacement intent is act
   const paths = getDatabaseReplacementPaths(prepared.databasePath);
   mkdirSync(paths.recoveryDirectory, { recursive: true });
   writeFileSync(paths.activeIntentPath, "{}", "utf8");
+  const sidecarPaths = ["-wal", "-shm"].map((suffix) => `${prepared.databasePath}${suffix}`);
+  const sidecarsBefore = sidecarPaths.map((path) => existsSync(path) ? readFileSync(path) : null);
 
   assert.equal(openDatabase(prepared.databasePath), true);
-  assert.equal(existsSync(`${prepared.databasePath}-wal`), false);
-  assert.equal(existsSync(`${prepared.databasePath}-shm`), false);
+  assert.deepEqual(
+    sidecarPaths.map((path) => existsSync(path) ? readFileSync(path) : null),
+    sidecarsBefore,
+    "replacement observation must not create or change SQLite sidecars",
+  );
   assert.equal(openIsolatedDatabase(prepared.databasePath), null);
   assert.throws(() => checkpointDatabase(), /writes are fenced/);
   assert.throws(() => vacuumDatabase(), /writes are fenced/);

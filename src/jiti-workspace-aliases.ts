@@ -32,6 +32,8 @@ export function getJitiWorkspaceAliases(
   const piTui = pkg("pi-tui", "index.ts");
   const piCodingAgent = pkg("pi-coding-agent", "index.ts");
   const native = pkg("native", "index.ts");
+  const nativeDirectorySync = pkg("native", "directory-sync", "index.ts");
+  const nativeFileIdentity = pkg("native", "file-identity", "index.ts");
 
   const aliases: Record<string, string> = {
     "@gsd/pi-ai": piAi,
@@ -39,6 +41,8 @@ export function getJitiWorkspaceAliases(
     "@gsd/pi-agent-core": piAgentCore,
     "@gsd/pi-tui": piTui,
     "@gsd/pi-coding-agent": piCodingAgent,
+    "@gsd/native/directory-sync": nativeDirectorySync,
+    "@gsd/native/file-identity": nativeFileIdentity,
     "@gsd/native": native,
     "@earendil-works/pi-ai": piAi,
     "@earendil-works/pi-ai/oauth": piAiOauth,

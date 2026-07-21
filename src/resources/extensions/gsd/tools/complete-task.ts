@@ -52,7 +52,7 @@ import {
   renderMilestoneShellProjections,
   renderSummaryContent,
 } from "../workflow-projections.js";
-import { writeManifest } from "../workflow-manifest.js";
+import { writeManifestAndFlush } from "../workflow-manifest.js";
 import { appendEvent } from "../workflow-events.js";
 import { logWarning, logError } from "../workflow-logger.js";
 import { loadEffectiveGSDPreferences } from "../preferences.js";
@@ -173,7 +173,7 @@ async function repairMissingTaskSummaryProjection(
     logWarning("tool", `complete-task repair projection warning: ${(projErr as Error).message}`);
   }
   try {
-    writeManifest(artifactBasePath);
+    await writeManifestAndFlush(artifactBasePath);
   } catch (mfErr) {
     logWarning("tool", `complete-task repair manifest warning: ${(mfErr as Error).message}`);
   }
@@ -685,7 +685,7 @@ export async function handleCompleteTask(
     logWarning("tool", `complete-task projection warning: ${(projErr as Error).message}`);
   }
   try {
-    writeManifest(artifactBasePath);
+    await writeManifestAndFlush(artifactBasePath);
   } catch (mfErr) {
     logWarning("tool", `complete-task manifest warning: ${(mfErr as Error).message}`);
   }

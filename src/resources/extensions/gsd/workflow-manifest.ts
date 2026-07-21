@@ -454,6 +454,11 @@ export function writeManifest(basePath: string): void {
   enqueueManifestWrite(basePath, json);
 }
 
+export async function writeManifestAndFlush(basePath: string): Promise<void> {
+  writeManifest(basePath);
+  await flushManifest(basePath);
+}
+
 async function flushManifestByKey(key: string): Promise<void> {
   for (;;) {
     const active = manifestWrites.get(key)?.active;

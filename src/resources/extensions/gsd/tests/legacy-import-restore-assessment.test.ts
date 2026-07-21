@@ -36,7 +36,9 @@ import {
 import {
   _executeImportForwardRepairDomainOperation,
   executeDomainOperation,
+  type DomainJsonValue,
 } from "../db/domain-operation.ts";
+import type { LegacyImportForwardRepairPlan } from "../legacy-import-forward-repair-plan.ts";
 import { _getAdapter, closeDatabase, openDatabase } from "../gsd-db.ts";
 import {
   cutoverProjectAuthority,
@@ -152,20 +154,38 @@ function seedForwardRepair(prepared: PreparedCase): void {
     "SELECT operation_id FROM workflow_import_applications",
   ).operation_id);
   const differenceHash = hashLegacyImportValue("terminal difference");
+  const currentRelevantRowsHash = captureCurrentLegacyImportBaseSnapshot().relevant_rows_hash;
   const plan = {
-    planSchemaVersion: 1,
+    planSchemaVersion: 2,
+    goal: "revert",
     applicationOperationId,
     applicationIdentityHash: prepared.applicationIdentityHash,
     previewId: prepared.backup.preview_id,
     previewHash: prepared.backup.preview_hash,
     backupId: prepared.backup.backup_id,
     differenceHash,
+    expectedProjectRevision: 1,
+    expectedAuthorityEpoch: 0,
+    baseRelevantRowsHash: prepared.base.relevant_rows_hash,
+    applicationRelevantRowsHash: currentRelevantRowsHash,
+    currentRelevantRowsHash,
     targetCount: 1,
     mutationCount: 0,
     preservedCount: 1,
     rejectedCount: 0,
     unresolvedCount: 0,
-  };
+    targets: [{
+      instructionIndex: 0,
+      targetKind: "milestone",
+      targetKey: "M001",
+      changeIds: [],
+      disposition: "preserve",
+      reasonCode: "TEST_TERMINAL_FORWARD_REPAIR",
+      reviewHash: null,
+      review: null,
+      mutation: null,
+    }],
+  } satisfies LegacyImportForwardRepairPlan;
   _executeImportForwardRepairDomainOperation({
     operationType: "import.forward_repair",
     idempotencyKey: "restore-assessment/terminal-forward-repair",
@@ -188,7 +208,7 @@ function seedForwardRepair(prepared: PreparedCase): void {
       ) VALUES (
         :operation_id, :project_id, :application_operation_id, :application_identity_hash,
         :preview_id, :preview_hash, :backup_id, :difference_hash,
-        1, :plan_hash, :plan_json, 1, 0, 1, 0, 0,
+        2, :plan_hash, :plan_json, 1, 0, 1, 0, 0,
         :repaired_at, :resulting_revision, :resulting_epoch
       )
     `).run({
@@ -211,7 +231,7 @@ function seedForwardRepair(prepared: PreparedCase): void {
         eventType: "legacy-import.forward-repaired",
         entityType: "legacy-import",
         entityId: prepared.backup.preview_id,
-        payload: plan,
+        payload: plan as unknown as DomainJsonValue,
         destinations: ["projection"],
       }],
       projections: [{
@@ -408,6 +428,38 @@ test("missing backup and malformed durable Application evidence refuse without r
   assert.equal(result.reasonCode, "APPLICATION_EVIDENCE_INVALID");
 });
 
+test("an identity split across two stored Applications is refused permanently", () => {
+  const prepared = prepareCase();
+  // UNIQUE(preview_id) and UNIQUE(preview_hash) make two legitimate
+  // Applications of the same preview impossible, so the only way the
+  // OR-match can see more than one Application for a fully consistent input
+  // is corrupt evidence — here a duplicated legacy-import.applied event
+  // carrying the real identity hash under a shadow operation id.
+  db().exec("PRAGMA foreign_keys = OFF");
+  db().prepare(`
+    INSERT INTO workflow_domain_events (
+      event_id, operation_id, event_index, project_id, project_revision,
+      authority_epoch, event_type, entity_type, entity_id, caused_by_event_id,
+      payload_json, created_at
+    )
+    SELECT
+      event_id || ':shadow', operation_id || ':shadow', event_index, project_id,
+      project_revision, authority_epoch, event_type, entity_type, entity_id,
+      caused_by_event_id, payload_json, created_at
+    FROM workflow_domain_events
+    WHERE event_type = 'legacy-import.applied'
+  `).run();
+
+  const result = assessLegacyImportRestore(assessmentInput(prepared));
+  assert.equal(result.decision, "refused");
+  assert.equal(result.stage, "application");
+  assert.equal(result.reasonCode, "APPLICATION_EVIDENCE_INVALID");
+  assert.equal(result.retryable, false);
+  assert.match(result.recommendation.recommendationRationale, /More than one Application/);
+  // The refusal is deliberate and permanent: reassessment cannot clear it.
+  assert.equal(assessLegacyImportRestore(assessmentInput(prepared)).reasonCode, "APPLICATION_EVIDENCE_INVALID");
+});
+
 test("restart reproduces the exact same consent-required assessment", () => {
   const prepared = prepareCase();
   const expected = assessLegacyImportRestore(assessmentInput(prepared));
@@ -470,6 +522,27 @@ test("unsupported database schema refuses before backup inspection", () => {
   assert.equal(result.stage, "authority");
   assert.equal(result.reasonCode, "DATABASE_SCHEMA_UNSUPPORTED");
   assert.equal(result.facts.observedDatabaseSchemaVersion, 46);
+});
+
+test("table-less foreign database refuses with a structured unsupported-schema assessment", () => {
+  const prepared = prepareCase();
+  // Simulate a foreign/corrupt database that lacks the gsd tables entirely:
+  // the assessment contract promises a structured refusal everywhere, never a
+  // raw SQLite "no such table" error.
+  db().exec("PRAGMA foreign_keys = OFF");
+  db().exec("DROP TABLE schema_version");
+  db().exec("DROP TABLE project_authority");
+  const result = assessLegacyImportRestore(assessmentInput(prepared));
+  assert.equal(result.decision, "refused");
+  assert.equal(result.stage, "authority");
+  assert.equal(result.reasonCode, "DATABASE_SCHEMA_UNSUPPORTED");
+  assert.equal(result.retryable, false);
+  assert.equal(result.facts.observedDatabaseSchemaVersion, -1);
+  assert.equal(result.facts.observedProjectId, "");
+  assert.equal(result.facts.observedProjectRootRealpath, "");
+  assert.equal(result.facts.currentProjectRevision, -1);
+  assert.equal(result.facts.currentAuthorityEpoch, -1);
+  assert.match(result.evidenceHash, /^sha256:[0-9a-f]{64}$/);
 });
 
 test("terminal Forward Repair is re-read during assessment and malformed receipts fail loud", () => {

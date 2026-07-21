@@ -1,6 +1,8 @@
 // Project/App: gsd-pi
 // File Purpose: Pure preservation-only interpretation of captured workflow definitions and run artifacts.
 
+import { compareText } from "./legacy-import-utils.js";
+
 import { parse as parseYaml } from "yaml";
 
 import { validateDefinition } from "./definition-loader.js";
@@ -48,10 +50,6 @@ const RUN_PATH = /^\.gsd\/workflow-runs\/([^/]+)\/([^/]+)\/(DEFINITION\.yaml|GRA
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value);
-}
-
-function compareText(left: string, right: string): number {
-  return left < right ? -1 : left > right ? 1 : 0;
 }
 
 function textSpan(file: SourceFile, value: string): ByteSpan | undefined {

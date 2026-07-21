@@ -10,6 +10,8 @@ import {
 import { inspectLegacyImportApplicationEvidence } from "./legacy-import-application-evidence.js";
 import {
   compileLegacyImportForwardRepairPlan,
+  type LegacyImportForwardRepairChoice,
+  type LegacyImportForwardRepairGoal,
   type LegacyImportForwardRepairPlan,
 } from "./legacy-import-forward-repair-plan.js";
 import {
@@ -38,6 +40,7 @@ import {
 export interface LegacyImportForwardRepairInspectionInput {
   readonly applicationIdentityHash: string;
   readonly backup: Readonly<LegacyImportVerifiedBackup>;
+  readonly choices?: readonly Readonly<LegacyImportForwardRepairChoice>[];
 }
 
 export interface LegacyImportForwardRepairInput extends LegacyImportForwardRepairInspectionInput {
@@ -88,6 +91,7 @@ interface InspectionEvidence {
   readonly application: ReturnType<typeof inspectLegacyImportApplicationEvidence>;
   readonly backup: LegacyImportVerifiedBackup;
   readonly backupBase: LegacyImportBaseSnapshot;
+  readonly choices: readonly Readonly<LegacyImportForwardRepairChoice>[];
 }
 
 function fail(
@@ -112,11 +116,63 @@ function snapshotInspectionInput(
     fail("contract", "LEGACY_IMPORT_FORWARD_REPAIR_CONTRACT_INVALID", "Forward Repair input could not be detached");
   }
   if (
-    Object.keys(input).sort().join("\0") !== "applicationIdentityHash\0backup"
+    !["applicationIdentityHash\0backup", "applicationIdentityHash\0backup\0choices"]
+      .includes(Object.keys(input).sort().join("\0"))
     || !/^sha256:[0-9a-f]{64}$/.test(input.applicationIdentityHash)
     || !isValidLegacyImportVerifiedBackup(input.backup)
+    || !validChoices(input.choices)
   ) fail("contract", "LEGACY_IMPORT_FORWARD_REPAIR_CONTRACT_INVALID", "Forward Repair input is invalid");
   return input;
+}
+
+function validChoices(value: unknown): value is readonly LegacyImportForwardRepairChoice[] | undefined {
+  if (value === undefined) return true;
+  if (!Array.isArray(value)) return false;
+  const indexes = new Set<number>();
+  for (const choice of value) {
+    if (
+      choice === null
+      || typeof choice !== "object"
+      || Array.isArray(choice)
+      || Object.keys(choice).sort().join("\0") !== "decision\0instructionIndex\0reviewHash\0targetKey\0targetKind"
+    ) return false;
+    const record = choice as Record<string, unknown>;
+    const index = record["instructionIndex"];
+    if (
+      !Number.isSafeInteger(index)
+      || Number(index) < 0
+      || indexes.has(Number(index))
+      || typeof record["targetKind"] !== "string"
+      || String(record["targetKind"]).length === 0
+      || typeof record["targetKey"] !== "string"
+      || String(record["targetKey"]).length === 0
+      || typeof record["reviewHash"] !== "string"
+      || !/^sha256:[0-9a-f]{64}$/.test(String(record["reviewHash"]))
+      || (record["decision"] !== "preserve-later" && record["decision"] !== "restore-backup")
+    ) return false;
+    indexes.add(Number(index));
+  }
+  return true;
+}
+
+export function replayLegacyImportForwardRepair(
+  input: Readonly<LegacyImportForwardRepairInspectionInput>,
+): LegacyImportForwardRepairResult {
+  const evidence = inspectionEvidence(input);
+  const rows = readTransaction(() => getDb().prepare(`SELECT operation_id, plan_json
+    FROM workflow_import_forward_repairs WHERE application_identity_hash = :identity`).all({
+    ":identity": evidence.application.applicationIdentityHash,
+  }));
+  if (rows.length !== 1 || typeof rows[0]?.["operation_id"] !== "string"
+    || typeof rows[0]?.["plan_json"] !== "string") {
+    fail("receipt", "LEGACY_IMPORT_FORWARD_REPAIR_RECEIPT_INVALID", "Forward Repair terminal receipt is missing");
+  }
+  let plan: unknown;
+  try { plan = JSON.parse(String(rows[0]!["plan_json"])); } catch { plan = null; }
+  if (!isStrictLegacyImportData(plan)) {
+    fail("receipt", "LEGACY_IMPORT_FORWARD_REPAIR_RECEIPT_INVALID", "Forward Repair terminal plan is invalid");
+  }
+  return repairResult(String(rows[0]!["operation_id"]), "replayed", plan as unknown as LegacyImportForwardRepairPlan);
 }
 
 function applicationOperationId(identityHash: string): string {
@@ -173,19 +229,23 @@ function inspectionEvidence(
   } catch {
     fail("base", "LEGACY_IMPORT_FORWARD_REPAIR_BACKUP_INVALID", "Forward Repair backup verification failed");
   }
-  return { application, backup, backupBase };
+  return { application, backup, backupBase, choices: snapshot.choices ?? [] };
 }
 
 function compileFromEvidence(
   evidence: InspectionEvidence,
   currentBase: LegacyImportBaseSnapshot,
+  choices: readonly Readonly<LegacyImportForwardRepairChoice>[] = [],
+  goal: LegacyImportForwardRepairGoal = "revert",
 ): LegacyImportForwardRepairPlan {
   const { application, backup, backupBase } = evidence;
   if (
     currentBase.authority.project_id !== application.projectId
     || currentBase.authority.project_root_realpath !== application.projectRootRealpath
-    || (currentBase.authority.revision <= application.resultingProjectRevision
-      && currentBase.authority.authority_epoch <= application.resultingAuthorityEpoch)
+  ) fail("plan", "LEGACY_IMPORT_FORWARD_REPAIR_EVIDENCE_MISMATCH", "Forward Repair current authority does not match its Import Application evidence");
+  if (
+    currentBase.authority.revision <= application.resultingProjectRevision
+      && currentBase.authority.authority_epoch <= application.resultingAuthorityEpoch
   ) fail("plan", "LEGACY_IMPORT_FORWARD_REPAIR_NOT_REQUIRED", "Forward Repair requires accepted work after the Import Application");
   try {
     return compileLegacyImportForwardRepairPlan({
@@ -198,18 +258,37 @@ function compileFromEvidence(
       applicationPlan: application.plan,
       backupBase,
       currentBase,
+      choices,
+      goal,
     });
   } catch (error) {
     if (error instanceof LegacyImportForwardRepairError) throw error;
+    if (error instanceof Error && error.message === "Forward Repair choice does not match its reviewed target") {
+      fail("plan", "LEGACY_IMPORT_FORWARD_REPAIR_PLAN_INVALID", error.message);
+    }
     fail("plan", "LEGACY_IMPORT_FORWARD_REPAIR_PLAN_INVALID", "Forward Repair plan could not be compiled");
   }
 }
 
 export function inspectLegacyImportForwardRepair(
   input: Readonly<LegacyImportForwardRepairInspectionInput>,
+  goal: LegacyImportForwardRepairGoal = "revert",
 ): LegacyImportForwardRepairPlan {
   const evidence = inspectionEvidence(input);
-  return compileFromEvidence(evidence, captureCurrentLegacyImportBaseSnapshot());
+  return compileFromEvidence(evidence, captureCurrentLegacyImportBaseSnapshot(), evidence.choices, goal);
+}
+
+/**
+ * The goal a submitted plan was compiled with. Plans compiled before goals
+ * existed have no field and are revert plans; anything else must be exact —
+ * the recompiled plan hash comparison binds the goal to the receipt.
+ */
+function repairPlanGoal(plan: Readonly<LegacyImportForwardRepairPlan>): LegacyImportForwardRepairGoal {
+  const goal = plan.goal ?? "revert";
+  if (goal !== "revert" && goal !== "retain") {
+    fail("contract", "LEGACY_IMPORT_FORWARD_REPAIR_CONTRACT_INVALID", "Forward Repair plan goal is invalid");
+  }
+  return goal;
 }
 
 function snapshotApplyInput(value: Readonly<LegacyImportForwardRepairInput>): LegacyImportForwardRepairInput {
@@ -220,7 +299,11 @@ function snapshotApplyInput(value: Readonly<LegacyImportForwardRepairInput>): Le
   try { input = structuredClone(value); } catch {
     fail("contract", "LEGACY_IMPORT_FORWARD_REPAIR_CONTRACT_INVALID", "Forward Repair application input could not be detached");
   }
-  if (Object.keys(input).sort().join("\0") !== "applicationIdentityHash\0backup\0invocation\0plan") {
+  if (
+    !["applicationIdentityHash\0backup\0invocation\0plan", "applicationIdentityHash\0backup\0choices\0invocation\0plan"]
+      .includes(Object.keys(input).sort().join("\0"))
+    || !validChoices(input.choices)
+  ) {
     fail("contract", "LEGACY_IMPORT_FORWARD_REPAIR_CONTRACT_INVALID", "Forward Repair application input is invalid");
   }
   return input;
@@ -329,7 +412,7 @@ function operationRequest(
     sourceTransport: invocation.sourceTransport,
     ...(invocation.traceId ? { traceId: invocation.traceId } : {}),
     ...(invocation.turnId ? { turnId: invocation.turnId } : {}),
-    payload: input.plan as unknown as DomainJsonValue,
+    payload: input.plan,
   };
 }
 
@@ -338,10 +421,9 @@ function replayRepair(
 ): LegacyImportForwardRepairResult | null {
   const exists = readTransaction(() => getDb().prepare(`
     SELECT 1
-    FROM workflow_operations operation
-    JOIN project_authority authority ON authority.project_id = operation.project_id
-    WHERE operation.operation_type = 'import.forward_repair'
-      AND operation.idempotency_key = :idempotency_key
+    FROM workflow_operations
+    WHERE operation_type = 'import.forward_repair'
+      AND idempotency_key = :idempotency_key
   `).get({ ":idempotency_key": input.invocation.idempotencyKey }));
   if (!exists) return null;
   const operation = _executeImportForwardRepairDomainOperation(operationRequest(input), () => {
@@ -356,11 +438,12 @@ export function applyLegacyImportForwardRepair(
   const input = snapshotApplyInput(value);
   const replayed = replayRepair(input);
   if (replayed) return replayed;
+  const goal = repairPlanGoal(input.plan);
   const evidence = inspectionEvidence({
     applicationIdentityHash: input.applicationIdentityHash,
     backup: input.backup,
   });
-  const expectedPlan = compileFromEvidence(evidence, captureCurrentLegacyImportBaseSnapshot());
+  const expectedPlan = compileFromEvidence(evidence, captureCurrentLegacyImportBaseSnapshot(), input.choices, goal);
   const expectedHash = hashLegacyImportValue(expectedPlan as unknown as DomainJsonValue);
   if (hashLegacyImportValue(input.plan as unknown as DomainJsonValue) !== expectedHash) {
     fail("plan", "LEGACY_IMPORT_FORWARD_REPAIR_PLAN_CHANGED", "Forward Repair plan is stale or changed", true);
@@ -370,7 +453,7 @@ export function applyLegacyImportForwardRepair(
   }
   let receiptPlanHash: string = expectedHash;
   const operation = _executeImportForwardRepairDomainOperation(operationRequest(input), (context) => {
-    const currentPlan = compileFromEvidence(evidence, captureCurrentLegacyImportBaseSnapshot());
+    const currentPlan = compileFromEvidence(evidence, captureCurrentLegacyImportBaseSnapshot(), input.choices, goal);
     if (hashLegacyImportValue(currentPlan as unknown as DomainJsonValue) !== expectedHash) {
       fail("plan", "LEGACY_IMPORT_FORWARD_REPAIR_PLAN_CHANGED", "Forward Repair plan changed before mutation", true);
     }

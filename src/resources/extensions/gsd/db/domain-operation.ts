@@ -15,6 +15,8 @@ import {
   isValidLegacyImportPreviewArtifact,
   type LegacyImportPreviewArtifact,
 } from "../legacy-import-preview.js";
+import type { LegacyImportForwardRepairPlan } from "../legacy-import-forward-repair-plan.js";
+import type { LegacyImportValue } from "../legacy-import-contract.js";
 import {
   assertDatabaseReplacementReceiptIntent,
   getDb,
@@ -90,9 +92,10 @@ export type ImportRestoreDomainOperationRequest = Omit<
 
 export type ImportForwardRepairDomainOperationRequest = Omit<
   DomainOperationRequest,
-  "operationType"
+  "operationType" | "payload"
 > & {
   operationType: "import.forward_repair";
+  payload: LegacyImportForwardRepairPlan;
 };
 
 interface AuthorityCutoverReceiptContract {
@@ -196,13 +199,20 @@ interface OperationRow {
 }
 
 let faultPoint: DomainOperationFaultPoint | null = null;
+let faultOperationType: string | null = null;
 
-export function _setDomainOperationFaultForTest(point: DomainOperationFaultPoint | null): void {
+export function _setDomainOperationFaultForTest(
+  point: DomainOperationFaultPoint | null,
+  operationType: string | null = null,
+): void {
   faultPoint = point;
+  faultOperationType = operationType;
 }
 
-function hitFault(point: DomainOperationFaultPoint): void {
-  if (faultPoint === point) throw new Error(`domain operation fault: ${point}`);
+function hitFault(point: DomainOperationFaultPoint, operationType: string): void {
+  if (faultPoint === point && (faultOperationType === null || faultOperationType === operationType)) {
+    throw new Error(`domain operation fault: ${point}`);
+  }
 }
 
 function requireNonBlank(value: string, field: string): void {
@@ -460,6 +470,23 @@ function requestHash(
   return `sha256:${createHash("sha256").update(canonical).digest("hex")}`;
 }
 
+/**
+ * Recompute the hash an executor durably stored in workflow_operations
+ * .request_hash. import.apply binds the operation to the sealed Preview
+ * artifact hash (executeImportDomainOperation), and authority.cutover commits
+ * with the epoch-advancing request hash (_executeAuthorityCutoverDomainOperation);
+ * every other operation stores the conventional request hash.
+ */
+function storedRequestHash(request: DomainOperationRequest): string {
+  if (request.operationType === "import.apply") {
+    if (!isValidLegacyImportPreviewArtifact(request.payload)) {
+      throw new Error("import.apply receipt verification requires the sealed Preview artifact payload");
+    }
+    return request.payload.preview_hash;
+  }
+  return requestHash(request, request.operationType === "authority.cutover");
+}
+
 function validateMutation(mutation: DomainOperationMutation): string[] {
   if (mutation.events.length === 0) throw new Error("domain operation requires at least one event");
   if (mutation.projections.length === 0) {
@@ -557,6 +584,101 @@ function loadReceipt(operation: OperationRow, status: DomainOperationResult["sta
     outboxIds,
     projectionWorkIds,
   };
+}
+
+export function inspectDomainOperationReceipt(
+  operationType: string,
+  idempotencyKey: string,
+): DomainOperationResult | null {
+  const operation = getDb().prepare(`
+    SELECT operation_id, project_id, operation_type, idempotency_key,
+           expected_revision, resulting_revision,
+           expected_authority_epoch, resulting_authority_epoch,
+           actor_type, actor_id, source_transport, trace_id, turn_id, request_hash,
+           created_at
+    FROM workflow_operations
+    WHERE operation_type = :operation_type AND idempotency_key = :idempotency_key
+  `).get({
+    ":operation_type": operationType,
+    ":idempotency_key": idempotencyKey,
+  }) as unknown as OperationRow | undefined;
+  return operation ? loadReceipt(operation, "replayed") : null;
+}
+
+export function assertDomainOperationReceiptComponents(
+  receipt: DomainOperationResult,
+  request: DomainOperationRequest,
+  mutation: DomainOperationMutation,
+): void {
+  const db = getDb();
+  const operation = loadOperation(receipt.operationId);
+  const headerMatches = operation !== undefined
+    && operation.operation_id === receipt.operationId
+    && operation.project_id === receipt.projectId
+    && operation.resulting_revision === receipt.resultingRevision
+    && operation.resulting_authority_epoch === receipt.resultingAuthorityEpoch
+    && operation.request_hash === receipt.requestHash
+    && operationMatchesRequest(operation, request, storedRequestHash(request));
+  const events = db.prepare(`
+    SELECT event_id, event_index, project_revision, authority_epoch, event_type,
+           entity_type, entity_id, caused_by_event_id, payload_json
+    FROM workflow_domain_events
+    WHERE operation_id = :operation_id
+    ORDER BY event_index
+  `).all({ ":operation_id": receipt.operationId });
+  const expectedEventIds = events.map((row) => String(row["event_id"]));
+  const eventMatches = events.length === mutation.events.length && mutation.events.every((event, index) => {
+    const row = events[index]!;
+    const causedBy = event.causedByEventIndex === undefined
+      ? null
+      : expectedEventIds[event.causedByEventIndex] ?? null;
+    return row["event_index"] === index
+      && row["project_revision"] === receipt.resultingRevision
+      && row["authority_epoch"] === receipt.resultingAuthorityEpoch
+      && row["event_type"] === event.eventType
+      && row["entity_type"] === event.entityType
+      && row["entity_id"] === event.entityId
+      && row["caused_by_event_id"] === causedBy
+      && row["payload_json"] === canonicalLegacyImportJson(event.payload);
+  });
+  const outbox = db.prepare(`
+    SELECT outbox.outbox_id, event.event_index, outbox.destination
+    FROM workflow_outbox outbox
+    JOIN workflow_domain_events event ON event.event_id = outbox.event_id
+    WHERE event.operation_id = :operation_id
+    ORDER BY outbox.outbox_id
+  `).all({ ":operation_id": receipt.operationId });
+  const expectedOutbox = mutation.events.flatMap((event, eventIndex) =>
+    event.destinations.map((destination) => ({ eventIndex, destination })));
+  const outboxMatches = outbox.length === expectedOutbox.length && expectedOutbox.every((expected, index) =>
+    outbox[index]?.["event_index"] === expected.eventIndex
+      && outbox[index]?.["destination"] === expected.destination);
+  const projections = db.prepare(`
+    SELECT projection_work_id, projection_key, projection_kind, source_project_revision,
+           source_authority_epoch, renderer_version
+    FROM workflow_projection_work
+    WHERE enqueue_operation_id = :operation_id
+    ORDER BY projection_work_id
+  `).all({ ":operation_id": receipt.operationId });
+  const projectionMatches = projections.length === mutation.projections.length
+    && mutation.projections.every((expected, index) => {
+      const row = projections[index]!;
+      return row["projection_work_id"] === `${receipt.operationId}:${String(index).padStart(4, "0")}`
+        && row["projection_key"] === expected.projectionKey
+        && row["projection_kind"] === expected.projectionKind
+        && row["source_project_revision"] === receipt.resultingRevision
+        && row["source_authority_epoch"] === receipt.resultingAuthorityEpoch
+        && row["renderer_version"] === expected.rendererVersion;
+    });
+  if (!headerMatches
+    || !eventMatches
+    || !outboxMatches
+    || !projectionMatches
+    || JSON.stringify(receipt.eventIds) !== JSON.stringify(expectedEventIds)
+    || JSON.stringify(receipt.outboxIds) !== JSON.stringify(outbox.map((row) => Number(row["outbox_id"])))
+    || JSON.stringify(receipt.projectionWorkIds) !== JSON.stringify(projections.map((row) => String(row["projection_work_id"])))) {
+    throw new Error("domain operation receipt components or header are incomplete or corrupt");
+  }
 }
 
 function operationMatchesRequest(
@@ -766,6 +888,58 @@ function requireMatchingImportRestore(
   }
 }
 
+function requireMatchingImportForwardRepair(
+  operation: OperationRow,
+  plan: Readonly<LegacyImportForwardRepairPlan>,
+): void {
+  const row = getDb().prepare(`
+    SELECT COUNT(*) AS count
+    FROM workflow_import_forward_repairs
+    WHERE operation_id = :operation_id
+      AND project_id = :project_id
+      AND application_operation_id = :application_operation_id
+      AND application_identity_hash = :application_identity_hash
+      AND preview_id = :preview_id
+      AND preview_hash = :preview_hash
+      AND backup_id = :backup_id
+      AND difference_hash = :difference_hash
+      AND plan_schema_version = :plan_schema_version
+      AND plan_hash = :plan_hash
+      AND plan_json = :plan_json
+      AND target_count = :target_count
+      AND mutation_count = :mutation_count
+      AND preserved_count = :preserved_count
+      AND rejected_count = :rejected_count
+      AND unresolved_count = :unresolved_count
+      AND repaired_at = :repaired_at
+      AND resulting_project_revision = :resulting_project_revision
+      AND resulting_authority_epoch = :resulting_authority_epoch
+  `).get({
+    ":operation_id": operation.operation_id,
+    ":project_id": operation.project_id,
+    ":application_operation_id": plan.applicationOperationId,
+    ":application_identity_hash": plan.applicationIdentityHash,
+    ":preview_id": plan.previewId,
+    ":preview_hash": plan.previewHash,
+    ":backup_id": plan.backupId,
+    ":difference_hash": plan.differenceHash,
+    ":plan_schema_version": plan.planSchemaVersion,
+    ":plan_hash": hashLegacyImportValue(plan as unknown as DomainJsonValue),
+    ":plan_json": canonicalLegacyImportJson(plan as unknown as LegacyImportValue),
+    ":target_count": plan.targetCount,
+    ":mutation_count": plan.mutationCount,
+    ":preserved_count": plan.preservedCount,
+    ":rejected_count": plan.rejectedCount,
+    ":unresolved_count": plan.unresolvedCount,
+    ":repaired_at": operation.created_at,
+    ":resulting_project_revision": operation.resulting_revision,
+    ":resulting_authority_epoch": operation.resulting_authority_epoch,
+  });
+  if (row?.["count"] !== 1) {
+    throw new Error("import Forward Repair Domain Operation requires one exact receipt");
+  }
+}
+
 function staleAuthority(request: DomainOperationRequestIdentity, authority: AuthorityRow): never {
   if (authority.revision !== request.expectedRevision) {
     throw new GSDError(
@@ -808,6 +982,7 @@ function executeDomainOperationCore(
   importRestore: Readonly<ImportRestoreReceiptContract> | null,
   mutate: (context: Readonly<DomainOperationContext>) => DomainOperationMutation,
   preCommit: (() => void) | null = null,
+  importForwardRepair: Readonly<LegacyImportForwardRepairPlan> | null = null,
 ): DomainOperationResult {
   const result = runDomainOperationTransaction((): DomainOperationResult => {
     const db = getDb();
@@ -836,6 +1011,7 @@ function executeDomainOperationCore(
       if (importPreview) requireMatchingImportApplication(existing, importPreview);
       if (authorityCutover) requireMatchingAuthorityCutover(existing, authorityCutover);
       if (importRestore) requireMatchingImportRestore(existing, importRestore);
+      if (importForwardRepair) requireMatchingImportForwardRepair(existing, importForwardRepair);
       preCommit?.();
       return loadReceipt(existing, "replayed");
     }
@@ -889,7 +1065,7 @@ function executeDomainOperationCore(
       ":request_hash": hash,
       ":created_at": now,
     });
-    hitFault("after-operation");
+    hitFault("after-operation", request.operationType);
 
     const mutation = mutate(context);
     const eventPayloads = validateMutation(mutation);
@@ -900,7 +1076,7 @@ function executeDomainOperationCore(
       context,
       now,
     );
-    hitFault("after-mutation");
+    hitFault("after-mutation", request.operationType);
 
     const eventIds: string[] = [];
     mutation.events.forEach((event, eventIndex) => {
@@ -933,7 +1109,7 @@ function executeDomainOperationCore(
       });
       eventIds.push(eventId);
     });
-    hitFault("after-events");
+    hitFault("after-events", request.operationType);
 
     mutation.events.forEach((event, eventIndex) => {
       for (const destination of event.destinations) {
@@ -947,7 +1123,7 @@ function executeDomainOperationCore(
         });
       }
     });
-    hitFault("after-outbox");
+    hitFault("after-outbox", request.operationType);
 
     mutation.projections.forEach((projection, projectionIndex) => {
       const previous = db.prepare(`
@@ -989,11 +1165,12 @@ function executeDomainOperationCore(
         ":updated_at": now,
       });
     });
-    hitFault("after-projections");
+    hitFault("after-projections", request.operationType);
     if (importPreview) requireMatchingImportApplication(storedOperation, importPreview);
     if (authorityCutover) requireMatchingAuthorityCutover(storedOperation, authorityCutover);
     if (importRestore) requireMatchingImportRestore(storedOperation, importRestore);
-    hitFault("before-cas");
+    if (importForwardRepair) requireMatchingImportForwardRepair(storedOperation, importForwardRepair);
+    hitFault("before-cas", request.operationType);
 
     const update = db.prepare(`
       UPDATE project_authority
@@ -1024,7 +1201,7 @@ function executeDomainOperationCore(
     return loadReceipt(storedOperation, "committed");
   });
 
-  hitFault("after-commit");
+  hitFault("after-commit", request.operationType);
   return result;
 }
 
@@ -1194,6 +1371,7 @@ export function _executeImportForwardRepairDomainOperation(
     ...snapshot.identity,
     payload: snapshot.payload as DomainJsonValue,
   };
+  const plan = structuredClone(snapshot.payload) as LegacyImportForwardRepairPlan;
   return executeDomainOperationCore(
     snapshot.identity,
     requestHash(stableRequest),
@@ -1201,5 +1379,7 @@ export function _executeImportForwardRepairDomainOperation(
     null,
     null,
     mutate,
+    null,
+    plan,
   );
 }

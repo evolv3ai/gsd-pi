@@ -315,7 +315,7 @@ describe('ensure-db-open', () => {
     assert.match(message, /\/tmp\/example\/\.gsd\/gsd\.db/);
     assert.match(message, /No SQLite provider available/);
     assert.match(message, /node:sqlite/);
-    assert.match(message, /better-sqlite3/);
+    assert.doesNotMatch(message, /better-sqlite3/);
   });
 
   test('formatWorkflowDatabaseOpenFailure: old Node includes upgrade guidance', () => {
@@ -339,7 +339,7 @@ describe('ensure-db-open', () => {
       '20.11.1',
     );
 
-    assert.match(message, />= 22\.0\.0/);
+    assert.match(message, />= 22\.18\.0/);
     assert.match(message, /current: v20\.11\.1/);
   });
 
@@ -398,7 +398,7 @@ describe('ensure-db-open', () => {
     const messages = JSON.parse(result.stdout.trim()) as string[];
     assert.ok(messages.some((message) => /No SQLite provider available/.test(message)), result.stdout);
     assert.ok(messages.some((message) => /node:sqlite/.test(message)), result.stdout);
-    assert.ok(messages.some((message) => /better-sqlite3/.test(message)), result.stdout);
+    assert.ok(messages.every((message) => !/better-sqlite3/.test(message)), result.stdout);
   });
 
   test('ensureDbOpen: creates empty DB without importing Markdown', async () => {

@@ -57,4 +57,16 @@ describe("db-connection-cache", () => {
     assert.deepEqual(activeDb.calls, []);
     assert.deepEqual(inactiveDb.calls, ["close"]);
   });
+
+  test("closeNonActive retains an entry when closing it fails", () => {
+    const cache = createDbConnectionCache();
+    const cached = entry("/tmp/failing.db");
+    cache.set("failing", cached);
+
+    assert.throws(() => cache.closeNonActive(null, () => {
+      throw new Error("close failed");
+    }), /close failed/);
+
+    assert.equal(cache.get("failing"), cached);
+  });
 });

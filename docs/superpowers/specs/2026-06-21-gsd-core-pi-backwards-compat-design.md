@@ -1,5 +1,7 @@
 # Design: gsd-core ↔ gsd-pi Backwards Compatibility
 
+> Superseded authority design. See [Switching between gsd-core and gsd-pi](../../user-docs/switching-between-gsd-tools.md) for the current database-authoritative contract.
+
 **Status:** Proposed
 **Date:** 2026-06-21
 **Author:** Design session (Approach 3 — Parity + Property-tested Reconcile)

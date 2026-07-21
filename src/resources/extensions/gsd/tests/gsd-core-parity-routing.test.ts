@@ -12,6 +12,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { handleGSDCommand } from "../commands/dispatcher.ts";
+import { closeDatabase } from "../gsd-db.ts";
 
 function createMockPi() {
   const sent: any[] = [];
@@ -131,6 +132,7 @@ describe("gsd-core command parity routing", () => {
         if (fellThrough) unhandled.push(cmd);
       }
     } finally {
+      closeDatabase();
       rmSync(base, { recursive: true, force: true });
     }
     assert.deepStrictEqual(
@@ -171,6 +173,7 @@ describe("gsd-core command parity routing", () => {
       assert.equal(existsSync(join(processCwd, ".gsd", "reviews")), false);
     } finally {
       process.chdir(originalCwd);
+      closeDatabase();
       rmSync(base, { recursive: true, force: true });
       rmSync(processCwd, { recursive: true, force: true });
     }

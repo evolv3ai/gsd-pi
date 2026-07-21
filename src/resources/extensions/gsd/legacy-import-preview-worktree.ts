@@ -128,6 +128,19 @@ function matchingFile(
   return undefined;
 }
 
+function matchingFiles(
+  group: WorktreeGroup,
+  capture: LegacyImportSourceCapture,
+  pattern: RegExp,
+): Array<{ file: LegacyImportDecodedSourceFile; match: RegExpExecArray }> {
+  const matches: Array<{ file: LegacyImportDecodedSourceFile; match: RegExpExecArray }> = [];
+  for (const file of group.files) {
+    const match = pattern.exec(topologyPath(file, capture));
+    if (match !== null) matches.push({ file, match });
+  }
+  return matches;
+}
+
 function physicalLabel(file: LegacyImportDecodedSourceFile): string {
   const parts = file.text.split("/").filter((part) => part.length > 0 && part !== "." && part !== "..");
   return parts.slice(-2).join("-");
@@ -191,26 +204,31 @@ function contributeExternalState(
   candidates: LegacyImportPendingCandidate[],
 ): boolean {
   const link = matchingFile(group, capture, /(?:^|\/)(?:project\/)?\.gsd$/u)?.file;
-  const markerMatch = matchingFile(
+  const markerMatches = matchingFiles(
     group,
     capture,
     /(?:^|\/)(?:state|\$GSD_STATE_DIR)\/projects\/([^/]+)\/worktrees\/(M\d+)\/git-marker\.txt$/u,
   );
-  if (link?.entry.kind !== "symlink" || markerMatch === undefined) return false;
-  const marker = markerEvidence(markerMatch.file, markerMatch.match[2]);
-  if (marker === undefined) return false;
-  preserve(
-    candidates,
-    marker.file,
-    `external/${marker.id}`,
-    {
-      scenario: "external",
-      id: marker.id,
-      project_identity: markerMatch.match[1]!,
-      evidence_kind: EVIDENCE_KIND,
-    },
-    "external-worktree-preserved",
-  );
+  if (link?.entry.kind !== "symlink" || markerMatches.length === 0) return false;
+  let handled = false;
+  for (const markerMatch of markerMatches) {
+    const marker = markerEvidence(markerMatch.file, markerMatch.match[2]);
+    if (marker === undefined) continue;
+    preserve(
+      candidates,
+      marker.file,
+      `external/${marker.id}`,
+      {
+        scenario: "external",
+        id: marker.id,
+        project_identity: markerMatch.match[1]!,
+        evidence_kind: EVIDENCE_KIND,
+      },
+      "external-worktree-preserved",
+    );
+    handled = true;
+  }
+  if (!handled) return false;
   preserve(
     candidates,
     link,
@@ -227,58 +245,64 @@ function contributeDuplicateIdentity(
   candidates: LegacyImportPendingCandidate[],
   diagnoses: LegacyImportPendingDiagnosis[],
 ): boolean {
-  const canonical = matchingFile(group, capture, /(?:^|\/)\.gsd-worktrees\/(M\d+)$/u);
-  const legacy = matchingFile(group, capture, /(?:^|\/)\.gsd\/worktrees\/(M\d+)$/u);
-  if (
-    canonical?.file.entry.kind !== "symlink"
-    || legacy?.file.entry.kind !== "symlink"
-    || canonical.match[1] !== legacy.match[1]
-    || canonical.file.entry.symlink_target_identity !== legacy.file.entry.symlink_target_identity
-  ) {
-    return false;
-  }
-  const id = canonical.match[1]!;
-  preserve(
-    candidates,
-    canonical.file,
-    `duplicate-identity/${id}/canonical`,
-    {
-      scenario: "duplicate-physical-identity",
-      id,
-      layout: "canonical",
-      physical_identity: physicalLabel(canonical.file),
-    },
-    "canonical-physical-identity-preserved",
-  );
-  legacy.file.outcome = "ignored-with-reason";
-  const target = { kind: "legacy-worktree-topology", key: `duplicate-identity/${id}/canonical` };
-  addLegacyImportDiagnosis(
-    diagnoses,
-    legacy.file,
-    "duplicate-physical-identity",
-    "info",
-    "Canonical and legacy paths resolve to one physical worktree; the legacy alias is ignored in favor of the canonical identity.",
-    "mapped",
-    0,
-    legacy.file.bytes.length,
-    target,
-  );
-  const backingMatch = matchingFile(
-    group,
-    capture,
-    new RegExp(`(?:^|/)shared/${id}/git-marker\\.txt$`, "u"),
-  );
-  const backing = markerEvidence(backingMatch?.file, id);
-  if (backing !== undefined) {
+  const canonicalMatches = matchingFiles(group, capture, /(?:^|\/)\.gsd-worktrees\/(M\d+)$/u);
+  const legacyMatches = matchingFiles(group, capture, /(?:^|\/)\.gsd\/worktrees\/(M\d+)$/u);
+  let handled = false;
+  for (const canonical of canonicalMatches) {
+    const legacy = legacyMatches.find((candidate) => (
+      candidate.match[1] === canonical.match[1]
+      && candidate.file.entry.symlink_target_identity === canonical.file.entry.symlink_target_identity
+    ));
+    if (
+      canonical.file.entry.kind !== "symlink"
+      || legacy?.file.entry.kind !== "symlink"
+    ) {
+      continue;
+    }
+    const id = canonical.match[1]!;
     preserve(
       candidates,
-      backing.file,
-      `duplicate-identity/${id}/physical`,
-      { scenario: "duplicate-physical-identity", id, role: "physical-backing", evidence_kind: EVIDENCE_KIND },
-      "physical-backing-preserved",
+      canonical.file,
+      `duplicate-identity/${id}/canonical`,
+      {
+        scenario: "duplicate-physical-identity",
+        id,
+        layout: "canonical",
+        physical_identity: physicalLabel(canonical.file),
+      },
+      "canonical-physical-identity-preserved",
     );
+    legacy.file.outcome = "ignored-with-reason";
+    const target = { kind: "legacy-worktree-topology", key: `duplicate-identity/${id}/canonical` };
+    addLegacyImportDiagnosis(
+      diagnoses,
+      legacy.file,
+      "duplicate-physical-identity",
+      "info",
+      "Canonical and legacy paths resolve to one physical worktree; the legacy alias is ignored in favor of the canonical identity.",
+      "mapped",
+      0,
+      legacy.file.bytes.length,
+      target,
+    );
+    const backingMatch = matchingFile(
+      group,
+      capture,
+      new RegExp(`(?:^|/)shared/${id}/git-marker\\.txt$`, "u"),
+    );
+    const backing = markerEvidence(backingMatch?.file, id);
+    if (backing !== undefined) {
+      preserve(
+        candidates,
+        backing.file,
+        `duplicate-identity/${id}/physical`,
+        { scenario: "duplicate-physical-identity", id, role: "physical-backing", evidence_kind: EVIDENCE_KIND },
+        "physical-backing-preserved",
+      );
+    }
+    handled = true;
   }
-  return true;
+  return handled;
 }
 
 function contributeStaleCanonical(
@@ -287,36 +311,41 @@ function contributeStaleCanonical(
   candidates: LegacyImportPendingCandidate[],
   diagnoses: LegacyImportPendingDiagnosis[],
 ): boolean {
-  const stale = matchingFile(group, capture, /(?:^|\/)\.gsd-worktrees\/(M\d+)\/README\.txt$/u);
-  const legacyMatch = matchingFile(group, capture, /(?:^|\/)\.gsd\/worktrees\/(M\d+)\/git-marker\.txt$/u);
-  if (stale === undefined || legacyMatch === undefined || stale.match[1] !== legacyMatch.match[1]) return false;
-  const id = stale.match[1]!;
-  const directoryPath = stale.file.entry.logical_path.slice(0, -"/README.txt".length);
-  const hasCapturedDirectory = capture.entries.some((entry) => (
-    entry.kind === "directory" && entry.logical_path === directoryPath
-  ));
-  const legacy = markerEvidence(legacyMatch.file, id);
-  if (!hasCapturedDirectory || legacy === undefined) return false;
-  preserve(
-    candidates,
-    legacy.file,
-    `stale-canonical/${id}/legacy`,
-    { scenario: "stale-canonical", id, selected_layout: "legacy", evidence_kind: EVIDENCE_KIND },
-    "stale-canonical-does-not-shadow-legacy",
-  );
-  stale.file.outcome = "ignored-with-reason";
-  addLegacyImportDiagnosis(
-    diagnoses,
-    stale.file,
-    "stale-canonical-does-not-shadow-legacy",
-    "info",
-    "A canonical directory without a git marker is ignored while the live legacy worktree is preserved.",
-    "mapped",
-    0,
-    stale.file.bytes.length,
-    { kind: "legacy-worktree-topology", key: `stale-canonical/${id}/legacy` },
-  );
-  return true;
+  const staleMatches = matchingFiles(group, capture, /(?:^|\/)\.gsd-worktrees\/(M\d+)\/README\.txt$/u);
+  const legacyMatches = matchingFiles(group, capture, /(?:^|\/)\.gsd\/worktrees\/(M\d+)\/git-marker\.txt$/u);
+  let handled = false;
+  for (const stale of staleMatches) {
+    const id = stale.match[1]!;
+    const legacyMatch = legacyMatches.find((candidate) => candidate.match[1] === id);
+    if (legacyMatch === undefined) continue;
+    const directoryPath = stale.file.entry.logical_path.slice(0, -"/README.txt".length);
+    const hasCapturedDirectory = capture.entries.some((entry) => (
+      entry.kind === "directory" && entry.logical_path === directoryPath
+    ));
+    const legacy = markerEvidence(legacyMatch.file, id);
+    if (!hasCapturedDirectory || legacy === undefined) continue;
+    preserve(
+      candidates,
+      legacy.file,
+      `stale-canonical/${id}/legacy`,
+      { scenario: "stale-canonical", id, selected_layout: "legacy", evidence_kind: EVIDENCE_KIND },
+      "stale-canonical-does-not-shadow-legacy",
+    );
+    stale.file.outcome = "ignored-with-reason";
+    addLegacyImportDiagnosis(
+      diagnoses,
+      stale.file,
+      "stale-canonical-does-not-shadow-legacy",
+      "info",
+      "A canonical directory without a git marker is ignored while the live legacy worktree is preserved.",
+      "mapped",
+      0,
+      stale.file.bytes.length,
+      { kind: "legacy-worktree-topology", key: `stale-canonical/${id}/legacy` },
+    );
+    handled = true;
+  }
+  return handled;
 }
 
 function contributeMarkerRoots(
@@ -325,13 +354,41 @@ function contributeMarkerRoots(
   candidates: LegacyImportPendingCandidate[],
   diagnoses: LegacyImportPendingDiagnosis[],
 ): void {
-  const canonicalMatch = matchingFile(group, capture, /(?:^|\/)\.gsd-worktrees\/(M\d+)\/git-marker\.txt$/u);
-  const legacyMatch = matchingFile(group, capture, /(?:^|\/)\.gsd\/worktrees\/(M\d+)\/git-marker\.txt$/u);
-  const canonical = markerEvidence(canonicalMatch?.file, canonicalMatch?.match[1]);
-  const legacy = markerEvidence(legacyMatch?.file, legacyMatch?.match[1]);
-  if (canonicalMatch !== undefined && canonical === undefined) diagnoseMalformedMarker(canonicalMatch.file, diagnoses);
-  if (legacyMatch !== undefined && legacy === undefined) diagnoseMalformedMarker(legacyMatch.file, diagnoses);
-  if (canonical !== undefined && legacy !== undefined && canonical.id === legacy.id) {
+  const canonicalMatches = matchingFiles(group, capture, /(?:^|\/)\.gsd-worktrees\/(M\d+)\/git-marker\.txt$/u);
+  const legacyMatches = matchingFiles(group, capture, /(?:^|\/)\.gsd\/worktrees\/(M\d+)\/git-marker\.txt$/u);
+  const legacyById = new Map(legacyMatches.map((legacyMatch) => [legacyMatch.match[1]!, legacyMatch]));
+  const claimedLegacyIds = new Set<string>();
+  for (const canonicalMatch of canonicalMatches) {
+    const id = canonicalMatch.match[1]!;
+    const canonical = markerEvidence(canonicalMatch.file, id);
+    if (canonical === undefined) {
+      diagnoseMalformedMarker(canonicalMatch.file, diagnoses);
+      continue;
+    }
+    const legacyMatch = legacyById.get(id);
+    if (legacyMatch === undefined) {
+      preserve(
+        candidates,
+        canonical.file,
+        `canonical/${canonical.id}`,
+        { scenario: "canonical", id: canonical.id, layout: "canonical", active: true, evidence_kind: EVIDENCE_KIND },
+        "canonical-worktree-preserved",
+      );
+      continue;
+    }
+    claimedLegacyIds.add(id);
+    const legacy = markerEvidence(legacyMatch.file, id);
+    if (legacy === undefined) {
+      diagnoseMalformedMarker(legacyMatch.file, diagnoses);
+      preserve(
+        candidates,
+        canonical.file,
+        `canonical/${canonical.id}`,
+        { scenario: "canonical", id: canonical.id, layout: "canonical", active: true, evidence_kind: EVIDENCE_KIND },
+        "canonical-worktree-preserved",
+      );
+      continue;
+    }
     preserve(
       candidates,
       canonical.file,
@@ -366,28 +423,38 @@ function contributeMarkerRoots(
       `Canonical and legacy paths for ${legacy.id} have different physical identities; neither root is selected automatically.`,
       "requires-user",
     );
-    return;
   }
-  if (canonical !== undefined) {
-    preserve(
-      candidates,
-      canonical.file,
-      `canonical/${canonical.id}`,
-      { scenario: "canonical", id: canonical.id, layout: "canonical", active: true, evidence_kind: EVIDENCE_KIND },
-      "canonical-worktree-preserved",
-    );
-    return;
-  }
-  if (legacy === undefined) return;
+  const remainingLegacy = legacyMatches.filter((legacyMatch) => !claimedLegacyIds.has(legacyMatch.match[1]!));
+  if (remainingLegacy.length === 0) return;
   const preferences = matchingFile(group, capture, /(?:^|\/)\.gsd\/PREFERENCES\.md$/u)?.file;
-  if (preferences !== undefined) {
-    preserve(
-      candidates,
-      preferences,
-      "active-guard/project-state",
-      { scenario: "active-worktree-guard", role: "project-state" },
-      "active-project-state-preserved",
-    );
+  let preferencesPreserved = false;
+  for (const legacyMatch of remainingLegacy) {
+    const id = legacyMatch.match[1]!;
+    const legacy = markerEvidence(legacyMatch.file, id);
+    if (legacy === undefined) {
+      diagnoseMalformedMarker(legacyMatch.file, diagnoses);
+      continue;
+    }
+    if (preferences === undefined) {
+      preserve(
+        candidates,
+        legacy.file,
+        `legacy/${legacy.id}`,
+        { scenario: "legacy", id: legacy.id, layout: "legacy", active: true, evidence_kind: EVIDENCE_KIND },
+        "legacy-worktree-preserved",
+      );
+      continue;
+    }
+    if (!preferencesPreserved) {
+      preserve(
+        candidates,
+        preferences,
+        "active-guard/project-state",
+        { scenario: "active-worktree-guard", role: "project-state" },
+        "active-project-state-preserved",
+      );
+      preferencesPreserved = true;
+    }
     preserve(
       candidates,
       legacy.file,
@@ -403,15 +470,7 @@ function contributeMarkerRoots(
       "Migration is skipped while a legacy worktree directory is active; the topology is preserved without mutation.",
       "preserved",
     );
-    return;
   }
-  preserve(
-    candidates,
-    legacy.file,
-    `legacy/${legacy.id}`,
-    { scenario: "legacy", id: legacy.id, layout: "legacy", active: true, evidence_kind: EVIDENCE_KIND },
-    "legacy-worktree-preserved",
-  );
 }
 
 export function contributeLegacyWorktreeTopology(

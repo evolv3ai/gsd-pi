@@ -228,7 +228,7 @@ describe("legacy preview discovery", () => {
     assert.equal(capture.payloads.filter((payload) => payload.kind === "file").length, 2);
   });
 
-  test("legacy preview discovery captures a declared symlink root without traversing its alias", (t) => {
+  test("legacy preview discovery rejects symlink roots with a clear reason", (t) => {
     const base = withTemporaryDirectory(t);
     const project = join(base, "project");
     const external = join(base, "state");
@@ -237,24 +237,30 @@ describe("legacy preview discovery", () => {
     writeFileSync(join(external, "STATE.md"), "state");
     symlinkSync("../state", join(project, ".gsd"));
 
-    const capture = captureLegacyImportSourceSet({
-      roots: [
-        root("project", join(project, ".gsd")),
-        root("external", external, "$GSD_STATE_DIR/projects/project-1", { kind: "external" }),
-      ],
-    });
-
-    assert.deepEqual(capture.entries.map((candidate) => candidate.logical_path), [
-      "$GSD_STATE_DIR/projects/project-1",
-      "$GSD_STATE_DIR/projects/project-1/STATE.md",
-      ".gsd",
-    ]);
-    assert.equal(entry(capture, ".gsd").kind, "symlink");
-    assert.equal(payloadBytes(capture, ".gsd").toString("utf8"), "../state");
-    assert.equal(
-      entry(capture, ".gsd").symlink_target_identity,
-      entry(capture, "$GSD_STATE_DIR/projects/project-1").physical_identity,
+    const declaredTarget = expectSourceError(
+      () => captureLegacyImportSourceSet({
+        roots: [
+          root("project", join(project, ".gsd")),
+          root("external", external, "$GSD_STATE_DIR/projects/project-1", { kind: "external" }),
+        ],
+      }),
+      "LEGACY_IMPORT_SOURCE_ROOT_INVALID",
+      { root_id: "project", logical_path: ".gsd", operation: "lstat" },
     );
+    assert.equal(declaredTarget.retryable, false);
+    assert.match(declaredTarget.message, /symlink/u);
+
+    directory(join(base, "outside"));
+    symlinkSync("../outside", join(project, "linked-root"));
+    const undeclaredTarget = expectSourceError(
+      () => captureLegacyImportSourceSet({
+        roots: [root("project", join(project, "linked-root"), ".gsd-linked")],
+      }),
+      "LEGACY_IMPORT_SOURCE_ROOT_INVALID",
+      { root_id: "project", logical_path: ".gsd-linked", operation: "lstat" },
+    );
+    assert.equal(undeclaredTarget.retryable, false);
+    assert.match(undeclaredTarget.message, /symlink/u);
   });
 });
 
@@ -653,5 +659,83 @@ describe("legacy preview source revalidation", () => {
       assert.deepEqual(payloadBytes(capture, `.gsd/${name}`), bytes);
       assert.deepEqual(readFileSync(join(gsd, name)), bytes);
     }
+  });
+});
+
+describe("legacy preview source capture limits", () => {
+  test("legacy preview capture fails typed instead of unbounded on oversized trees", (t) => {
+    const base = withTemporaryDirectory(t);
+    const gsd = join(base, ".gsd");
+    directory(gsd);
+    writeFileSync(join(gsd, "a.md"), "aaaaaaaa");
+    writeFileSync(join(gsd, "b.md"), "bbbbbbbb");
+
+    const singleFileTooLarge = expectSourceError(
+      () => captureLegacyImportSourceSet(
+        { roots: [root("project", gsd)] },
+        { limits: { max_total_bytes: 4 } },
+      ),
+      "LEGACY_IMPORT_SOURCE_LIMIT_BYTES",
+      { root_id: "project", logical_path: ".gsd/a.md", operation: "limit-bytes" },
+    );
+    assert.equal(singleFileTooLarge.retryable, false);
+
+    const cumulativeTooLarge = expectSourceError(
+      () => captureLegacyImportSourceSet(
+        { roots: [root("project", gsd)] },
+        { limits: { max_total_bytes: 8 } },
+      ),
+      "LEGACY_IMPORT_SOURCE_LIMIT_BYTES",
+      { root_id: "project", logical_path: ".gsd/b.md", operation: "limit-bytes" },
+    );
+    assert.equal(cumulativeTooLarge.retryable, false);
+
+    const tooManyEntries = expectSourceError(
+      () => captureLegacyImportSourceSet(
+        { roots: [root("project", gsd)] },
+        { limits: { max_entries: 2 } },
+      ),
+      "LEGACY_IMPORT_SOURCE_LIMIT_ENTRIES",
+      { root_id: "project", operation: "limit-entries" },
+    );
+    assert.equal(tooManyEntries.retryable, false);
+
+    const invalidLimit = expectSourceError(
+      () => captureLegacyImportSourceSet(
+        { roots: [root("project", gsd)] },
+        { limits: { max_depth: 0 } },
+      ),
+      "LEGACY_IMPORT_SOURCE_LIMITS_INVALID",
+    );
+    assert.equal(invalidLimit.retryable, false);
+  });
+
+  test("legacy preview capture bounds directory depth and honors explicit limits", (t) => {
+    const base = withTemporaryDirectory(t);
+    const gsd = join(base, ".gsd");
+    directory(join(gsd, "a", "b"));
+    writeFileSync(join(gsd, "a", "b", "deep.md"), "deep");
+
+    const tooDeep = expectSourceError(
+      () => captureLegacyImportSourceSet(
+        { roots: [root("project", gsd)] },
+        { limits: { max_depth: 1 } },
+      ),
+      "LEGACY_IMPORT_SOURCE_LIMIT_DEPTH",
+      { root_id: "project", logical_path: ".gsd/a/b", operation: "limit-depth" },
+    );
+    assert.equal(tooDeep.retryable, false);
+
+    const capture = captureLegacyImportSourceSet(
+      { roots: [root("project", gsd)] },
+      { limits: { max_entries: 16, max_total_bytes: 1024, max_depth: 3 } },
+    );
+    assert.deepEqual(capture.entries.map((candidate) => candidate.logical_path), [
+      ".gsd",
+      ".gsd/a",
+      ".gsd/a/b",
+      ".gsd/a/b/deep.md",
+    ]);
+    assert.doesNotThrow(() => revalidateLegacyImportSourceSet(capture));
   });
 });

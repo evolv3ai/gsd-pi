@@ -5,29 +5,38 @@ import { existsSync } from 'fs'
 import { delimiter, join } from 'path'
 
 /**
- * Minimum supported Node.js major version. Kept in sync with
+ * Minimum supported Node.js version. Kept in sync with
  * `engines.node` in package.json — see test
- * `loader MIN_NODE_MAJOR matches package.json engines field`.
+ * `loader MIN_NODE_VERSION matches package.json engines field`.
  */
-export const MIN_NODE_MAJOR = 22
+export const MIN_NODE_VERSION = '22.18.0'
+export const MIN_NODE_MAJOR = Number(MIN_NODE_VERSION.split('.')[0])
+
+function parseNodeVersion(version: string): [number, number, number] {
+  const match = version.match(/^(\d+)\.(\d+)\.(\d+)/)
+  if (!match) throw new Error(`checkNodeVersion: cannot parse version from "${version}"`)
+  return [Number(match[1]), Number(match[2]), Number(match[3])]
+}
 
 /**
- * Parse a Node version string (e.g. "22.5.1") and return whether the major
- * version meets the required minimum.
+ * Parse a Node version string (e.g. "22.18.1") and return whether it meets
+ * the required minimum.
  *
- * Returns `{ ok: true }` when supported, or `{ ok: false, actualMajor }`
+ * Returns `{ ok: true }` when supported, or `{ ok: false, actualVersion }`
  * when below the minimum. Throws if the version string is malformed —
  * callers should treat that as a fatal precondition violation.
  */
 export function checkNodeVersion(
   versionString: string,
-  min: number = MIN_NODE_MAJOR,
-): { ok: true } | { ok: false; actualMajor: number } {
-  const major = parseInt(versionString.split('.')[0], 10)
-  if (!Number.isFinite(major)) {
-    throw new Error(`checkNodeVersion: cannot parse major from "${versionString}"`)
+  min: string = MIN_NODE_VERSION,
+): { ok: true } | { ok: false; actualVersion: string } {
+  const actual = parseNodeVersion(versionString)
+  const minimum = parseNodeVersion(min)
+  for (let index = 0; index < minimum.length; index += 1) {
+    if (actual[index] === minimum[index]) continue
+    return actual[index] < minimum[index] ? { ok: false, actualVersion: versionString } : { ok: true }
   }
-  return major < min ? { ok: false, actualMajor: major } : { ok: true }
+  return { ok: true }
 }
 
 /**

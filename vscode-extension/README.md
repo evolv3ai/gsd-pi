@@ -7,7 +7,7 @@ Control the [gsd-pi coding agent](https://github.com/open-gsd/gsd-pi) directly f
 ## Requirements
 
 - **gsd-pi** installed globally: `npm install -g @opengsd/gsd-pi`
-- **Node.js** >= 22.0.0
+- **Node.js** >= 22.18.0
 - **Git** installed and on PATH
 - **VS Code** >= 1.95.0
 

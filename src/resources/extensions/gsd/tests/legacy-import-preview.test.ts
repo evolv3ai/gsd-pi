@@ -44,6 +44,7 @@ import {
   canonicalLegacyImportJson,
   createLegacyImportPreview,
   hashLegacyImportValue,
+  isValidLegacyImportPreviewArtifact,
   LegacyImportPreviewError,
   revalidateLegacyImportPreview,
   sealLegacyImportPreview,
@@ -51,6 +52,7 @@ import {
   type LegacyImportPreviewCreateInput,
   type LegacyImportPreviewSealInput,
 } from "../legacy-import-preview.ts";
+import { finalizeLegacyImportInterpretation } from "../legacy-import-preview-interpretation.ts";
 import { _getAdapter, closeDatabase, openDatabase } from "../gsd-db.ts";
 import {
   assertStableClassificationHashes,
@@ -108,7 +110,10 @@ const EXPECTED_BASE_ROW_KEYS: Record<(typeof EXPECTED_BASE_ROW_SETS)[number], re
     "made_by", "source", "superseded_by",
   ],
   decision_memories: ["source_decision_id", "structured_fields"],
-  item_lifecycles: ["project_id", "item_kind", "milestone_id", "slice_id", "task_id", "lifecycle_status"],
+  item_lifecycles: [
+    "project_id", "item_kind", "milestone_id", "slice_id", "task_id",
+    "lifecycle_status", "state_version", "last_operation_id",
+  ],
 };
 
 function previewSource() {
@@ -435,6 +440,74 @@ describe("legacy preview identity", () => {
     assert.equal(changed.preview_id, artifact.preview.preview_id);
     assert.notEqual(hashLegacyImportValue(changed as never), artifact.preview_hash);
   });
+
+  test("legacy preview identity accepts zero-length evidence locators but rejects inverted spans", () => {
+    const zeroLengthChange = (locator: { start_byte: number; end_byte: number; line?: number }) => ({
+      change_id: ONE_HASH,
+      action: "preserve" as const,
+      target: { kind: "legacy-artifact", key: ".gsd/EMPTY.md" },
+      raw: { source_id: ONE_HASH, locator, value: "", sha256: ONE_HASH },
+      normalized: { value: "" },
+      provenance: { source_id: ONE_HASH, parser_id: "state", parser_version: "1" },
+      reason_code: "preserve-empty",
+    });
+    const input = sealInput();
+    input.sources = [{ ...previewSource(), source_id: ONE_HASH, byte_size: 0 }];
+    input.changes = [zeroLengthChange({ start_byte: 0, end_byte: 0, line: 1 })];
+    input.diagnoses = [{
+      diagnosis_id: ONE_HASH,
+      code: "empty-token",
+      severity: "warning",
+      source_id: ONE_HASH,
+      locator: { start_byte: 1, end_byte: 1 },
+      raw_value: "",
+      message: "An empty string token is zero-length evidence.",
+    }];
+    input.resolutions = [{ diagnosis_id: ONE_HASH, disposition: "preserved" }];
+    input.counts = { ...input.counts, preserve: 1 };
+    input.source_set_hash = hashLegacyImportValue(input.sources);
+    input.change_set_hash = hashLegacyImportValue(input.changes);
+    assert.equal(isValidLegacyImportPreviewArtifact(sealLegacyImportPreview(input)), true);
+
+    const inverted = structuredClone(input);
+    inverted.changes = [zeroLengthChange({ start_byte: 2, end_byte: 1 })];
+    inverted.change_set_hash = hashLegacyImportValue(inverted.changes);
+    assert.equal(isValidLegacyImportPreviewArtifact(sealLegacyImportPreview(inverted)), false);
+  });
+
+  test("legacy preview interpretation finalize does not reorder caller arrays", () => {
+    const provenance = { source_id: "source-1", parser_id: "parser", parser_version: "1" };
+    const candidates = ["b", "a"].map((key) => ({
+      classification: "preserve" as const,
+      target: { kind: "legacy-artifact", key },
+      raw: {
+        source_id: "source-1",
+        locator: { start_byte: 0, end_byte: 1, line: 1 },
+        value: key,
+        sha256: ONE_HASH,
+      },
+      normalized: key,
+      provenance,
+      reason_code: `reason-${key}`,
+    }));
+    const diagnoses = ["b", "a"].map((key, index) => ({
+      diagnosis_id: `sha256:${String(index + 2).repeat(64)}` as LegacyImportSha256,
+      code: `code-${key}`,
+      severity: "warning" as const,
+      source_id: "source-1",
+      locator: { start_byte: 0, end_byte: 1, line: 1 },
+      raw_value: key,
+      message: `message-${key}`,
+      resolution: { disposition: "preserved" as const },
+    }));
+
+    const interpretation = finalizeLegacyImportInterpretation([], candidates, diagnoses);
+
+    assert.deepEqual(candidates.map((candidate) => candidate.target.key), ["b", "a"]);
+    assert.deepEqual(diagnoses.map((diagnosis) => diagnosis.code), ["code-b", "code-a"]);
+    assert.deepEqual(interpretation.candidates.map((candidate) => candidate.target.key), ["a", "b"]);
+    assert.deepEqual(interpretation.diagnoses.map((diagnosis) => diagnosis.code), ["code-a", "code-b"]);
+  });
 });
 
 function sourceFixture(overrides: Partial<LegacyImportBaseSnapshotSource> = {}) {
@@ -467,6 +540,8 @@ function sourceFixture(overrides: Partial<LegacyImportBaseSnapshotSource> = {}) 
       slice_id: null,
       task_id: null,
       lifecycle_status: "pending",
+      state_version: 0,
+      last_operation_id: "operation-1",
     }]],
   ]);
   const assertInside = (name: string) => {

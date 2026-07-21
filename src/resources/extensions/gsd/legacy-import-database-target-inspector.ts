@@ -1,6 +1,8 @@
 // Project/App: gsd-pi
 // File Purpose: Ephemeral-copy SQLite inspection for retained legacy import database bytes.
 
+import { deepFreeze } from "./legacy-import-utils.js";
+
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -72,13 +74,6 @@ interface SchemaRow {
   name: string;
   table: string;
   sqlHash: LegacyImportSha256;
-}
-
-function deepFreeze<T>(value: T, seen = new Set<object>()): T {
-  if (value === null || typeof value !== "object" || seen.has(value)) return value;
-  seen.add(value);
-  for (const child of Object.values(value)) deepFreeze(child, seen);
-  return Object.freeze(value);
 }
 
 function requestContext(request: LegacyImportDatabaseTargetInspectionRequest): Record<string, string> {
@@ -576,23 +571,33 @@ function inspectRetainedCopy<T>(
         copyChanged = true;
       }
     }
+    let cleanupFailed = false;
     try {
       deps.removeTemporaryDirectory(directory);
     } catch {
-      throw new LegacyImportDatabaseTargetInspectionError(
-        "cleanup",
-        "LEGACY_IMPORT_DATABASE_INSPECTION_CLEANUP_FAILED",
-        "legacy import database inspection copy could not be removed safely",
-        true,
-        requestContext(request),
-      );
+      cleanupFailed = true;
     }
+    // A tampered inspection copy is more security-relevant than a cleanup
+    // failure, so it must win when both happen; the cleanup failure is still
+    // surfaced through context instead of masking the copy verdict.
     if (copyChanged) {
       throw new LegacyImportDatabaseTargetInspectionError(
         "cleanup",
         "LEGACY_IMPORT_DATABASE_INSPECTION_COPY_CHANGED",
         "legacy import database inspection copy changed during read-only inspection",
         false,
+        {
+          ...requestContext(request),
+          ...(cleanupFailed ? { cleanup_also_failed: "true" } : {}),
+        },
+      );
+    }
+    if (cleanupFailed) {
+      throw new LegacyImportDatabaseTargetInspectionError(
+        "cleanup",
+        "LEGACY_IMPORT_DATABASE_INSPECTION_CLEANUP_FAILED",
+        "legacy import database inspection copy could not be removed safely",
+        true,
         requestContext(request),
       );
     }

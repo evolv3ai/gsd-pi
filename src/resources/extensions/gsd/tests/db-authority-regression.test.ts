@@ -211,7 +211,7 @@ test("explicit markdown import remains opt-in and is not run by startup mismatch
 // scanMarkdownHierarchy must skip counting them too. Otherwise the markdown
 // scan claims task rows the DB authoritatively omits, and the startup drift
 // check perpetually reports recovery-required / recommends
-// `/gsd recover --confirm` — which re-skips the stub tasks and never converges.
+// `/gsd recover` — which re-skips the stub tasks and never converges.
 test("sketch slice stub tasks are not treated as markdown/DB drift", async (t) => {
   const base = makeBase();
   t.after(() => cleanup(base));

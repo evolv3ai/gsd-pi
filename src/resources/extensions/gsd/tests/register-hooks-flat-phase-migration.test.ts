@@ -67,7 +67,7 @@ test("session_start rejects unrepresented legacy Markdown with explicit recovery
 
   await assert.rejects(
     () => Promise.resolve(sessionStart({}, makeContext(base))),
-    /flat-phase migration.*\/gsd recover --confirm/,
+    /flat-phase migration.*\/gsd recover/,
   );
   assert.ok(existsSync(join(base, ".gsd", "milestones", "M001")), "legacy layout should remain for recovery");
 });

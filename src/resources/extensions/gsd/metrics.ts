@@ -15,16 +15,17 @@
  */
 
 import { join } from "node:path";
-import { openSync, closeSync, unlinkSync, statSync, writeFileSync } from "node:fs";
+import { openSync, closeSync, unlinkSync, statSync, writeFileSync, mkdirSync } from "node:fs";
 import type { ExtensionContext } from "@gsd/pi-coding-agent";
 import { gsdRoot } from "./paths.js";
 import { getAndClearSkills } from "./skill-telemetry.js";
-import { loadJsonFile, loadJsonFileOrNull, saveJsonFileCompact } from "./json-persistence.js";
+import { loadJsonFile, loadJsonFileOrNull } from "./json-persistence.js";
 import { parseUnitId } from "./unit-id.js";
 import { buildAuditEnvelope, emitUokAuditEvent } from "./uok/audit.js";
 import { isUnifiedAuditEnabled } from "./uok/audit-toggle.js";
 import type { MilestoneScope } from "./workspace.js";
 import { logWarning } from "./workflow-logger.js";
+import { atomicWriteSync } from "./atomic-write.js";
 
 // Re-export from shared — import directly from format-utils to avoid pulling
 // in the full barrel (mod.js → ui.js → @gsd/pi-tui) which breaks when loaded
@@ -848,6 +849,14 @@ function defaultLedger(): MetricsLedger {
 
 export const METRICS_LEDGER_KEEP_UNITS = 1500;
 
+function saveMetricsLedger(path: string, data: MetricsLedger): void {
+  try {
+    atomicWriteSync(path, `${JSON.stringify(data)}\n`);
+  } catch {
+    return;
+  }
+}
+
 function compareUnitsByTime(a: UnitMetrics, b: UnitMetrics): number {
   return a.finishedAt - b.finishedAt || a.startedAt - b.startedAt;
 }
@@ -873,7 +882,7 @@ export function pruneMetricsLedger(base: string, keepCount: number): number {
   if (!disk || disk.units.length <= keepCount) return 0;
   const removed = disk.units.length - keepCount;
   disk.units = keepNewestUnits(disk.units, keepCount);
-  saveJsonFileCompact(metricsPath(base), disk);
+  saveMetricsLedger(metricsPath(base), disk);
   // Keep the in-memory ledger in sync if it is loaded for this session.
   if (ledger) {
     ledger.units = keepNewestUnits(ledger.units, keepCount);
@@ -1027,7 +1036,8 @@ function releaseLock(lockPath: string): void {
  */
 function saveLedger(base: string, data: MetricsLedger): void {
   const path = metricsPath(base);
-  const lockPath = `${path}.lock`;
+  const lockPath = join(gsdRoot(base), "runtime", "metrics.lock");
+  mkdirSync(join(gsdRoot(base), "runtime"), { recursive: true });
   const acquired = acquireLock(lockPath);
   if (acquired) {
     try {
@@ -1041,7 +1051,7 @@ function saveLedger(base: string, data: MetricsLedger): void {
           : dataUnits;
       merged.sort(compareUnitsByTime);
       data.units = keepNewestUnits(merged);
-      saveJsonFileCompact(path, data);
+      saveMetricsLedger(path, data);
     } finally {
       releaseLock(lockPath);
     }
@@ -1053,6 +1063,6 @@ function saveLedger(base: string, data: MetricsLedger): void {
     // read-merge-write sequence without mutual exclusion.
     logWarning("fs", "saveLedger: lock not acquired — falling back to direct write (no merge)");
     data.units = keepNewestUnits(data.units);
-    saveJsonFileCompact(path, data);
+    saveMetricsLedger(path, data);
   }
 }

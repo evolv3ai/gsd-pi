@@ -52,7 +52,7 @@ import {
   SUPPORTED_LEGACY_SURFACES,
   type LegacyImportSurface,
 } from "../legacy-import-surfaces.ts";
-import { SCHEMA_VERSION } from "../gsd-db.ts";
+import { _getAdapter, closeDatabase, openDatabase, SCHEMA_VERSION } from "../gsd-db.ts";
 import { parseRoadmap } from "../parsers-legacy.ts";
 import { redactSecrets } from "../redact-secrets.ts";
 import { listRuns } from "../run-manager.ts";
@@ -156,6 +156,16 @@ function assertNonEmptyStrings(values: readonly string[], label: string): void {
 
 function hashBytes(bytes: Buffer): LegacyImportSha256 {
   return `sha256:${createHash("sha256").update(bytes).digest("hex")}`;
+}
+
+function inspectReadOnlyDatabase<T>(path: string, inspect: (database: DatabaseSync) => T): T {
+  const database = new DatabaseSync(path, { readOnly: true });
+  try {
+    database.exec("PRAGMA query_only=ON");
+    return inspect(database);
+  } finally {
+    database.close();
+  }
 }
 
 function assertLegacyImportSurfaceRegistry(registry: readonly LegacyImportSurface[]): void {
@@ -531,18 +541,14 @@ test("legacy corpus manifest seals exact structure and aggregate accounting", ()
     "gsd.db",
   );
   const databaseBefore = hashBytes(readFileSync(databasePath));
-  const database = new DatabaseSync(databasePath, { readOnly: true });
-  try {
-    database.exec("PRAGMA query_only=ON");
+  inspectReadOnlyDatabase(databasePath, (database) => {
     assert.deepEqual({ ...database.prepare(`
       SELECT
         (SELECT max(version) FROM schema_version) AS schema_version,
         (SELECT count(*) FROM workflow_import_applications) AS import_applications
     `).get() }, { schema_version: 45, import_applications: 0 });
     assert.equal(database.prepare("PRAGMA integrity_check").get()?.integrity_check, "ok");
-  } finally {
-    database.close();
-  }
+  });
   assert.equal(hashBytes(readFileSync(databasePath)), databaseBefore, "read-only boundary inspection must not mutate the database");
   assert.equal(
     readFileSync(join(corpusPath, "root-external-boundaries", "source", ".gsd", "SECRETS-MANIFEST.md"), "utf8"),
@@ -706,28 +712,59 @@ test("legacy import surface registry pins worktree logs and legacy truth-loss sc
   }
 });
 
-test("legacy import surface registry matches workflow_import_applications Preview DDL", () => {
-  const schemaSource = readFileSync(
-    new URL("../db-projection-import-kernel-closeout-foundation-schema.ts", import.meta.url),
-    "utf8",
-  );
-  const previewCheck = schemaSource.match(
-    /preview_json TEXT NOT NULL CHECK \(([\s\S]*?)\n      \),\n      backup_ref/,
-  )?.[1];
-  assert.ok(previewCheck, "workflow_import_applications must retain its preview_json CHECK");
-
-  const scalarKeys = [...previewCheck.matchAll(/json_extract\(preview_json, '\$\.([a-z_]+)'\)/g)]
-    .map((match) => match[1]);
-  const countKeys = [...previewCheck.matchAll(/json_extract\(preview_json, '\$\.counts\.([a-z_]+)'\)/g)]
-    .map((match) => match[1]);
-  const arrayKeys = [...previewCheck.matchAll(/json_type\(preview_json, '\$\.([a-z_]+)'\) IS 'array'/g)]
-    .map((match) => match[1]);
-
-  assert.deepEqual(
-    [...scalarKeys, "counts", ...arrayKeys],
-    LEGACY_IMPORT_PREVIEW_TOP_LEVEL_KEYS,
-  );
-  assert.deepEqual(countKeys, LEGACY_IMPORT_PREVIEW_COUNT_KEYS);
+test("workflow_import_applications rejects an incomplete Preview envelope", () => {
+  const base = mkdtempSync(join(tmpdir(), "gsd-preview-schema-"));
+  try {
+    assert.equal(openDatabase(join(base, "gsd.db")), true);
+    const hash = `sha256:${"a".repeat(64)}`;
+    const database = _getAdapter()!;
+    database.prepare(`
+      INSERT INTO workflow_operations (
+        operation_id, project_id, operation_type, idempotency_key,
+        expected_revision, resulting_revision, expected_authority_epoch,
+        resulting_authority_epoch, actor_type, actor_id, source_transport,
+        request_hash, created_at
+      )
+      SELECT 'op-1', project_id, 'import.apply', 'preview-check',
+        0, 1, 0, 0, 'system', 'preview-check', 'internal', ?,
+        '2026-01-01T00:00:00.000Z'
+      FROM project_authority WHERE singleton = 1
+    `).run(hash);
+    const preview = {
+      preview_schema_version: 1,
+      preview_id: "preview-1",
+      import_kind: "legacy",
+      importer_version: "1",
+      base_project_revision: 0,
+      base_authority_epoch: 0,
+      base_database_schema_version: SCHEMA_VERSION,
+      source_set_hash: hash,
+      change_set_hash: hash,
+      counts: { create: 0, update: 0, delete: 0, preserve: 0, unparsed: 0, unresolved: 0 },
+      sources: [],
+      changes: [],
+      diagnoses: [],
+    };
+    assert.throws(() => database.prepare(`
+      INSERT INTO workflow_import_applications (
+        operation_id, project_id, import_kind, importer_version, preview_schema_version,
+        preview_id, preview_hash, base_project_revision, base_authority_epoch,
+        base_database_schema_version, source_set_hash, change_set_hash, create_count,
+        update_count, delete_count, preserve_count, unparsed_count, unresolved_count,
+        preview_json, backup_ref, backup_sha256, backup_byte_size, backup_schema_version,
+        backup_project_revision, backup_authority_epoch, backup_quick_check,
+        backup_verified_at, applied_at, resulting_project_revision, resulting_authority_epoch
+      ) VALUES (
+        'op-1', (SELECT project_id FROM project_authority WHERE singleton = 1),
+        'legacy', '1', 1, 'preview-1', ?, 0, 0, ?, ?, ?,
+        0, 0, 0, 0, 0, 0, ?, '/backup', ?, 1, ?, 0, 0, 'ok',
+        '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z', 1, 0
+      )
+    `).run(hash, SCHEMA_VERSION, hash, hash, JSON.stringify(preview), hash, SCHEMA_VERSION), /CHECK constraint failed/);
+  } finally {
+    closeDatabase();
+    rmSync(base, { recursive: true, force: true });
+  }
 });
 
 test("legacy import surface registry pins the deterministic Preview envelope contract", () => {

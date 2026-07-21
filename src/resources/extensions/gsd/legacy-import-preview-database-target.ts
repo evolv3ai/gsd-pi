@@ -1,6 +1,8 @@
 // Project/App: gsd-pi
 // File Purpose: Capture-bound database target selection and pure interpretation for legacy import Preview.
 
+import { compareText } from "./legacy-import-utils.js";
+
 import {
   LEGACY_IMPORT_BASE_DATABASE_SCHEMA_VERSION,
   type LegacyImportPreviewResolution,
@@ -122,10 +124,6 @@ interface DatabaseTargetGroup {
   mainPath: string;
   main?: LegacyImportDecodedSourceFile;
   sidecars: Readonly<Partial<Record<DatabaseSidecarRole, LegacyImportDecodedSourceFile>>>;
-}
-
-function compareText(left: string, right: string): number {
-  return left < right ? -1 : left > right ? 1 : 0;
 }
 
 function databaseMainPath(root: LegacyImportSourceCapturedRoot): string | undefined {

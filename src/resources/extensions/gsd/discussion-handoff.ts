@@ -15,6 +15,7 @@ import { clearPathCache, gsdRoot, resolveGsdRootFile, resolveMilestoneFile } fro
 import { _getPendingAutoStart, deletePendingAutoStart, type PendingAutoStartEntry } from "./pending-auto-start.js";
 import { logWarning } from "./workflow-logger.js";
 import { readManifest } from "./workflow-manifest.js";
+import { removeProjectionFileSync } from "./atomic-write.js";
 
 type AutoStartOptions = Parameters<typeof startAutoDetached>[4];
 type AutoStartLauncher = typeof startAutoDetached;
@@ -232,7 +233,7 @@ function cleanupAcceptedHandoffArtifacts(entry: PendingAutoStartEntry): void {
   const { basePath, milestoneId } = entry;
   try {
     const draftFile = resolveMilestoneFile(basePath, milestoneId, "CONTEXT-DRAFT");
-    if (draftFile) unlinkSync(draftFile);
+    if (draftFile) removeProjectionFileSync(draftFile);
   } catch (e) {
     logWarning("guided", `CONTEXT-DRAFT.md unlink failed: ${(e as Error).message}`);
   }

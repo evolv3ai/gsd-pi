@@ -8,6 +8,8 @@ import {
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as os from 'node:os';
+import { DatabaseSync } from 'node:sqlite';
+import { _setMemoriesFtsRebuildBoundaryForTest } from '../db-memory-fts-schema.ts';
 import {
   getActiveMemories,
   getActiveMemoriesRanked,
@@ -405,6 +407,88 @@ test('memory-store: reopening rebuilds FTS index for pre-FTS memories', () => {
     const hits = queryMemoriesRanked({ query: 'auth', k: 5 }).map((hit) => hit.memory.id);
     assert.deepEqual(hits, ['MEM001']);
   } finally {
+    cleanupDbPath(dbPath);
+  }
+});
+
+test('memory-store: repairing FTS schema replaces a stale rebuild marker', () => {
+  const dbPath = tempDbPath();
+  try {
+    openDatabase(dbPath);
+    const adapter = _getAdapter()!;
+    const fts = adapter.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='memories_fts'").get();
+    if (!fts) return;
+
+    adapter.exec('DROP TRIGGER IF EXISTS memories_ai');
+    adapter.exec('DROP TRIGGER IF EXISTS memories_ad');
+    adapter.exec('DROP TRIGGER IF EXISTS memories_au');
+    adapter.exec('DROP TABLE IF EXISTS memories_fts');
+    adapter.prepare(`
+      UPDATE runtime_kv
+      SET value_json = '"stale-marker"'
+      WHERE scope = 'global' AND scope_id = '' AND key = 'memories_fts_rebuilt_at'
+    `).run();
+    const markerBefore = adapter.prepare(
+      "SELECT value_json FROM runtime_kv WHERE scope = 'global' AND scope_id = '' AND key = 'memories_fts_rebuilt_at'",
+    ).get()?.['value_json'];
+    assert.ok(markerBefore);
+    const id = createMemory({ category: 'gotcha', content: 'stale marker repair must restore search' });
+    closeDatabase();
+
+    openDatabase(dbPath);
+    const markerAfter = _getAdapter()!.prepare(
+      "SELECT value_json FROM runtime_kv WHERE scope = 'global' AND scope_id = '' AND key = 'memories_fts_rebuilt_at'",
+    ).get()?.['value_json'];
+    assert.notEqual(markerAfter, markerBefore);
+    const hits = queryMemoriesRanked({ query: 'restore', k: 5 }).map((hit) => hit.memory.id);
+    assert.deepEqual(hits, [id]);
+  } finally {
+    cleanupDbPath(dbPath);
+  }
+});
+
+test('memory-store: failed FTS repair durably invalidates its stale marker', () => {
+  const dbPath = tempDbPath();
+  try {
+    openDatabase(dbPath);
+    const adapter = _getAdapter()!;
+    const fts = adapter.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='memories_fts'").get();
+    if (!fts) return;
+
+    adapter.exec('DROP TRIGGER IF EXISTS memories_ai');
+    adapter.exec('DROP TRIGGER IF EXISTS memories_ad');
+    adapter.exec('DROP TRIGGER IF EXISTS memories_au');
+    adapter.exec('DROP TABLE IF EXISTS memories_fts');
+    adapter.prepare(`
+      UPDATE runtime_kv
+      SET value_json = '"stale-marker"'
+      WHERE scope = 'global' AND scope_id = '' AND key = 'memories_fts_rebuilt_at'
+    `).run();
+    const id = createMemory({ category: 'gotcha', content: 'failed repair must retry before readiness' });
+    closeDatabase();
+
+    _setMemoriesFtsRebuildBoundaryForTest(() => {
+      throw new Error('forced FTS rebuild failure');
+    });
+    assert.throws(() => openDatabase(dbPath), /forced FTS rebuild failure/);
+
+    const raw = new DatabaseSync(dbPath);
+    try {
+      const marker = raw.prepare(
+        "SELECT value_json FROM runtime_kv WHERE scope = 'global' AND scope_id = '' AND key = 'memories_fts_rebuilt_at'",
+      ).get();
+      assert.equal(marker, undefined);
+    } finally {
+      raw.close();
+    }
+
+    assert.throws(() => openDatabase(dbPath), /forced FTS rebuild failure/);
+    _setMemoriesFtsRebuildBoundaryForTest(null);
+    assert.equal(openDatabase(dbPath), true);
+    const hits = queryMemoriesRanked({ query: 'readiness', k: 5 }).map((hit) => hit.memory.id);
+    assert.deepEqual(hits, [id]);
+  } finally {
+    _setMemoriesFtsRebuildBoundaryForTest(null);
     cleanupDbPath(dbPath);
   }
 });

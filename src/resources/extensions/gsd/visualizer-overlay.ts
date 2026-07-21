@@ -14,12 +14,13 @@ import {
   renderHealthView,
   type ProgressFilter,
 } from "./visualizer-views.js";
-import { writeFileSync, mkdirSync } from "node:fs";
+import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { writeExportFile } from "./export.js";
 import { gsdRoot } from "./paths.js";
 import { stripAnsi } from "../shared/mod.js";
 import { renderDialogFrame, renderKeyHints } from "./tui/render-kit.js";
+import { atomicWriteSync } from "./atomic-write.js";
 
 export const TAB_COUNT = 10;
 const TAB_LABELS = [
@@ -369,7 +370,7 @@ export class GSDVisualizerOverlay {
       const exportDir = gsdRoot(this.basePath);
       mkdirSync(exportDir, { recursive: true });
       const outPath = join(exportDir, `snapshot-${timestamp}.txt`);
-      writeFileSync(outPath, snapshotLines.join("\n") + "\n", "utf-8");
+      atomicWriteSync(outPath, snapshotLines.join("\n") + "\n", "utf-8");
       this.lastExportPath = outPath;
       this.exportStatus = "Snapshot saved";
     } else {

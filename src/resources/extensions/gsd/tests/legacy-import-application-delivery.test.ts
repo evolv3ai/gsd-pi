@@ -191,10 +191,11 @@ test("held writer lock is a typed retryable Application contention failure with 
   const before = logicalSnapshot();
   const blocker = createDbAdapter(new DatabaseSync(prepared.databasePath));
   let lockHeld = true;
+  let blockerOpen = true;
   blocker.exec("BEGIN IMMEDIATE");
   t.after(() => {
     if (lockHeld) blocker.exec("ROLLBACK");
-    blocker.close();
+    if (blockerOpen) blocker.close();
   });
   db().exec("PRAGMA busy_timeout = 1");
 
@@ -216,6 +217,8 @@ test("held writer lock is a typed retryable Application contention failure with 
 
   blocker.exec("ROLLBACK");
   lockHeld = false;
+  blocker.close();
+  blockerOpen = false;
   reopen(prepared.databasePath);
   assert.deepEqual(logicalSnapshot(), before);
 });

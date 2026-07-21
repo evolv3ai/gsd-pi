@@ -7,7 +7,6 @@ import {
   mkdirSync,
   readdirSync,
   renameSync,
-  rmSync,
 } from "node:fs";
 import { basename, join } from "node:path";
 
@@ -27,6 +26,7 @@ import {
   resolveTaskFile,
 } from "../../paths.js";
 import { isClosedStatus } from "../../status-guards.js";
+import { removeProjectionTreeSync } from "../../atomic-write.js";
 import { invalidateStateCache } from "../../state.js";
 import type { GSDState } from "../../types.js";
 import { isAfter, latestExplicitReopenAt } from "../../milestone-reopen-events.js";
@@ -475,7 +475,7 @@ export function repairArtifactDbDrift(
 ): void {
   if (record.kind === "disk-slice-id-divergence") {
     if (record.disposition === "delete-empty") {
-      rmSync(record.sliceDir, { recursive: true, force: true });
+      removeProjectionTreeSync(record.sliceDir);
     } else if (record.disposition === "quarantine-scaffold") {
       quarantineSliceDir(record, ctx.basePath);
     } else {
@@ -496,7 +496,7 @@ export function repairArtifactDbDrift(
       `${record.sliceId ? `/${record.sliceId}` : ""}` +
       `${record.taskId ? `/${record.taskId}` : ""}: ${record.reason}. ` +
       "Runtime will not silently import completion artifacts into DB state. " +
-      "Run `/gsd rebuild markdown` after review to quarantine stale projections and re-render from the DB; use `/gsd recover --confirm` only when markdown should repopulate a lost or corrupt DB.",
+      "Run `/gsd rebuild markdown` after review to quarantine stale projections and re-render from the DB; use `/gsd recover` with exact Preview approval only when markdown should repopulate a lost or corrupt DB.",
   );
 }
 
@@ -520,7 +520,7 @@ export function describeArtifactDbDriftBlocker(
     `${record.sliceId ? `/${record.sliceId}` : ""}` +
     `${record.taskId ? `/${record.taskId}` : ""}: ${record.reason}. ` +
     "Runtime will not silently import completion artifacts into DB state. " +
-    "Run `/gsd rebuild markdown` after review to quarantine stale projections and re-render from the DB; use `/gsd recover --confirm` only when markdown should repopulate a lost or corrupt DB."
+    "Run `/gsd rebuild markdown` after review to quarantine stale projections and re-render from the DB; use `/gsd recover` with exact Preview approval only when markdown should repopulate a lost or corrupt DB."
   );
 }
 

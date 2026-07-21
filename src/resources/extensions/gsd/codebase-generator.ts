@@ -9,7 +9,7 @@
  */
 
 import { createHash } from "node:crypto";
-import { existsSync, readFileSync, writeFileSync, mkdirSync } from "node:fs";
+import { existsSync, readFileSync, mkdirSync } from "node:fs";
 import { join, dirname, extname, relative, sep } from "node:path";
 
 import { execSync } from "node:child_process";
@@ -19,6 +19,7 @@ import {
   type RepositoryRegistry,
 } from "./repository-registry.js";
 import { loadEffectiveGSDPreferences } from "./preferences.js";
+import { atomicWriteSync } from "./atomic-write.js";
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -728,7 +729,7 @@ export function writeCodebaseMap(basePath: string, content: string): string {
   const root = gsdRoot(basePath);
   mkdirSync(root, { recursive: true });
   const outPath = join(root, "CODEBASE.md");
-  writeFileSync(outPath, content, "utf-8");
+  atomicWriteSync(outPath, content, "utf-8");
   clearFreshnessCache(basePath);
   return outPath;
 }

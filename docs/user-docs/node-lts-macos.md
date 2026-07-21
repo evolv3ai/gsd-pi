@@ -2,7 +2,7 @@
 
 If you installed Node.js via Homebrew (`brew install node`), you're tracking the **latest current release** — which can include odd-numbered development versions (e.g. 23.x, 25.x). These aren't LTS and may have breaking changes or instability.
 
-GSD requires Node.js **v22 or later** and works best on an **LTS (even-numbered) release**. This guide shows how to pin Node 24 LTS using Homebrew.
+GSD requires Node.js **v22.18.0 or later** and works best on an **LTS (even-numbered) release**. This guide shows how to pin Node 24 LTS using Homebrew.
 
 ## Check your current version
 

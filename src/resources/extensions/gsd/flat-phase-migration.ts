@@ -2,7 +2,7 @@
 // File Purpose: One-time migration from legacy nested .gsd/milestones/ to
 // flat-phase .gsd/phases/. Runs on startup when the legacy structure is detected.
 
-import { cpSync, existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, statSync } from "node:fs";
+import { cpSync, existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync } from "node:fs";
 import { join } from "node:path";
 
 import { renderAllFromDb, renderRoadmapFromDb } from "./markdown-renderer.js";
@@ -24,63 +24,41 @@ import {
   milestonesDir,
   resolveMilestonePath,
 } from "./paths.js";
+import {
+  copyProjectionTreeSync,
+  createProjectionDirectorySync,
+  removeProjectionFileSync,
+  removeProjectionTreeSync,
+} from "./atomic-write.js";
 
 const LEGACY_MIGRATING_SEGMENT = "milestones.migrating";
-const RETRYABLE_FS_ERROR_CODES = new Set(["EPERM", "EBUSY", "ENOTEMPTY"]);
 const RM_RETRY_OPTIONS = { recursive: true, force: true, maxRetries: 5, retryDelay: 100 } as const;
+type FlatPhaseMigrationStage = "before-remove" | "after-remove" | "before-move" | "after-move";
+let flatPhaseMigrationBoundaryForTest: ((stage: FlatPhaseMigrationStage, path: string) => void) | null = null;
 
-type FlatPhaseMigrationFsOps = {
-  cpSync: typeof cpSync;
-  renameSync: typeof renameSync;
-  rmSync: typeof rmSync;
-};
-
-let fsOps: FlatPhaseMigrationFsOps = { cpSync, renameSync, rmSync };
-
-export function _setFlatPhaseMigrationFsOpsForTest(
-  overrides: Partial<FlatPhaseMigrationFsOps>,
-): () => void {
-  const previous = fsOps;
-  fsOps = { ...fsOps, ...overrides };
-  return () => {
-    fsOps = previous;
-  };
+export function _setFlatPhaseMigrationBoundaryForTest(
+  boundary: ((stage: FlatPhaseMigrationStage, path: string) => void) | null,
+): void {
+  flatPhaseMigrationBoundaryForTest = boundary;
 }
 
 function legacyMigratingPath(basePath: string): string {
   return join(basePath, ".gsd", LEGACY_MIGRATING_SEGMENT);
 }
 
-function removePathWithRetries(path: string): void {
-  fsOps.rmSync(path, { recursive: true, force: true, maxRetries: RM_RETRY_OPTIONS.maxRetries, retryDelay: RM_RETRY_OPTIONS.retryDelay });
+function removeManagedPath(path: string): void {
+  flatPhaseMigrationBoundaryForTest?.("before-remove", path);
+  if (!existsSync(path)) return;
+  if (lstatSync(path).isDirectory()) removeProjectionTreeSync(path);
+  else removeProjectionFileSync(path);
+  flatPhaseMigrationBoundaryForTest?.("after-remove", path);
 }
 
-function isRetryableFsError(err: unknown): boolean {
-  const code = (err as { code?: unknown } | null)?.code;
-  return typeof code === "string" && RETRYABLE_FS_ERROR_CODES.has(code);
-}
-
-function movePathWithCopyDeleteFallback(src: string, dst: string): void {
-  try {
-    fsOps.renameSync(src, dst);
-    return;
-  } catch (err) {
-    if (!isRetryableFsError(err)) throw err;
-  }
-
-  try {
-    fsOps.cpSync(src, dst, { recursive: true, force: true });
-    removePathWithRetries(src);
-  } catch (fallbackErr) {
-    if (existsSync(src) && existsSync(dst)) {
-      try {
-        removePathWithRetries(dst);
-      } catch {
-        // Leave the original error intact; the next run can pre-clean dst.
-      }
-    }
-    throw fallbackErr;
-  }
+function moveManagedTree(src: string, dst: string): void {
+  flatPhaseMigrationBoundaryForTest?.("before-move", src);
+  copyProjectionTreeSync(src, dst);
+  removeProjectionTreeSync(src);
+  flatPhaseMigrationBoundaryForTest?.("after-move", src);
 }
 
 function expectedPhaseDirs(basePath: string): string[] {
@@ -195,9 +173,9 @@ function backupFlatProjectionIfPresent(basePath: string, phasesPath: string, bac
   try {
     mkdirSync(backupDir, { recursive: true });
     if (existsSync(phaseBackupDir)) {
-      removePathWithRetries(phaseBackupDir);
+      rmSync(phaseBackupDir, RM_RETRY_OPTIONS);
     }
-    fsOps.cpSync(phasesPath, phaseBackupDir, { recursive: true, force: true });
+    cpSync(phasesPath, phaseBackupDir, { recursive: true, force: true });
   } catch (err) {
     logWarning("migration", `flat-phase projection backup failed: ${(err as Error).message}`);
     throw err;
@@ -213,7 +191,7 @@ function removeFlatProjectionBackup(backupDir: string): void {
   const phaseBackupDir = join(backupDir, "__phases");
   if (!existsSync(phaseBackupDir)) return;
   try {
-    removePathWithRetries(phaseBackupDir);
+    rmSync(phaseBackupDir, { ...RM_RETRY_OPTIONS, force: true });
   } catch (err) {
     logWarning(
       "migration",
@@ -228,15 +206,16 @@ function restoreFlatProjectionFromBackup(basePath: string, backupDir: string): v
   const phasesPath = join(basePath, ".gsd", LAYOUT_SEGMENTS.level1);
   try {
     if (existsSync(phasesPath)) {
-      removePathWithRetries(phasesPath);
+      removeManagedPath(phasesPath);
     }
     mkdirSync(join(basePath, ".gsd"), { recursive: true });
-    cpSync(phaseBackupDir, phasesPath, { recursive: true });
+    copyProjectionTreeSync(phaseBackupDir, phasesPath);
   } catch (restoreErr) {
     logWarning(
       "migration",
       `rollback: could not restore ${LAYOUT_SEGMENTS.level1}/ from backup: ${(restoreErr as Error).message}`,
     );
+    throw restoreErr;
   }
 }
 
@@ -262,7 +241,7 @@ function rollbackPartialMigration(
 ): void {
   // Remove the partially-written phases/ dir.
   try {
-    removePathWithRetries(join(basePath, ".gsd", LAYOUT_SEGMENTS.level1));
+    removeManagedPath(join(basePath, ".gsd", LAYOUT_SEGMENTS.level1));
   } catch (removeErr) {
     logWarning(
       "migration",
@@ -279,7 +258,7 @@ function rollbackPartialMigration(
   const cleanupBackup = (): void => {
     if (!isDisposableBackup || !existsSync(backupDir)) return;
     try {
-      removePathWithRetries(backupDir);
+      rmSync(backupDir, { ...RM_RETRY_OPTIONS, force: true });
     } catch (cleanupErr) {
       logWarning(
         "migration",
@@ -292,21 +271,18 @@ function rollbackPartialMigration(
   const milestonesPath = join(basePath, ".gsd", "milestones");
   try {
     if (migratingPath && existsSync(migratingPath) && !existsSync(milestonesPath)) {
-      movePathWithCopyDeleteFallback(migratingPath, milestonesPath);
+      moveManagedTree(migratingPath, milestonesPath);
       restoreFlatProjectionFromBackup(basePath, backupDir);
       cleanupBackup();
       return;
     }
     if (existsSync(backupDir)) {
-      cpSync(backupDir, milestonesPath, {
-        recursive: true,
-        filter: (src) => !isInsideFlatProjectionBackup(backupDir, src),
-      });
+      copyProjectionTreeSync(backupDir, milestonesPath, src => !isInsideFlatProjectionBackup(backupDir, src));
       restoreFlatProjectionFromBackup(basePath, backupDir);
       cleanupBackup();
     }
     if (migratingPath && existsSync(migratingPath)) {
-      removePathWithRetries(migratingPath);
+      removeManagedPath(migratingPath);
     }
   } catch (restoreErr) {
     logWarning(
@@ -406,7 +382,7 @@ export async function migrateToFlatPhase(basePath: string): Promise<void> {
   ) {
     throw new Error(
       "flat-phase migration skipped: legacy markdown contains state absent from the canonical DB. " +
-      "Recommended: run `/gsd recover --confirm` to preview and import it explicitly.",
+      "Recommended: run `/gsd recover` and approve its exact Preview hash to import explicitly.",
     );
   }
 
@@ -419,7 +395,7 @@ export async function migrateToFlatPhase(basePath: string): Promise<void> {
     return;
   }
 
-  let backupDir = migratingPath;
+  let backupDir: string;
   let backupCreatedThisRun = false;
   if (!resumingInterrupted) {
     // 2. Backup (only reached when the DB has rows and migration will proceed).
@@ -449,16 +425,16 @@ export async function migrateToFlatPhase(basePath: string): Promise<void> {
     }
 
     if (existsSync(migratingPath)) {
-      removePathWithRetries(migratingPath);
+      removeManagedPath(migratingPath);
     }
 
-    // 3. Rename legacy tree aside before rendering so path resolvers target
+    // 3. Move the legacy tree aside before rendering so path resolvers target
     // phases/ instead of writing back into the nested milestones/ layout.
-    // Keep the full tree on disk until render+verify succeed (unlike rmSync).
+    // Keep the full tree on disk until render+verify succeed.
     try {
-      movePathWithCopyDeleteFallback(milestonesPath, migratingPath);
+      moveManagedTree(milestonesPath, migratingPath);
     } catch (err) {
-      logWarning("migration", `failed to rename legacy milestones/ before render: ${(err as Error).message}`);
+      logWarning("migration", `failed to move legacy milestones/ before render: ${(err as Error).message}`);
       throw err;
     }
   } else {
@@ -486,7 +462,7 @@ export async function migrateToFlatPhase(basePath: string): Promise<void> {
   // writes. Verification below checks the current DB render, not leftovers.
   try {
     backupFlatProjectionIfPresent(basePath, phasesPath, backupDir);
-    removePathWithRetries(phasesPath);
+    removeManagedPath(phasesPath);
   } catch (err) {
     logWarning("migration", `failed to clear stale phases/ before render: ${(err as Error).message}`);
     rollbackPartialMigration(basePath, backupDir, migratingPath, backupCreatedThisRun);
@@ -504,7 +480,7 @@ export async function migrateToFlatPhase(basePath: string): Promise<void> {
       if ("skipped" in roadmapResult) {
         const phaseDir = resolveMilestonePath(basePath, milestone.id) ??
           join(milestonesDir(basePath), canonicalPhaseDirName(milestone.id, milestone.title));
-        mkdirSync(phaseDir, { recursive: true });
+        createProjectionDirectorySync(phaseDir);
         continue;
       }
       renderResult.rendered++;
@@ -561,7 +537,7 @@ export async function migrateToFlatPhase(basePath: string): Promise<void> {
 
   // 7. Remove the renamed legacy tree (backup already on disk).
   try {
-    removePathWithRetries(migratingPath);
+    removeManagedPath(migratingPath);
   } catch (err) {
     logWarning(
       "migration",

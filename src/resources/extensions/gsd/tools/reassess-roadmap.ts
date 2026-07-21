@@ -1,4 +1,4 @@
-import { existsSync, unlinkSync } from "node:fs";
+import { existsSync } from "node:fs";
 import { isAbsolute, join } from "node:path";
 import {
   gsdProjectionRoot,
@@ -13,6 +13,7 @@ import { deriveCompatProjectionKey } from "../compat/compat-marker.js";
 import { clearParseCache } from "../files.js";
 import { isClosedStatus } from "../status-guards.js";
 import { isNonEmptyString } from "../validation.js";
+import { removeProjectionFileSync } from "../atomic-write.js";
 import {
   adoptLifecycleIfMissing,
   adoptOrTransitionLifecycle,
@@ -35,7 +36,7 @@ import {
   resolveAssessmentProjectionPath,
 } from "../markdown-renderer.js";
 import { flushWorkflowProjections } from "../projection-flush.js";
-import { writeManifest } from "../workflow-manifest.js";
+import { writeManifestAndFlush } from "../workflow-manifest.js";
 import { appendEvent } from "../workflow-events.js";
 import { logWarning } from "../workflow-logger.js";
 import {
@@ -506,7 +507,7 @@ export async function handleReassessRoadmap(
       ].filter((file): file is string => Boolean(file)));
       for (const validationFile of validationFiles) {
         try {
-          if (existsSync(validationFile)) unlinkSync(validationFile);
+          if (existsSync(validationFile)) removeProjectionFileSync(validationFile);
         } catch (e) {
           logWarning("tool", `validation file cleanup failed: ${(e as Error).message}`);
         }
@@ -520,7 +521,7 @@ export async function handleReassessRoadmap(
     // ── Post-mutation hook: projections, manifest, event log ─────
     try {
       await flushWorkflowProjections(basePath, { milestoneId: params.milestoneId });
-      writeManifest(basePath);
+      await writeManifestAndFlush(basePath);
       if (operationStatus === "committed") {
         appendEvent(basePath, {
           cmd: "reassess-roadmap",

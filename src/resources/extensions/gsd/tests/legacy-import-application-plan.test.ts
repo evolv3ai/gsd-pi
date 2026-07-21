@@ -247,6 +247,32 @@ describe("legacy import Application plan", () => {
     assert.equal(JSON.stringify(planValue.eventFacts).includes("raw-task"), false);
   });
 
+  test("compiles lifecycle shadow drift as a row repair without replacing canonical authority", () => {
+    const sourceValue = source("lifecycle-shadow-drift");
+    const planValue = compileLegacyImportApplicationPlan(artifact({
+      sources: [sourceValue],
+      changes: [change(
+        "task-status",
+        sourceValue,
+        "update",
+        { kind: "task", key: "M001/S01/T01", field: "status" },
+        "complete",
+      )],
+    }));
+
+    assert.deepEqual(planValue.instructions.map((instruction) => instruction.action), [
+      "update",
+      "adopt-lifecycle",
+    ]);
+    const rowRepair = planValue.instructions[0];
+    assert.ok(rowRepair?.action === "update");
+    assert.deepEqual(rowRepair.values, { status: "complete" });
+    const lifecycle = planValue.instructions[1];
+    assert.ok(lifecycle?.action === "adopt-lifecycle");
+    assert.equal(lifecycle.lifecycleAction, "update");
+    assert.equal(lifecycle.lifecycleStatus, "completed");
+  });
+
   test("orders hierarchy work, mirrors slice dependencies, and accounts preserves", () => {
     const nested = source("nested");
     const preserved = source("context", "preserved");
@@ -418,7 +444,7 @@ describe("legacy import Application plan", () => {
         "unequal lifecycle claims",
         [
           change("status-one", sourceValue, "create", { kind: "task-status", key: "M001/S01/T01" }, "planned"),
-          change("status-two", sourceValue, "update", { kind: "task", key: "M001/S01/T01", field: "status" }, "complete"),
+          change("status-two", sourceValue, "create", { kind: "task", key: "M001/S01/T01", field: "status" }, "complete"),
         ],
         "LEGACY_IMPORT_APPLICATION_MAPPING_INCONSISTENT",
       ],
@@ -587,9 +613,9 @@ describe("legacy import Application plan", () => {
     const planValue = compileLegacyImportApplicationPlan(artifact({
       sources: [sourceValue],
       changes: [
-        change("slice-status", sourceValue, "update", { kind: "slice-status", key: "M001/S01" }, "pending"),
-        change("task-status", sourceValue, "update", { kind: "task-status", key: "M000/S01/T01" }, "planned"),
-        change("milestone-status", sourceValue, "update", { kind: "milestone-status", key: "M999" }, "active"),
+        change("slice-status", sourceValue, "create", { kind: "slice-status", key: "M001/S01" }, "pending"),
+        change("task-status", sourceValue, "create", { kind: "task-status", key: "M000/S01/T01" }, "planned"),
+        change("milestone-status", sourceValue, "create", { kind: "milestone-status", key: "M999" }, "active"),
       ],
     }));
 

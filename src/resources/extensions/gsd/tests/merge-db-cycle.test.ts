@@ -143,19 +143,19 @@ test("mergeMilestoneToMain keeps the Windows DB cycle closed through squash merg
     const { repo, worktree } = createRepo(root);
     mkdirSync(join(repo, ".gsd"), { recursive: true });
 
-    withPlatform("win32", () => {
-      assert.equal(openDatabase(join(repo, ".gsd", "gsd.db")), true);
-      insertMilestone({ id: "M001", title: "Windows DB cycle", status: "complete" });
-      insertSlice({ id: "S01", milestoneId: "M001", title: "Done Slice", status: "complete" });
-      insertAssessment({
-        path: "milestones/M001/M001-VALIDATION.md",
-        milestoneId: "M001",
-        status: "pass",
-        scope: "milestone-validation",
-        fullContent: "verdict: pass",
-      });
-      assert.equal(existsSync(join(repo, ".gsd", "gsd.db-shm")), true);
+    assert.equal(openDatabase(join(repo, ".gsd", "gsd.db")), true);
+    insertMilestone({ id: "M001", title: "Windows DB cycle", status: "complete" });
+    insertSlice({ id: "S01", milestoneId: "M001", title: "Done Slice", status: "complete" });
+    insertAssessment({
+      path: "milestones/M001/M001-VALIDATION.md",
+      milestoneId: "M001",
+      status: "pass",
+      scope: "milestone-validation",
+      fullContent: "verdict: pass",
+    });
+    assert.equal(existsSync(join(repo, ".gsd", "gsd.db-shm")), true);
 
+    withPlatform("win32", () => {
       process.env.PATH = `${bin}${delimiter}${originalPath}`;
       gitEnv.PATH = process.env.PATH;
       process.chdir(worktree);

@@ -20,6 +20,7 @@ const nextConfig = {
     '@gsd/pi-agent-core',
     '@gsd/pi-coding-agent',
     '@gsd/agent-core',
+    'koffi',
     'node-pty',
     'proper-lockfile',
     // Cloud mode (ADR-047): the CloudTransport WebSocket client must load the
@@ -52,7 +53,15 @@ const nextConfig = {
         '@gsd/native': 'commonjs @gsd/native',
       });
       config.externals.push(({ request }, callback) => {
-        if (typeof request === 'string' && request.startsWith('node:')) {
+        if (
+          typeof request === 'string' &&
+          (
+            request.startsWith('node:') ||
+            request.startsWith('@gsd/native/') ||
+            request === 'koffi' ||
+            request.startsWith('koffi/')
+          )
+        ) {
           return callback(null, `commonjs ${request}`);
         }
         callback();

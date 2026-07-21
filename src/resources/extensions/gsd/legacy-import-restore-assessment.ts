@@ -1,6 +1,8 @@
 // Project/App: gsd-pi
 // File Purpose: Pure restore-window assessment after one explicit legacy Import Application.
 
+import { deepFreeze } from "./legacy-import-utils.js";
+
 import {
   isValidLegacyImportVerifiedBackup,
   verifyLegacyImportBackupArtifact,
@@ -174,13 +176,6 @@ function reachBoundary(point: RestoreAssessmentBoundaryPoint): void {
 
 function contractFail(message: string): never {
   throw new LegacyImportRestoreAssessmentError(message);
-}
-
-function deepFreeze<T>(value: T, seen = new Set<object>()): T {
-  if (value === null || typeof value !== "object" || seen.has(value)) return value;
-  seen.add(value);
-  for (const child of Object.values(value)) deepFreeze(child, seen);
-  return Object.freeze(value);
 }
 
 function isPlainRecord(value: unknown): value is Record<string, unknown> {
@@ -517,6 +512,16 @@ function terminalReceipt(identityHash: string): TerminalReceipt | null {
 }
 
 function applicationOperationIds(input: AssessmentInputSnapshot): string[] {
+  // Matching by preview_id OR preview_hash (plus the recorded identity hash)
+  // can return more than one Application. That is never two legitimate
+  // Applications of the same preview: workflow_import_applications declares
+  // preview_id and preview_hash UNIQUE, and both are content-derived over the
+  // same sealed preview envelope, so identical content always produces one
+  // identical (preview_id, preview_hash) pair matching exactly one row. A
+  // multi-row match therefore proves corrupt or fabricated evidence — a
+  // supplied identity split across two stored Applications, or a duplicated
+  // legacy-import.applied event carrying the identity hash — and the caller
+  // refuses below.
   return readTransaction(() => getDb().prepare(`
     SELECT operation_id FROM workflow_import_applications
     WHERE preview_id = :preview_id OR preview_hash = :preview_hash
@@ -756,17 +761,33 @@ function result(
 }
 
 function observedSchemaVersion(): number {
-  return Number(getDb().prepare("SELECT MAX(version) AS version FROM schema_version").get()?.["version"] ?? -1);
+  // A foreign or corrupt database may not carry the schema_version table at
+  // all; an unreadable version is reported as -1 so the caller still produces
+  // the structured unsupported-schema refusal instead of leaking a raw
+  // SQLite error.
+  try {
+    return Number(getDb().prepare("SELECT MAX(version) AS version FROM schema_version").get()?.["version"] ?? -1);
+  } catch {
+    return -1;
+  }
 }
 
 function unsupportedSchemaAssessment(
   input: AssessmentInputSnapshot,
   observedSchema: number,
 ): LegacyImportRestoreAssessment {
-  const authority = getDb().prepare(`
-    SELECT project_id, project_root_realpath, revision, authority_epoch
-    FROM project_authority WHERE singleton = 1
-  `).get();
+  // The same foreign/corrupt database may also lack project_authority; every
+  // fact below already degrades to an empty/-1 observation when the row is
+  // absent, so an unreadable table takes the same structured path.
+  let authority: Record<string, unknown> | undefined;
+  try {
+    authority = getDb().prepare(`
+      SELECT project_id, project_root_realpath, revision, authority_epoch
+      FROM project_authority WHERE singleton = 1
+    `).get();
+  } catch {
+    authority = undefined;
+  }
   const evidenceFacts: Omit<LegacyImportRestoreAssessmentFacts, "consentStatus"> = {
     expectedDatabaseSchemaVersion: SCHEMA_VERSION,
     observedDatabaseSchemaVersion: observedSchema,
@@ -879,6 +900,20 @@ export function assessLegacyImportRestore(value: unknown): LegacyImportRestoreAs
         "No Import Application was committed, so there is nothing to restore.", null));
   }
   if (operationIds.length !== 1) {
+    // DELIBERATE PERMANENT REFUSAL (do not "resolve" this into a pick):
+    // more than one Application matched the supplied identity. Under the
+    // schema invariants (UNIQUE preview_id, UNIQUE preview_hash, both
+    // content-derived from the same sealed preview envelope) two legitimate
+    // Applications can never share either value, so a fully consistent input
+    // matches exactly one row by lineage. A multi-row match means the
+    // evidence itself is corrupt or fabricated — a supplied identity split
+    // across two stored Applications, or a duplicated legacy-import.applied
+    // event carrying the identity hash under a second operation. Even when
+    // one candidate exactly matches the supplied identity, the presence of a
+    // second claimant means the durable evidence cannot be trusted, no retry
+    // can change that, and guessing one Application could authorize a
+    // destructive restore against the wrong lineage — so this stays
+    // refused/APPLICATION_EVIDENCE_INVALID until the evidence is repaired.
     const current = captureCurrentLegacyImportBaseSnapshot();
     return result(input, null, current, null, "refused", "application", "APPLICATION_EVIDENCE_INVALID", false,
       recommendation("inspect-evidence", "I recommend inspecting the Import Application evidence.",

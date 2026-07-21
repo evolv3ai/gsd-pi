@@ -348,4 +348,31 @@ describe("legacy knowledge, root projection, and worktree contributions", () => 
     assert.equal(notes?.parserId, "unclaimed");
     assert.equal(notes?.outcome, "mapped");
   });
+
+  test("contributes every milestone marker in a multi-worktree group", (t) => {
+    const { capture, copiedRoot } = captureFiles(t, "project", {
+      ".gsd-worktrees/M001/git-marker.txt": "gitdir: ../../../.git/worktrees/M001\n",
+      ".gsd-worktrees/M002/git-marker.txt": "gitdir: ../../../.git/worktrees/M002\n",
+      ".gsd/worktrees/M003/git-marker.txt": "gitdir: ../../../.git/worktrees/M003\n",
+    });
+    rmSync(copiedRoot, { recursive: true, force: true });
+    const files = decodeLegacyImportCapture(capture, {
+      sourceLabel: "worktree topology",
+      includes: (entry) => entry.kind !== "directory",
+      parserId: () => "unclaimed",
+      kind: () => "unclaimed",
+      parserVersion: "1",
+    });
+    const { candidates, diagnoses } = contributionArrays();
+    contributeLegacyWorktreeTopology(files, candidates, diagnoses, capture);
+    assert.deepEqual(
+      candidates.map((candidate) => candidate.target.key).sort(),
+      ["canonical/M001", "canonical/M002", "legacy/M003"],
+    );
+    assert.ok(
+      files.every((file) => file.outcome === "preserved"),
+      "no milestone marker may default to mapped without a candidate",
+    );
+    assert.deepEqual(diagnoses, []);
+  });
 });

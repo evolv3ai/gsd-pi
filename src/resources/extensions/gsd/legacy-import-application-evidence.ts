@@ -17,6 +17,7 @@ import {
   isValidLegacyImportPreviewArtifact,
   type LegacyImportPreviewArtifact,
 } from "./legacy-import-preview.js";
+import type { LegacyImportSha256 } from "./legacy-import-contract.js";
 
 type DbRow = Record<string, unknown>;
 
@@ -42,15 +43,15 @@ export interface LegacyImportApplicationEvidence {
   readonly baseAuthorityEpoch: number;
   readonly resultingAuthorityEpoch: number;
   readonly createdAt: string;
-  readonly applicationIdentityHash: string;
-  readonly previewInputHash: string;
-  readonly backupArtifactHash: string;
-  readonly backupId: string;
-  readonly applicationRelevantRowsHash: string;
+  readonly applicationIdentityHash: LegacyImportSha256;
+  readonly previewInputHash: LegacyImportSha256;
+  readonly backupArtifactHash: LegacyImportSha256;
+  readonly backupId: LegacyImportSha256;
+  readonly applicationRelevantRowsHash: LegacyImportSha256;
   readonly preview: Readonly<LegacyImportPreviewArtifact>;
   readonly plan: Readonly<LegacyImportApplicationPlan>;
   readonly backupRef: string;
-  readonly backupSha256: string;
+  readonly backupSha256: LegacyImportSha256;
   readonly backupByteSize: number;
   readonly backupSchemaVersion: number;
   readonly backupProjectRevision: number;
@@ -99,10 +100,10 @@ function text(value: unknown, field: string): string {
   return value;
 }
 
-function hash(value: unknown, field: string): string {
+function hash(value: unknown, field: string): LegacyImportSha256 {
   const result = nonBlank(value, field);
   if (!/^sha256:[0-9a-f]{64}$/.test(result)) invalid(`Import Application ${field} is invalid`);
-  return result;
+  return result as LegacyImportSha256;
 }
 
 function nonNegativeInteger(value: unknown, field: string): number {
@@ -249,6 +250,7 @@ function validateApplicationRow(row: DbRow): {
     "planSchemaVersion",
     "eventFacts",
     "projectionKeys",
+    "instructionResults",
   ])
     && payload["replayIdentitySchemaVersion"]
       === LEGACY_IMPORT_APPLICATION_REPLAY_IDENTITY_SCHEMA_VERSION

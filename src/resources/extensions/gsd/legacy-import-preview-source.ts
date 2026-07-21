@@ -1,5 +1,7 @@
 // Project/App: gsd-pi
 // File Purpose: Race-aware, no-follow byte capture for legacy import Preview sources.
+
+import { compareText, deepFreeze } from "./legacy-import-utils.js";
 // Trust model: declared roots are cooperative local inputs. Double capture and
 // identity checks reject ordinary drift; Node cannot provide portable openat
 // traversal against a hostile process coordinating path-swap/restore attacks.
@@ -25,6 +27,16 @@ const SOURCE_CAPTURE_VERSION = 1;
 const ROOT_ID_PATTERN = /^[a-z0-9]+(?:-[a-z0-9]+)*$/u;
 const ROOT_KEYS = ["id", "kind", "physical_path", "logical_path", "presence"] as const;
 
+// Generous bounds derived from realistic legacy trees (.gsd/.planning
+// documents, SQLite databases, and .gsd-worktrees working copies). Capture
+// holds every payload byte in memory, so unbounded trees must fail with a
+// typed error instead of exhausting memory or the call stack.
+const DEFAULT_CAPTURE_LIMITS = {
+  max_entries: 100_000,
+  max_total_bytes: 256 * 1024 * 1024,
+  max_depth: 128,
+} as const;
+
 export type LegacyImportSourceRootKind = "project" | "external" | "worktree";
 export type LegacyImportSourceRootPresence = "required" | "optional";
 export type LegacyImportSourceEntryKind = "directory" | "file" | "symlink";
@@ -39,6 +51,16 @@ export interface LegacyImportSourceRoot {
 
 export interface LegacyImportSourceCaptureInput {
   roots: readonly LegacyImportSourceRoot[];
+}
+
+export interface LegacyImportSourceCaptureLimits {
+  max_entries: number;
+  max_total_bytes: number;
+  max_depth: number;
+}
+
+export interface LegacyImportSourceCaptureOptions {
+  limits?: Partial<LegacyImportSourceCaptureLimits>;
 }
 
 export interface LegacyImportSourceCapturedRoot extends LegacyImportSourceRoot {
@@ -127,27 +149,18 @@ interface AllowedTargetRoot {
 
 interface CaptureState {
   hooks: LegacyImportSourceTestHooks;
+  limits: LegacyImportSourceCaptureLimits;
   allowedTargets: readonly AllowedTargetRoot[];
   entries: LegacyImportSourceEntry[];
   payloads: LegacyImportSourcePayload[];
   filePayloads: Map<string, CapturedFilePayload>;
   symlinkPayloads: Map<string, LegacyImportSourcePayload>;
+  totalPayloadBytes: number;
 }
 
 interface CapturedFilePayload {
   payload: LegacyImportSourcePayload;
   stable_stat: string;
-}
-
-function compareText(left: string, right: string): number {
-  return left < right ? -1 : left > right ? 1 : 0;
-}
-
-function deepFreeze<T>(value: T, seen = new Set<object>()): T {
-  if (value === null || typeof value !== "object" || seen.has(value)) return value;
-  seen.add(value);
-  for (const child of Object.values(value)) deepFreeze(child, seen);
-  return Object.freeze(value);
 }
 
 function sourceError(
@@ -183,6 +196,69 @@ function entryContext(
     logical_path: logicalPath,
     ...(operation === undefined ? {} : { operation }),
   };
+}
+
+function resolveCaptureLimits(options?: LegacyImportSourceCaptureOptions): LegacyImportSourceCaptureLimits {
+  const limits: LegacyImportSourceCaptureLimits = { ...DEFAULT_CAPTURE_LIMITS, ...options?.limits };
+  for (const [name, value] of Object.entries(limits)) {
+    if (!Number.isSafeInteger(value) || value < 1) {
+      throw sourceError(
+        "LEGACY_IMPORT_SOURCE_LIMITS_INVALID",
+        "legacy import source capture limits must be positive safe integers",
+        false,
+        { limit: name, value: String(value) },
+      );
+    }
+  }
+  return limits;
+}
+
+function pushEntry(state: CaptureState, root: LegacyImportSourceRoot, entry: LegacyImportSourceEntry): void {
+  if (state.entries.length >= state.limits.max_entries) {
+    throw sourceError(
+      "LEGACY_IMPORT_SOURCE_LIMIT_ENTRIES",
+      "legacy import source exceeds the entry capture limit",
+      false,
+      { ...entryContext(root, entry.logical_path, "limit-entries"), max_entries: String(state.limits.max_entries) },
+    );
+  }
+  state.entries.push(entry);
+}
+
+function accountPayloadBytes(
+  state: CaptureState,
+  root: LegacyImportSourceRoot,
+  logicalPath: string,
+  bytes: number,
+): void {
+  if (bytes > state.limits.max_total_bytes - state.totalPayloadBytes) {
+    throw sourceError(
+      "LEGACY_IMPORT_SOURCE_LIMIT_BYTES",
+      "legacy import source exceeds the total byte capture limit",
+      false,
+      {
+        ...entryContext(root, logicalPath, "limit-bytes"),
+        max_total_bytes: String(state.limits.max_total_bytes),
+      },
+    );
+  }
+  state.totalPayloadBytes += bytes;
+}
+
+function ensureWithinDepth(
+  state: CaptureState,
+  root: LegacyImportSourceRoot,
+  logicalPath: string,
+  depth: number,
+): void {
+  if (depth > state.limits.max_depth) {
+    throw sourceError(
+      "LEGACY_IMPORT_SOURCE_LIMIT_DEPTH",
+      "legacy import source exceeds the directory depth capture limit",
+      false,
+      { ...entryContext(root, logicalPath, "limit-depth"), max_depth: String(state.limits.max_depth) },
+    );
+  }
 }
 
 function requireValidLogicalPath(value: string): void {
@@ -407,6 +483,14 @@ function pinRoots(roots: readonly LegacyImportSourceRoot[]): {
       captured.push({ ...root, observed: "absent" });
       continue;
     }
+    if (stat.isSymbolicLink()) {
+      throw sourceError(
+        "LEGACY_IMPORT_SOURCE_ROOT_INVALID",
+        "legacy import source roots must be real files or directories, not symlinks",
+        false,
+        rootContext(root, "lstat"),
+      );
+    }
     const realPath = resolveRealPath(root, root.logical_path, root.physical_path);
     const pinned: PresentRoot = {
       ...root,
@@ -541,8 +625,9 @@ function captureDirectory(
   logicalPath: string,
   physicalPath: string,
   stat: BigIntStats,
+  depth: number,
 ): void {
-  state.entries.push({
+  pushEntry(state, root, {
     root_id: root.id,
     source_id: sourceId(root, logicalPath),
     logical_path: logicalPath,
@@ -559,6 +644,7 @@ function captureDirectory(
       `${physicalPath}${sep}${name}`,
       undefined,
       identity(stat),
+      depth + 1,
     );
   }
   const finalNames = readNames(root, logicalPath, physicalPath);
@@ -685,11 +771,13 @@ function captureFile(
   const physicalIdentity = identity(stat);
   let captured = state.filePayloads.get(physicalIdentity);
   if (captured === undefined) {
+    const byteSize = safeByteSize(stat.size, entryContext(root, logicalPath));
+    accountPayloadBytes(state, root, logicalPath, byteSize);
     const bytes = readRegularFile(root, logicalPath, physicalPath, stat, state.hooks);
     const payload: LegacyImportSourcePayload = {
       payload_id: payloadId("file", physicalIdentity),
       kind: "file",
-      byte_size: safeByteSize(stat.size, entryContext(root, logicalPath)),
+      byte_size: byteSize,
       sha256: hashLegacyImportBytes(bytes),
       bytes_base64: bytes.toString("base64"),
     };
@@ -708,7 +796,7 @@ function captureFile(
     }
   }
   const { payload } = captured;
-  state.entries.push({
+  pushEntry(state, root, {
     root_id: root.id,
     source_id: sourceId(root, logicalPath),
     logical_path: logicalPath,
@@ -816,6 +904,7 @@ function captureSymlink(
   const physicalIdentity = identity(stat);
   let payload = state.symlinkPayloads.get(physicalIdentity);
   if (payload === undefined) {
+    accountPayloadBytes(state, root, logicalPath, bytes.byteLength);
     payload = {
       payload_id: payloadId("symlink", physicalIdentity),
       kind: "symlink",
@@ -833,7 +922,7 @@ function captureSymlink(
       entryContext(root, logicalPath, "validate-symlink-alias"),
     );
   }
-  state.entries.push({
+  pushEntry(state, root, {
     root_id: root.id,
     source_id: sourceId(root, logicalPath),
     logical_path: logicalPath,
@@ -853,7 +942,9 @@ function captureEntry(
   physicalPath: string,
   knownStat?: BigIntStats,
   expectedParentIdentity?: string,
+  depth = 0,
 ): void {
+  ensureWithinDepth(state, root, logicalPath, depth);
   if (expectedParentIdentity !== undefined) {
     ensureParentUnchanged(root, logicalPath, physicalPath, expectedParentIdentity);
   }
@@ -872,7 +963,7 @@ function captureEntry(
     }
   }
   if (stat.isDirectory()) {
-    captureDirectory(state, root, logicalPath, physicalPath, stat);
+    captureDirectory(state, root, logicalPath, physicalPath, stat, depth);
     return;
   }
   if (stat.isFile()) {
@@ -894,19 +985,22 @@ function captureEntry(
 function captureLegacyImportSourceSetInternal(
   input: LegacyImportSourceCaptureInput,
   hooks: LegacyImportSourceTestHooks,
+  limits: LegacyImportSourceCaptureLimits,
 ): LegacyImportSourceCapture {
   const roots = validateRoots(input);
   const pinned = pinRoots(roots);
   const state: CaptureState = {
     hooks,
+    limits,
     allowedTargets: pinned.allowedTargets,
     entries: [],
     payloads: [],
     filePayloads: new Map(),
     symlinkPayloads: new Map(),
+    totalPayloadBytes: 0,
   };
   for (const root of pinned.present) {
-    captureEntry(state, root, root.logical_path, root.physical_path, root.stat);
+    captureEntry(state, root, root.logical_path, root.physical_path, root.stat, undefined, 0);
   }
   state.entries.sort((left, right) => compareText(left.logical_path, right.logical_path));
   state.payloads.sort((left, right) => compareText(left.payload_id, right.payload_id));
@@ -924,24 +1018,41 @@ function captureLegacyImportSourceSetInternal(
 
 export function captureLegacyImportSourceSet(
   input: LegacyImportSourceCaptureInput,
+  options?: LegacyImportSourceCaptureOptions,
 ): LegacyImportSourceCapture {
-  return captureStableLegacyImportSourceSet(input, {});
+  return captureStableLegacyImportSourceSet(input, {}, options);
+}
+
+function initialCapture(
+  input: LegacyImportSourceCaptureInput,
+  hooks: LegacyImportSourceTestHooks,
+  limits: LegacyImportSourceCaptureLimits,
+): { captureHash: LegacyImportSha256; roots: LegacyImportSourceRoot[] } {
+  const first = captureLegacyImportSourceSetInternal(input, hooks, limits);
+  hooks.after_initial_capture?.({ capture_hash: first.capture_hash });
+  // Return only the hash and root declarations so the first pass payloads are
+  // eligible for garbage collection before the confirmation pass runs; peak
+  // memory stays at one capture instead of two. Hashing the two passes
+  // incrementally would change the sealed capture_hash format, so the
+  // evidence layout is intentionally left unchanged.
+  return { captureHash: first.capture_hash, roots: declaredRoots(first.roots) };
 }
 
 function captureStableLegacyImportSourceSet(
   input: LegacyImportSourceCaptureInput,
   hooks: LegacyImportSourceTestHooks,
+  options?: LegacyImportSourceCaptureOptions,
 ): LegacyImportSourceCapture {
-  const first = captureLegacyImportSourceSetInternal(input, hooks);
-  hooks.after_initial_capture?.({ capture_hash: first.capture_hash });
-  const confirmed = captureLegacyImportSourceSetInternal({ roots: declaredRoots(first.roots) }, {});
-  if (confirmed.capture_hash !== first.capture_hash) {
+  const limits = resolveCaptureLimits(options);
+  const first = initialCapture(input, hooks, limits);
+  const confirmed = captureLegacyImportSourceSetInternal({ roots: first.roots }, {}, limits);
+  if (confirmed.capture_hash !== first.captureHash) {
     throw sourceError(
       "LEGACY_IMPORT_SOURCE_CAPTURE_CHANGED",
       "legacy import sources changed while the source set was being confirmed",
       true,
       {
-        first_capture_hash: first.capture_hash,
+        first_capture_hash: first.captureHash,
         confirmed_capture_hash: confirmed.capture_hash,
       },
     );
@@ -952,8 +1063,30 @@ function captureStableLegacyImportSourceSet(
 export function _captureLegacyImportSourceSetForTest(
   input: LegacyImportSourceCaptureInput,
   hooks: LegacyImportSourceTestHooks,
+  options?: LegacyImportSourceCaptureOptions,
 ): LegacyImportSourceCapture {
-  return captureStableLegacyImportSourceSet(input, hooks);
+  return captureStableLegacyImportSourceSet(input, hooks, options);
+}
+
+function revalidationOptions(capture: LegacyImportSourceCapture): LegacyImportSourceCaptureOptions {
+  const rootSegments = new Map(capture.roots.map((root) => [root.id, root.logical_path.split("/").length]));
+  let maxDepth = 1;
+  for (const entry of capture.entries) {
+    const depth = entry.logical_path.split("/").length - (rootSegments.get(entry.root_id) ?? 1);
+    maxDepth = Math.max(maxDepth, depth);
+  }
+  let totalBytes = 1;
+  for (const payload of capture.payloads) totalBytes += payload.byte_size;
+  // Revalidation must accept exactly what the original capture accepted, even
+  // when that capture ran with raised limits; any drift still fails the
+  // capture_hash comparison or a tighter bound, both of which fail closed.
+  return {
+    limits: {
+      max_entries: Math.max(capture.entries.length, 1),
+      max_total_bytes: totalBytes,
+      max_depth: maxDepth,
+    },
+  };
 }
 
 export function revalidateLegacyImportSourceSet(
@@ -961,7 +1094,10 @@ export function revalidateLegacyImportSourceSet(
 ): LegacyImportSourceCapture {
   let observed: LegacyImportSourceCapture;
   try {
-    observed = captureLegacyImportSourceSet({ roots: declaredRoots(capture.roots) });
+    observed = captureLegacyImportSourceSet(
+      { roots: declaredRoots(capture.roots) },
+      revalidationOptions(capture),
+    );
   } catch (error) {
     if (error instanceof LegacyImportSourceError && error.code === "LEGACY_IMPORT_SOURCE_CAPTURE_CHANGED") {
       throw new LegacyImportSourceError(

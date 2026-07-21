@@ -77,6 +77,7 @@ import {
 } from "./milestone-closeout.js";
 import type { AutoSession, SidecarItem } from "./auto/session.js";
 import { getEvidence, clearEvidenceFromDisk, isExecutionToolName } from "./safety/evidence-collector.js";
+import { removeProjectionFileSync } from "./atomic-write.js";
 import { validateFileChanges, effectiveFileChangeAllowlist } from "./safety/file-change-validator.js";
 import { crossReferenceEvidence, type ClaimedEvidence } from "./safety/evidence-cross-ref.js";
 import { validateContent } from "./safety/content-validator.js";
@@ -559,12 +560,12 @@ async function prepareHookRetry(
     await renderPlanCheckboxes(projectRoot, mid, sid);
 
     const summaryPath = resolveTaskArtifactPath(projectRoot, mid, sid, tid, "SUMMARY");
-    if (summaryPath && existsSync(summaryPath)) unlinkSync(summaryPath);
+    if (summaryPath && existsSync(summaryPath)) removeProjectionFileSync(summaryPath);
   }
 
   if (trigger.retryArtifact) {
     const retryArtifactPath = resolveHookArtifactPath(projectRoot, trigger.unitId, trigger.retryArtifact);
-    if (existsSync(retryArtifactPath)) unlinkSync(retryArtifactPath);
+    if (existsSync(retryArtifactPath)) removeProjectionFileSync(retryArtifactPath);
   }
   invalidateAllCaches();
   return "retry";
@@ -779,7 +780,7 @@ import {
   setAutoOutcomeWidget,
   type AutoOutcomeSurfaceSnapshot,
 } from "./auto-dashboard.js";
-import { appendFileSync, existsSync, mkdirSync, readFileSync, readdirSync, unlinkSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, readFileSync, readdirSync } from "node:fs";
 import { join, relative } from "node:path";
 import { _resetHasChangesCache } from "./native-git-bridge.js";
 import { autoCommitCurrentBranch } from "./worktree.js";

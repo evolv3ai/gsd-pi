@@ -6,11 +6,12 @@
 // v1 supports flat-phases; multi-milestone and legacy-milestone-dir are stubbed
 // with a clear error until fixtures exist to validate them.
 
-import { existsSync, mkdirSync, readFileSync, unlinkSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync } from "node:fs";
 import { join, relative } from "node:path";
 
 import { getAllMilestones, getMilestoneSlices, getSliceTasks } from "../gsd-db.js";
 import { saveFile } from "../files.js";
+import { removeProjectionFileSync } from "../atomic-write.js";
 import { isClosedStatus } from "../status-guards.js";
 import {
   computeProjectionSha,
@@ -47,7 +48,7 @@ function removeObsoletePlanningProjections(
     if (existsSync(absPath)) {
       const currentSha = computeProjectionSha(readFileSync(absPath, "utf8"));
       if (currentSha !== projection.sha) continue;
-      unlinkSync(absPath);
+      removeProjectionFileSync(absPath);
     }
     delete marker.planning.projections[relPath];
     changed = true;

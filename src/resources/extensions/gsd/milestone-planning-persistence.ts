@@ -24,7 +24,7 @@ import {
 import { invalidateStateCache } from "./state.js";
 import { renderRoadmapFromDb } from "./markdown-renderer.js";
 import { flushWorkflowProjections } from "./projection-flush.js";
-import { writeManifest } from "./workflow-manifest.js";
+import { writeManifestAndFlush } from "./workflow-manifest.js";
 import { appendEvent } from "./workflow-events.js";
 import { logWarning } from "./workflow-logger.js";
 import { isClosedStatus } from "./status-guards.js";
@@ -296,7 +296,7 @@ async function runPostPlanHooks(
 ): Promise<void> {
   try {
     await flushWorkflowProjections(basePath, { milestoneId: params.milestoneId });
-    writeManifest(basePath);
+    await writeManifestAndFlush(basePath);
     if (operationStatus === "committed") {
       appendEvent(basePath, {
         cmd: "plan-milestone",

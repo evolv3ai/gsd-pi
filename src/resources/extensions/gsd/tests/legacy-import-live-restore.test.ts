@@ -31,6 +31,7 @@ import {
 } from "../legacy-import-application.ts";
 import {
   _restoreLegacyImportLiveForTest,
+  replayLegacyImportLiveRestore,
   restoreLegacyImportLive,
   type LegacyImportLiveRestoreInput,
 } from "../legacy-import-live-restore.ts";
@@ -519,6 +520,66 @@ test("exact retry replays one durable restore without adding lineage", () => {
       (SELECT COUNT(*) FROM workflow_import_restores) AS receipts,
       (SELECT COUNT(*) FROM workflow_domain_events WHERE event_type = 'legacy-import.restored') AS events
   `).get(), countsBefore);
+});
+
+test("durable restore replay enforces the strict exact-keys contract", () => {
+  const prepared = preparedInput();
+  const committed = restoreLegacyImportLive(prepared.input);
+  const replayInput = {
+    applicationIdentityHash: prepared.input.applicationIdentityHash,
+    backup: prepared.input.backup,
+    consent: prepared.input.consent,
+  };
+  const replayed = replayLegacyImportLiveRestore(replayInput);
+  assert.equal(replayed.status, "replayed");
+  assert.equal(replayed.operationId, committed.operationId);
+
+  // Extra top-level keys and extra Consent keys were previously tolerated at
+  // this boundary while the live boundary rejected them; both must fail the
+  // exact contract.
+  for (const forged of [
+    { ...replayInput, tolerated: "extra-top-level-key" },
+    { ...replayInput, consent: { ...replayInput.consent, tolerated: "extra-consent-key" } },
+  ]) {
+    assert.throws(
+      () => replayLegacyImportLiveRestore(forged as never),
+      (error: unknown) => (error as { code?: unknown }).code
+        === "LEGACY_IMPORT_LIVE_RESTORE_CONTRACT_INVALID",
+    );
+  }
+});
+
+test("exact restore replay returns its durable receipt after later accepted work", () => {
+  const prepared = preparedInput();
+  const committed = restoreLegacyImportLive(prepared.input);
+  executeDomainOperation({
+    operationType: "milestone.describe",
+    idempotencyKey: `live-restore/later-work-${sequence}`,
+    expectedRevision: committed.resultingProjectRevision,
+    expectedAuthorityEpoch: committed.resultingAuthorityEpoch,
+    actorType: "agent",
+    sourceTransport: "internal",
+    payload: { milestoneId: "M-LATER" },
+  }, () => {
+    database().prepare(`INSERT INTO milestones (id, title, status, created_at)
+      VALUES ('M-LATER', 'Accepted after restore', 'active', '2026-07-18T00:00:00.000Z')`).run();
+    return {
+      events: [{
+        eventType: "milestone.described",
+        entityType: "milestone",
+        entityId: "M-LATER",
+        payload: { title: "Accepted after restore" },
+        destinations: ["projection"],
+      }],
+      projections: [{ projectionKey: "milestone/m-later", projectionKind: "markdown", rendererVersion: "v1" }],
+    };
+  });
+
+  const replayed = restoreLegacyImportLive(structuredClone(prepared.input));
+  assert.equal(replayed.status, "replayed");
+  assert.equal(replayed.operationId, committed.operationId);
+  assert.deepEqual(replayed.verification, committed.verification);
+  assert.equal(database().prepare("SELECT title FROM milestones WHERE id = 'M-LATER'").get()?.["title"], "Accepted after restore");
 });
 
 test("replacement closes tracked isolated connections before publishing a new inode", () => {

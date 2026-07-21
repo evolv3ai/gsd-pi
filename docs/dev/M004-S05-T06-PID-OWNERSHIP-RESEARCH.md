@@ -43,10 +43,13 @@ question of whether the original OS process instance still exists.
 Node documents signal `0` only as a platform-independent existence check. It
 does not identify which process instance occupies the PID
 ([Node 22 `process.kill`](https://nodejs.org/docs/latest-v22.x/api/process.html#processkillpid-signal)).
-The current live-restore check uses exactly that existence test
-([`legacy-import-live-restore.ts:636-640`](../../src/resources/extensions/gsd/legacy-import-live-restore.ts)).
-After the owner exits, the OS may assign that PID to an unrelated process; the
-intent can then remain fenced indefinitely.
+The live-restore check cited during this research used exactly that existence
+test; the shipped check
+([`legacy-import-live-restore.ts:672-680`](../../src/resources/extensions/gsd/legacy-import-live-restore.ts))
+now pairs PID existence with an equal kernel-recorded process-start identity,
+as this note recommends. After the owner exits, the OS may assign that PID to
+an unrelated process; without the start-identity comparison the intent could
+then remain fenced indefinitely.
 
 Node's `process.uptime()` only reports the current Node process's uptime. Node
 22 exposes no core API for another PID's start identity

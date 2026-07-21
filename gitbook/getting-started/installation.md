@@ -30,7 +30,7 @@ For automated or non-interactive installs:
 npx @opengsd/gsd-pi@latest --yes
 ```
 
-Requires **Node.js 22.0.0 or later** (24 LTS recommended) and **Git**.
+Requires **Node.js 22.18.0 or later** (24 LTS recommended) and **Git**.
 
 {% hint style="info" %}
 **`command not found: gsd`?** The guided installer warns if npm's global bin directory is not on `PATH`. Run `npm prefix -g` to find it, then add `$(npm prefix -g)/bin` to your PATH. See [Troubleshooting](../reference/troubleshooting.md) for details.

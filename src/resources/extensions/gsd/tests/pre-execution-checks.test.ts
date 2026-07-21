@@ -1267,7 +1267,7 @@ describe("checkTaskOrdering false positive regression (#3677)", () => {
       }),
     ];
 
-    const results = checkTaskOrdering(tasks, "/tmp");
+    const results = checkTaskOrdering(tasks, join(tmpdir(), `gsd-ordering-empty-${process.pid}`));
     assert.equal(results.length, 1, "task.inputs ordering violation must still be detected");
     assert.equal(results[0].blocking, true);
     assert.ok(results[0].message.includes("T01"));

@@ -21,6 +21,7 @@ import {
   type LegacyImportApplicationPlanInstruction,
   type LegacyImportApplicationRowInstruction,
 } from "../../legacy-import-application-plan.js";
+import { compareText } from "../../legacy-import-utils.js";
 import { LEGACY_IMPORT_TARGET_ADAPTERS } from "../../legacy-import-preview-classifier-targets.js";
 import {
   canonicalLegacyImportJson,
@@ -207,8 +208,8 @@ function preflight(plan: LegacyImportApplicationPlan): LegacyImportApplicationPl
     ) {
       preflightDecision(instruction);
     } else if (instruction.action === "adopt-lifecycle") {
-      if (instruction.lifecycleAction !== "create") {
-        fail("legacy import cannot update adopted canonical lifecycle authority");
+      if (instruction.lifecycleAction !== "create" && instruction.lifecycleAction !== "update") {
+        fail("legacy import lifecycle action is unsupported");
       }
       const hasSlice = typeof instruction.sliceId === "string" && instruction.sliceId.trim().length > 0;
       const hasTask = typeof instruction.taskId === "string" && instruction.taskId.trim().length > 0;
@@ -501,11 +502,13 @@ function replaceDependencies(
       (milestone_id, slice_id, depends_on_slice_id)
       VALUES (:milestone_id, :slice_id, :dependency)`).run({ ...params, ":dependency": dependency }));
   }
-  const observed = getDb().prepare(`SELECT depends_on_slice_id FROM slice_dependencies
-    WHERE milestone_id = :milestone_id AND slice_id = :slice_id ORDER BY depends_on_slice_id`).all(params) as DbRow[];
+  const observed = (getDb().prepare(`SELECT depends_on_slice_id FROM slice_dependencies
+    WHERE milestone_id = :milestone_id AND slice_id = :slice_id`).all(params) as DbRow[])
+    .map((row) => String(row["depends_on_slice_id"]))
+    .sort(compareText);
   if (
     inserted !== instruction.dependsOnSliceIds.length
-    || observed.map((row) => row["depends_on_slice_id"]).join("\0") !== instruction.dependsOnSliceIds.join("\0")
+    || observed.join("\0") !== [...instruction.dependsOnSliceIds].sort(compareText).join("\0")
   ) fail("legacy import slice dependency replacement did not produce the exact set");
   return resultFor(instruction, instruction.dependsOnSliceIds.length, deleted + inserted);
 }
@@ -520,6 +523,35 @@ function deleteDependencies(
     ":slice_id": instruction.sliceId,
   }));
   return resultFor(instruction, 0, affected);
+}
+
+function requireRetainedSliceDependencyIntegrity(
+  instructions: readonly LegacyImportApplicationPlanInstruction[],
+): void {
+  const milestoneIds = new Set<string>();
+  for (const instruction of instructions) {
+    if (instruction.action === "delete-slice-dependencies") milestoneIds.add(instruction.milestoneId);
+  }
+  if (milestoneIds.size === 0) return;
+  const retained = getDb().prepare("SELECT milestone_id, id, depends FROM slices").all() as DbRow[];
+  for (const row of retained) {
+    const milestoneId = String(row["milestone_id"]);
+    if (!milestoneIds.has(milestoneId)) continue;
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(String(row["depends"] ?? "[]"));
+    } catch {
+      fail("legacy import retained slice dependencies are invalid JSON");
+    }
+    if (!Array.isArray(parsed) || parsed.some((value) => typeof value !== "string")) {
+      fail("legacy import retained slice dependencies are not string IDs");
+    }
+    for (const dependency of parsed) {
+      if (!rowExists("slices", { milestone_id: milestoneId, id: dependency })) {
+        fail("legacy import retained slice depends on a deleted slice");
+      }
+    }
+  }
 }
 
 type DecisionAuthority =
@@ -749,7 +781,14 @@ function adoptLifecycle(
     lifecycleStatus: instruction.lifecycleStatus,
     occurredAt,
   });
-  if (!adopted.adopted || adopted.stateVersion !== 0 || adopted.lifecycleStatus !== instruction.lifecycleStatus) {
+  if (instruction.lifecycleAction === "update") {
+    if (adopted.adopted) fail("legacy import lifecycle shadow repair requires existing canonical authority");
+    if (adopted.lifecycleStatus !== instruction.lifecycleStatus) {
+      fail("legacy import lifecycle status does not match canonical authority");
+    }
+    return resultFor(instruction, 0, 0);
+  }
+  if (!adopted.adopted || adopted.stateVersion !== 0) {
     fail("legacy import lifecycle already exists or was not adopted exactly");
   }
   return resultFor(instruction, 1, 1);
@@ -782,6 +821,7 @@ export function applyLegacyImportApplicationPlan(
       instructionResults.push(resultFor(instruction, 0, 0));
     }
   }
+  requireRetainedSliceDependencyIntegrity(snapshot.instructions);
   return Object.freeze({ instructionResults: Object.freeze(instructionResults) });
 }
 

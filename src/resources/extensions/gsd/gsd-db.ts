@@ -848,7 +848,7 @@ export function claimEscalationOverride(
          AND escalation_override_applied_at IS NULL
          AND escalation_artifact_path IS NOT NULL`,
     ).run({ ":now": now, ":mid": milestoneId, ":sid": sliceId, ":tid": sourceTaskId });
-    // node:sqlite + better-sqlite3 both surface `changes` on the run result.
+    // node:sqlite surfaces `changes` on the run result.
     const changes = (result as { changes?: number }).changes ?? 0;
     return changes > 0;
   });
@@ -1734,8 +1734,8 @@ export function getArtifactsByPathPrefix(prefix: string): ArtifactRow[] {
 }
 
 /**
- * Drop hierarchy rows in dependency order inside a transaction. Used by
- * `gsd recover --confirm` to rebuild engine state from markdown.
+ * Legacy destructive hierarchy-reset helper. Explicit recovery does not call
+ * this; it applies a verified Import Application without clearing absent rows.
  */
 export function clearEngineHierarchy(): void {
   if (!getDbOrNull()!) throw new GSDError(GSD_STALE_STATE, "gsd-db: No database open");

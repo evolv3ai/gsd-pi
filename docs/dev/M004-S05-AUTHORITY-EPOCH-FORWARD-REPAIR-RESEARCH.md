@@ -116,39 +116,46 @@ them in a fresh process, cleans state, and leaves live authority untouched`
 proves exact live database bytes and lineage remain unchanged. This drill stays
 non-destructive after S05; it is not renamed or expanded into live restore.
 
-There is currently no function that assesses a live restore window or
-atomically installs a backup over the active project database.
+T04 shipped the missing assessor as the pure, read-only
+`assessLegacyImportRestore` in `legacy-import-restore-assessment.ts`, and T05
+shipped the single owner that atomically installs a backup over the active
+project database in `legacy-import-live-restore.ts`.
 
-### Recovery routes perform Import Application, not rollback
+### Recovery routes perform Import Application, then the assessed recovery action
 
 `applyVerifiedRecoverApplication` builds a fresh Preview, captures the current
 base, creates and drills a verified backup, then calls `applyLegacyImport`.
 Interactive `/gsd recover --confirm` and `gsd headless recover` both delegate to
-that boundary. They import modeled Markdown changes and preserve database-only
-rows. Despite the headless progress message mentioning a restore rehearsal,
-neither route restores the pre-import backup.
+that boundary, then pass the committed Application to
+`executeLegacyImportRecoveryAction`. They import modeled Markdown changes and
+preserve database-only rows. The default action is `assess`: the read-only
+restore assessor runs and the route states its recommendation in plain
+language. Only an explicit `--restore` with evidence-bound destructive Consent
+runs live restore, and only an explicit `--forward-repair` runs Forward Repair.
+Neither route infers a restore request from the word `recover`.
 
-S05 will keep Preview/Application as the explicit import route. Recovery after
-an Application will first call the read-only restore assessor and will state a
-recommendation in plain language. It will not infer a restore request from the
-word `recover`.
+S05 keeps Preview/Application as the explicit import route. Recovery after an
+Application always assesses first and never restores as part of the import
+itself.
 
-### Database handle seams exist, live replacement semantics do not
+### Live replacement semantics have exactly one owner
 
-The database engine already exposes global and isolated open, checkpoint,
-close, close-all, and refresh-from-disk operations. Those are process-handle
-mechanics, not a safe replacement protocol. There is no current owner for:
+The database engine exposes global and isolated open, checkpoint, close,
+close-all, and refresh-from-disk operations. Those remain process-handle
+mechanics, not a safe replacement protocol. T05 made
+`legacy-import-live-restore.ts` the sole crash-convergent owner of the complete
+replacement boundary:
 
 - cross-process quiescence across the final eligibility check and rename;
 - staging beside the live database;
 - WAL, SHM, and rollback-journal sidecar disposition;
 - file and parent-directory durability ordering;
 - a crash intent that distinguishes pre-publish from post-publish recovery;
-- independent reopen verification of the installed live file; or
+- independent reopen verification of the installed live file; and
 - an immutable receipt in the restored database for the erased Application.
 
-T05 will introduce one owner for that complete boundary rather than composing
-these low-level functions in command handlers.
+Command handlers call the public restore function; they never compose these
+low-level functions themselves.
 
 ### Existing recovery records are the wrong aggregate
 
@@ -388,7 +395,7 @@ legacy-corpus V45/V46 boundaries are executable tests.
    fencing, deterministic difference digest, stale-read barrier, terminal
    route recognition, and recommendation-led frozen results.)
 4. T05 implements one crash-safe eligible live restore and records erased
-   lineage in the restored database.
+   lineage in the restored database. (Completed.)
 5. T06 proves fault, SIGKILL, restart, stale-validator, and contention
    convergence.
 6. T07 builds three-way import Forward Repair against current canonical state.

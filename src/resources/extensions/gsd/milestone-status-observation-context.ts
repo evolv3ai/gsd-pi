@@ -30,6 +30,9 @@ export const MILESTONE_STATUS_OBSERVATION_PENDING_SOURCE_REVISION = "pending_cap
 
 const TURN_CONTEXT_KEY_PREFIX = "milestone-status-observation-turn:";
 const DEFAULT_TTL_MS = 60 * 60 * 1_000;
+const CONTEXT_RETRY_ATTEMPTS = 100;
+const CONTEXT_RETRY_MS = 10;
+const contextRetrySleep = new Int32Array(new SharedArrayBuffer(4));
 let _beforeObservationWriteForTest: (() => void) | null = null;
 const RUNTIME_MODES = new Set<MilestoneStatusRuntimeMode>([
   "auto",
@@ -136,6 +139,19 @@ function withContextWrite<T>(
   } finally {
     if (openedHere) closeDatabase();
   }
+}
+
+function retryContextOperation<T>(
+  operation: () => { available: true; value: T } | { available: false },
+): { available: true; value: T } | { available: false } {
+  for (let attempt = 0; attempt < CONTEXT_RETRY_ATTEMPTS; attempt++) {
+    const result = operation();
+    if (result.available) return result;
+    if (attempt + 1 < CONTEXT_RETRY_ATTEMPTS) {
+      Atomics.wait(contextRetrySleep, 0, 0, CONTEXT_RETRY_MS);
+    }
+  }
+  return { available: false };
 }
 
 function isOptionalNonblankString(value: unknown): value is string | undefined {
@@ -260,18 +276,18 @@ export function beginMilestoneStatusObservationTurn(
     startedAt: new Date(now).toISOString(),
     expiresAt: new Date(now + (options.ttlMs ?? DEFAULT_TTL_MS)).toISOString(),
   };
-  const scanned = withContextDatabase(databasePath, (database) =>
-    scavengeStoredTurns(database, databasePath, now)
+  const scanned = retryContextOperation(() =>
+    withContextDatabase(databasePath, (database) => scavengeStoredTurns(database, databasePath, now))
   );
   if (!scanned.available) return null;
   _beforeObservationWriteForTest?.();
-  const stored = withContextWrite(databasePath, () => {
+  const stored = retryContextOperation(() => withContextWrite(databasePath, () => {
     writeMilestoneStatusObservationTurn({
       key: turnKey(token),
       valueJson: JSON.stringify(turn),
       updatedAt: turn.startedAt,
     });
-  });
+  }));
   return stored.available ? token : null;
 }
 

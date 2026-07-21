@@ -45,7 +45,7 @@
     "configDir": ".gsd"
   },
   "engines": {
-    "node": ">=22.0.0"
+    "node": ">=22.18.0"
   },
   "packageManager": "pnpm@10.12.1",
   "scripts": {
@@ -106,6 +106,7 @@
     "secret-scan:install-hook": "node scripts/install-hooks.mjs",
     "build:native": "node native/scripts/build.js",
     "build:native:dev": "node native/scripts/build.js --dev",
+    "build:native:test": "node native/scripts/build.js --dev --test-fault-injection",
     "dev": "node scripts/dev.js",
     "gsd": "node scripts/dev-cli.js",
     "gsd:web": "pnpm run build:contracts && pnpm run build:pi && pnpm run copy-resources && node scripts/build-web-if-stale.cjs && node scripts/dev-cli.js --web",
@@ -124,6 +125,7 @@
     "prepack": "node scripts/prepack-resolve-workspace.cjs",
     "postpack": "node scripts/postpack-restore-workspace.cjs",
     "typecheck:extensions": "tsc --noEmit --project tsconfig.extensions.json",
+    "verify:gsd-projection-mutations": "node scripts/check-gsd-projection-mutations.mjs",
     "audit:test-confidence": "node scripts/audit-test-confidence.mjs",
     "audit:test-gaps": "node scripts/audit-test-gaps.mjs",
     "audit:test-matrix": "node scripts/audit-test-matrix.mjs",

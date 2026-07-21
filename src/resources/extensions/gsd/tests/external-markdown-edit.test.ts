@@ -161,7 +161,7 @@ test("modeled drift blocks with an explicit route and cannot run repair", async 
   const blocker = await externalMarkdownEditHandler.blocker?.(drift1[0], ctx(base));
   assert.match(blocker ?? "", /database is authoritative/i);
   assert.match(blocker ?? "", /\/gsd rebuild markdown/);
-  assert.match(blocker ?? "", /\/gsd recover --confirm/);
+  assert.match(blocker ?? "", /\/gsd recover/);
   assert.throws(
     () => externalMarkdownEditHandler.repair(drift1[0], ctx(base)),
     /modeled projection repair must remain blocked/,

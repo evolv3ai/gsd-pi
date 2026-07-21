@@ -2,7 +2,7 @@
 // Generate shareable reports of milestone work in JSON or markdown format.
 
 import type { ExtensionCommandContext } from "@gsd/pi-coding-agent";
-import { writeFileSync, mkdirSync } from "node:fs";
+import { mkdirSync } from "node:fs";
 import { join, basename } from "node:path";
 import { execFile } from "node:child_process";
 import {
@@ -17,6 +17,7 @@ import { isDbAvailable } from "./gsd-db.js";
 import { openExistingWorkflowDatabase } from "./db-workspace.js";
 import { getActiveMemories, getActiveMemoriesRanked } from "./memory-store.js";
 import type { MemoryInfo } from "./visualizer-data.js";
+import { atomicWriteSync } from "./atomic-write.js";
 
 const EXPORT_MEMORY_LIMIT = 20;
 const EXPORT_MEMORY_CONTENT_LIMIT = 2000;
@@ -148,7 +149,7 @@ export function writeExportFile(
       units,
     };
     const outPath = join(exportDir, `export-${timestamp}.json`);
-    writeFileSync(outPath, JSON.stringify(report, null, 2) + "\n", "utf-8");
+    atomicWriteSync(outPath, JSON.stringify(report, null, 2) + "\n", "utf-8");
     return outPath;
   } else {
     const totals = visualizerData?.totals ?? getProjectTotals(units);
@@ -187,7 +188,7 @@ export function writeExportFile(
     ].join("\n");
 
     const outPath = join(exportDir, `export-${timestamp}.md`);
-    writeFileSync(outPath, md, "utf-8");
+    atomicWriteSync(outPath, md, "utf-8");
     return outPath;
   }
 }
@@ -353,7 +354,7 @@ export async function handleExport(args: string, ctx: ExtensionCommandContext, b
       units,
     };
     const outPath = join(exportDir, `export-${timestamp}.json`);
-    writeFileSync(outPath, JSON.stringify(report, null, 2) + "\n", "utf-8");
+    atomicWriteSync(outPath, JSON.stringify(report, null, 2) + "\n", "utf-8");
     ctx.ui.notify(`Exported to ${fileLink(outPath)}`, "success");
   } else {
     const totals = getProjectTotals(units);
@@ -399,7 +400,7 @@ export async function handleExport(args: string, ctx: ExtensionCommandContext, b
     ].join("\n");
 
     const outPath = join(exportDir, `export-${timestamp}.md`);
-    writeFileSync(outPath, md, "utf-8");
+    atomicWriteSync(outPath, md, "utf-8");
     ctx.ui.notify(`Exported to ${fileLink(outPath)}`, "success");
   }
 }

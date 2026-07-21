@@ -7,6 +7,7 @@ export interface MigrationBackupDeps {
   existsSync(path: string): boolean;
   copyFileSync(src: string, dest: string): void;
   logWarning(scope: string, message: string): void;
+  allowMissingSchemaVersion?: boolean;
 }
 
 /** Marks pre-migration backup failures so DB-open recovery cannot mask them. */
@@ -41,7 +42,7 @@ export function backupDatabaseBeforeMigration(
     const backupPath = `${dbPath}.backup-v${currentVersion}`;
     checkpointWal(db);
     deps.copyFileSync(dbPath, backupPath);
-    verifyBackup(db, backupPath, currentVersion);
+    verifyBackup(db, backupPath, currentVersion, deps.allowMissingSchemaVersion === true);
   } catch (backupErr) {
     const error = toMigrationBackupError(backupErr);
     deps.logWarning("db", `Pre-migration backup failed: ${error.message}`);
@@ -49,7 +50,7 @@ export function backupDatabaseBeforeMigration(
   }
 }
 
-function verifyBackup(db: DbAdapter, backupPath: string, currentVersion: number): void {
+function verifyBackup(db: DbAdapter, backupPath: string, currentVersion: number, allowMissingSchemaVersion: boolean): void {
   let attached = false;
   try {
     db.prepare("ATTACH DATABASE ? AS migration_backup").run(backupPath);
@@ -57,6 +58,18 @@ function verifyBackup(db: DbAdapter, backupPath: string, currentVersion: number)
     const check = db.prepare("PRAGMA migration_backup.quick_check").get()?.["quick_check"];
     if (check !== "ok") {
       throw new MigrationBackupError(`backup failed quick_check: ${String(check)}`);
+    }
+    if (allowMissingSchemaVersion) {
+      const metadata = db.prepare(`
+        SELECT 1 AS present
+        FROM migration_backup.sqlite_master
+        WHERE type = 'table' AND name = 'schema_version'
+      `).get();
+      if (!metadata?.["present"]) return;
+      const version = db.prepare(
+        "SELECT MAX(version) AS version FROM migration_backup.schema_version",
+      ).get()?.["version"];
+      if (typeof version !== "number") return;
     }
     const version = Number(
       db.prepare("SELECT MAX(version) AS version FROM migration_backup.schema_version").get()?.["version"],

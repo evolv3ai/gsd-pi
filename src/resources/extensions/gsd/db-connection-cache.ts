@@ -34,8 +34,8 @@ export class DbConnectionCache {
   closeNonActive(activeDb: DbAdapter | null, closeEntry: (entry: DbConnectionCacheEntry) => void): void {
     for (const [key, entry] of this.entries) {
       if (entry.db === activeDb) continue;
-      this.entries.delete(key);
       closeEntry(entry);
+      this.entries.delete(key);
     }
   }
 }

@@ -2,11 +2,8 @@
 //
 // `checkpointDatabase` / `closeDatabase` / `vacuumDatabase` in db/engine.ts are
 // the highest-frequency runtime paths (called every turn and at closeout).
-// Each wraps its destructive PRAGMA in a try/catch that emits a `db` warning so
-// a failed checkpoint/vacuum/close never breaks orchestration but is still
-// observable. The existing gsd-db tests only assert the *happy* path (WAL gets
-// truncated); no test exercises any of these catch branches, so a regression
-// that drops or misroutes the warning would pass silently.
+// Explicit checkpoint/vacuum maintenance and connection close failures remain
+// observable without making close itself a database mutation boundary.
 //
 // This file pins the log output for the three checkpoint/vacuum/close failure
 // branches by stubbing the live adapter's `exec`/`close` to throw on demand.
@@ -18,7 +15,12 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 
 import { checkpointDatabase, closeDatabase, openDatabase, vacuumDatabase, _getAdapter } from "../gsd-db.ts";
-import { readTransaction } from "../db/engine.ts";
+import {
+  readTransaction,
+  transaction,
+  _openCorrelatedRawDatabaseForTest,
+} from "../db/engine.ts";
+import { GSDError, GSD_STALE_STATE } from "../errors.ts";
 import {
   drainLogs,
   peekLogs,
@@ -104,36 +106,42 @@ test("vacuumDatabase logs a `db` warning when VACUUM throws", () => {
   }
 });
 
-test("closeDatabase logs `db` warnings when WAL checkpoint and close throw on teardown", () => {
+test("closeDatabase retains ownership when close throws", () => {
   const base = makeBase();
   assert.equal(openDatabase(join(base, ".gsd", "gsd.db")), true);
   const adapter = _getAdapter();
   assert.ok(adapter);
-  // Break both the WAL checkpoint and the final close. The incremental_vacuum
-  // pragma is left intact so we can assert the checkpoint/close warnings land
-  // without the teardown itself exploding mid-way.
-  const restoreExec = breakExecOn(adapter!, "wal_checkpoint");
   const origClose = adapter!.close.bind(adapter!);
   adapter!.close = (): void => {
     throw new Error("forced close failure");
   };
 
-  const { logs } = captureLogs(() => closeDatabase());
-  restoreExec();
+  assert.throws(() => captureLogs(() => closeDatabase()), /forced close failure/);
   adapter!.close = origClose;
 
   try {
-    const messages = logs.filter((e) => e.component === "db").map((e) => e.message);
-    assert.ok(
-      messages.some((m) => /WAL checkpoint failed/u.test(m)),
-      "WAL checkpoint failure must be logged during close",
-    );
-    assert.ok(
-      messages.some((m) => /database close failed/u.test(m)),
-      "close failure must be logged during close",
-    );
-    // closeDatabase must fully reset engine state even when teardown steps throw.
-    assert.equal(_getAdapter(), null, "engine must release the adapter after a broken close");
+    assert.equal(_getAdapter(), adapter, "engine must retain the adapter after a broken close");
+  } finally {
+    closeDatabase();
+    rmSync(base, { recursive: true, force: true });
+  }
+});
+
+test("closeDatabase closes the connection without running maintenance", () => {
+  const base = makeBase();
+  assert.equal(openDatabase(join(base, ".gsd", "gsd.db")), true);
+  const adapter = _getAdapter();
+  assert.ok(adapter);
+  const statements: string[] = [];
+  const originalExec = adapter!.exec.bind(adapter!);
+  adapter!.exec = (sql: string): void => {
+    statements.push(sql);
+    originalExec(sql);
+  };
+
+  try {
+    closeDatabase();
+    assert.deepEqual(statements, [], "connection close must not checkpoint or vacuum");
   } finally {
     closeDatabase();
     rmSync(base, { recursive: true, force: true });
@@ -179,6 +187,71 @@ test("readTransaction logs a db error when ROLLBACK fails after a read error (sp
     assert.equal(err!.message, "snapshotState ROLLBACK failed");
     assert.match(err!.context?.error ?? "", /forced failure for: ROLLBACK/u);
   } finally {
+    rmSync(base, { recursive: true, force: true });
+  }
+});
+
+test("openCorrelatedRawDatabase degrades a null provider handle without leaking the identity capture", () => {
+  const base = makeBase();
+  try {
+    const dbPath = join(base, ".gsd", "gsd.db");
+    // providerLoader.openRaw() returns null when no SQLite provider is
+    // available. The open path must surface that as { raw: null } so the
+    // caller's `if (!rawDb) return false` guard runs, instead of dying on
+    // createDbAdapter(null).exec and then escaping through a second TypeError
+    // from null.close() before the identity capture is released.
+    const result = _openCorrelatedRawDatabaseForTest(dbPath, () => null);
+    assert.equal(result.raw, null);
+    assert.equal(result.identity, undefined);
+  } finally {
+    rmSync(base, { recursive: true, force: true });
+  }
+});
+
+test("openCorrelatedRawDatabase surfaces the correlation failure even when handle close throws", () => {
+  const base = makeBase();
+  try {
+    const dbPath = join(base, ".gsd", "gsd.db");
+    // exec fails during open correlation and close() throws too. The identity
+    // capture must still be released (try/finally — the leak is an open file
+    // handle on Windows) and the caller must see the correlation GSDError,
+    // not the secondary close failure.
+    const raw = {
+      exec(): void { throw new Error("correlation exec blew up"); },
+      close(): void { throw new Error("handle close blew up"); },
+    };
+    assert.throws(
+      () => _openCorrelatedRawDatabaseForTest(dbPath, () => raw),
+      (error: unknown) => {
+        assert.ok(error instanceof GSDError, "must surface the correlation GSDError, not the close failure");
+        assert.equal(error.code, GSD_STALE_STATE);
+        assert.match(error.message, /Database path changed while its handle opened/u);
+        return true;
+      },
+    );
+  } finally {
+    rmSync(base, { recursive: true, force: true });
+  }
+});
+
+test("checkpointDatabase and vacuumDatabase defer gracefully inside an open transaction", () => {
+  const base = makeBase();
+  assert.equal(openDatabase(join(base, ".gsd", "gsd.db")), true);
+  try {
+    const { logs } = captureLogs(() => {
+      transaction(() => {
+        // BEGIN IMMEDIATE inside an open transaction would fail raw with
+        // "cannot start a transaction within a transaction" — maintenance must
+        // defer with a warning instead of throwing out of the caller.
+        checkpointDatabase();
+        vacuumDatabase();
+      });
+    });
+    const skipped = logs.filter((e) => e.component === "db" && e.severity === "warn"
+      && /skipped inside an open transaction/u.test(e.message));
+    assert.equal(skipped.length, 2, "both maintenance calls must defer with a db warning");
+  } finally {
+    closeDatabase();
     rmSync(base, { recursive: true, force: true });
   }
 });

@@ -1,6 +1,8 @@
 // Project/App: gsd-pi
 // File Purpose: Context-bound writers for project authority and import recovery receipts.
 
+import { randomUUID } from "node:crypto";
+
 import type {
   DomainOperationContext,
   ImportRestoreReceiptContract,
@@ -193,6 +195,10 @@ function sortedEntries(record: SqlRecord): Array<[string, null | number | string
   ));
 }
 
+function compareText(left: string, right: string): number {
+  return left < right ? -1 : left > right ? 1 : 0;
+}
+
 function whereClause(record: SqlRecord, params: Record<string, unknown>): string {
   return sortedEntries(record).map(([field, value], index) => {
     const parameter = `:identity_${index}`;
@@ -201,9 +207,11 @@ function whereClause(record: SqlRecord, params: Record<string, unknown>): string
   }).join(" AND ");
 }
 
-function rowTable(mutation: Extract<LegacyImportForwardRepairMutation, {
+type ForwardRepairRowMutation = Extract<LegacyImportForwardRepairMutation, {
   action: "create" | "update" | "delete";
-}>): string {
+}>;
+
+function rowTable(mutation: ForwardRepairRowMutation): string {
   const adapter = Object.values(LEGACY_IMPORT_TARGET_ADAPTERS)
     .find((candidate) => candidate.rowSet === mutation.rowSet);
   const table = FORWARD_REPAIR_TABLES[mutation.rowSet as keyof typeof FORWARD_REPAIR_TABLES];
@@ -215,9 +223,73 @@ function rowTable(mutation: Extract<LegacyImportForwardRepairMutation, {
   return table;
 }
 
-function applyRowMutation(mutation: Extract<LegacyImportForwardRepairMutation, {
-  action: "create" | "update" | "delete";
-}>): void {
+// Mirror of the Import Application writer's hierarchy delete guard
+// (requireSafeHierarchyDelete in db/writers/legacy-import-application.ts): a row
+// the import created may have acquired canonical history since. Deleting it
+// would silently strand history tables without foreign keys and hit raw
+// constraint violations on the rest, so the repair must stop deterministically
+// and leave the row for a later plan instead of executing the delete.
+function requireSafeRepairDelete(mutation: ForwardRepairRowMutation): void {
+  const rowSet = mutation.rowSet;
+  if (rowSet !== "milestones" && rowSet !== "slices" && rowSet !== "tasks") return;
+  const milestoneId = String(mutation.identity["milestone_id"] ?? mutation.identity["id"]);
+  const sliceId = rowSet === "milestones"
+    ? undefined
+    : String(mutation.identity["slice_id"] ?? mutation.identity["id"]);
+  const taskId = rowSet === "tasks" ? String(mutation.identity["id"]) : undefined;
+  const params: Record<string, unknown> = { ":milestone_id": milestoneId };
+  const predicates = ["milestone_id = :milestone_id"];
+  if (sliceId !== undefined) {
+    predicates.push("slice_id = :slice_id");
+    params[":slice_id"] = sliceId;
+  }
+  if (taskId !== undefined) {
+    predicates.push("task_id = :task_id");
+    params[":task_id"] = taskId;
+  }
+  const scoped = predicates.join(" AND ");
+  if (getDb().prepare(`SELECT 1 FROM workflow_item_lifecycles WHERE ${scoped} LIMIT 1`).get(params)) {
+    throw new Error("Forward Repair cannot delete hierarchy with adopted lifecycle history");
+  }
+  for (const table of [
+    "unit_dispatches", "verification_evidence", "quality_gates", "gate_runs", "replan_history",
+    "rework_briefs", "milestone_commit_attributions", "artifacts", "assessments",
+  ]) {
+    if (getDb().prepare(`SELECT 1 FROM ${table} WHERE ${scoped} LIMIT 1`).get(params)) {
+      throw new Error(`Forward Repair cannot delete hierarchy with retained ${table} history`);
+    }
+  }
+  if (rowSet === "milestones"
+    && getDb().prepare(`SELECT 1 FROM milestone_leases WHERE ${scoped} LIMIT 1`).get(params)) {
+    throw new Error("Forward Repair cannot delete a leased milestone");
+  }
+  const entityId = [milestoneId, sliceId, taskId].filter((value) => value !== undefined).join("/");
+  if (getDb().prepare(`SELECT 1 FROM workflow_domain_events
+    WHERE project_id = (SELECT project_id FROM project_authority WHERE singleton = 1)
+      AND entity_type IN ('milestone', 'slice', 'task')
+      AND (entity_id = :entity_id OR substr(entity_id, 1, length(:descendant)) = :descendant)
+    LIMIT 1`).get({
+    ":entity_id": entityId,
+    ":descendant": `${entityId}/`,
+  })) throw new Error("Forward Repair cannot delete hierarchy with immutable domain history");
+  if (rowSet === "milestones") {
+    if (getDb().prepare("SELECT 1 FROM slices WHERE milestone_id = :milestone_id LIMIT 1").get(params)) {
+      throw new Error("Forward Repair milestone still has child slices");
+    }
+  } else if (rowSet === "slices") {
+    if (getDb().prepare(`SELECT 1 FROM tasks
+      WHERE milestone_id = :milestone_id AND slice_id = :slice_id LIMIT 1`).get(params)) {
+      throw new Error("Forward Repair slice still has child tasks");
+    }
+    if (getDb().prepare(`SELECT 1 FROM slice_dependencies
+      WHERE milestone_id = :milestone_id
+        AND (slice_id = :slice_id OR depends_on_slice_id = :slice_id) LIMIT 1`).get(params)) {
+      throw new Error("Forward Repair slice still has dependency references");
+    }
+  }
+}
+
+function applyRowMutation(mutation: ForwardRepairRowMutation): void {
   const table = rowTable(mutation);
   const params: Record<string, unknown> = {};
   let result: unknown;
@@ -233,6 +305,7 @@ function applyRowMutation(mutation: Extract<LegacyImportForwardRepairMutation, {
       SET ${values.map(([field]) => `${field} = :${field}`).join(", ")}
       WHERE ${whereClause(mutation.identity, params)}`).run(params);
   } else {
+    requireSafeRepairDelete(mutation);
     result = getDb().prepare(`DELETE FROM ${table}
       WHERE ${whereClause(mutation.identity, params)}`).run(params);
   }
@@ -255,10 +328,14 @@ function applyDependencyMutation(
     if (changes(inserted) !== 1) throw new Error("Forward Repair dependency insertion was not exact");
   }
   const observed = getDb().prepare(`SELECT depends_on_slice_id FROM slice_dependencies
-    WHERE milestone_id = :milestone_id AND slice_id = :slice_id
-    ORDER BY depends_on_slice_id`).all(params);
-  if (canonicalLegacyImportJson(observed.map((row) => row["depends_on_slice_id"]) as LegacyImportValue)
-    !== canonicalLegacyImportJson([...mutation.dependsOnSliceIds])) {
+    WHERE milestone_id = :milestone_id AND slice_id = :slice_id`).all(params);
+  // Compare both sides in JS code-unit order: SQLite BINARY collation orders by
+  // UTF-8 bytes, which diverges from UTF-16 code units outside the BMP, so
+  // relying on ORDER BY for only one side would make exactness collation-dependent.
+  const observedIds = observed.map((row) => String(row["depends_on_slice_id"])).sort(compareText);
+  const expectedIds = [...mutation.dependsOnSliceIds].sort(compareText);
+  if (canonicalLegacyImportJson(observedIds as LegacyImportValue)
+    !== canonicalLegacyImportJson(expectedIds as LegacyImportValue)) {
     throw new Error("Forward Repair dependency replacement was not exact");
   }
 }
@@ -314,6 +391,64 @@ function applyDecisionMutation(
   if (changes(result) !== 1) throw new Error("Forward Repair decision memory restore was not exact");
 }
 
+function applyLifecycleMutation(
+  context: Readonly<DomainOperationContext>,
+  mutation: Extract<LegacyImportForwardRepairMutation, { action: "cancel-imported-lifecycle" }>,
+  repairedAt: string,
+): void {
+  const result = getDb().prepare(`UPDATE workflow_item_lifecycles
+    SET lifecycle_status = 'cancelled', state_version = state_version + 1,
+        updated_at = :updated_at, last_operation_id = :operation_id,
+        last_project_revision = :project_revision, last_authority_epoch = :authority_epoch
+    WHERE project_id = :project_id AND item_kind = :item_kind
+      AND milestone_id = :milestone_id AND slice_id IS :slice_id AND task_id IS :task_id
+      AND lifecycle_status = :expected_status AND state_version = :expected_state_version
+      AND last_operation_id = :expected_last_operation_id`).run({
+    ":updated_at": repairedAt,
+    ":operation_id": context.operationId,
+    ":project_revision": context.resultingRevision,
+    ":authority_epoch": context.resultingAuthorityEpoch,
+    ":project_id": context.projectId,
+    ":item_kind": mutation.itemKind,
+    ":milestone_id": mutation.milestoneId,
+    ":slice_id": mutation.sliceId,
+    ":task_id": mutation.taskId,
+    ":expected_status": mutation.expectedStatus,
+    ":expected_state_version": mutation.expectedStateVersion,
+    ":expected_last_operation_id": mutation.expectedLastOperationId,
+  });
+  if (changes(result) !== 1) throw new Error("Forward Repair lifecycle cancellation was not exact");
+}
+
+function createCancelledLifecycle(
+  context: Readonly<DomainOperationContext>,
+  mutation: Extract<LegacyImportForwardRepairMutation, { action: "create-cancelled-lifecycle" }>,
+  repairedAt: string,
+): void {
+  const result = getDb().prepare(`INSERT INTO workflow_item_lifecycles (
+      lifecycle_id, project_id, item_kind, milestone_id, slice_id, task_id,
+      lifecycle_status, state_version, created_at, updated_at,
+      last_operation_id, last_project_revision, last_authority_epoch
+    ) VALUES (
+      :lifecycle_id, :project_id, :item_kind, :milestone_id, :slice_id, :task_id,
+      'cancelled', 0, :created_at, :updated_at,
+      :operation_id, :project_revision, :authority_epoch
+    )`).run({
+    ":lifecycle_id": randomUUID(),
+    ":project_id": context.projectId,
+    ":item_kind": mutation.itemKind,
+    ":milestone_id": mutation.milestoneId,
+    ":slice_id": mutation.sliceId,
+    ":task_id": mutation.taskId,
+    ":created_at": repairedAt,
+    ":updated_at": repairedAt,
+    ":operation_id": context.operationId,
+    ":project_revision": context.resultingRevision,
+    ":authority_epoch": context.resultingAuthorityEpoch,
+  });
+  if (changes(result) !== 1) throw new Error("Forward Repair lifecycle tombstone was not inserted exactly once");
+}
+
 export function applyImportForwardRepairPlan(
   context: Readonly<DomainOperationContext>,
   plan: Readonly<LegacyImportForwardRepairPlan>,
@@ -334,6 +469,13 @@ export function applyImportForwardRepairPlan(
     || typeof operation["created_at"] !== "string"
   ) throw new Error("Forward Repair authority fence does not match its plan");
   const repairedAt = String(operation["created_at"]);
+  // Application plans assemble non-delete mutations parent-first (with slice
+  // dependency writes ahead of row deletes) and deletes child-first at the end
+  // (see legacy-import-application-plan.ts). Targets mirror that instruction
+  // order, so applying them in reverse restores deleted rows parent-first and
+  // reverts created rows child-first after dependencies are restored;
+  // requireSafeRepairDelete relies on children already being gone when a
+  // parent delete is guarded and executed. Do not reorder.
   for (const entry of [...plan.targets].reverse()) {
     const mutation = entry.mutation;
     if (!mutation) continue;
@@ -341,6 +483,10 @@ export function applyImportForwardRepairPlan(
       applyRowMutation(mutation);
     } else if (mutation.action === "replace-slice-dependencies") {
       applyDependencyMutation(mutation);
+    } else if (mutation.action === "cancel-imported-lifecycle") {
+      applyLifecycleMutation(context, mutation, repairedAt);
+    } else if (mutation.action === "create-cancelled-lifecycle") {
+      createCancelledLifecycle(context, mutation, repairedAt);
     } else {
       applyDecisionMutation(mutation, repairedAt);
     }

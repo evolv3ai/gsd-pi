@@ -1,6 +1,8 @@
 // Project/App: gsd-pi
 // File Purpose: Immutable v1 contract for a verified legacy-import database backup.
 
+import { deepFreeze } from "./legacy-import-utils.js";
+
 import { createHash, randomUUID as createRandomUUID, type Hash } from "node:crypto";
 import {
   closeSync,
@@ -19,6 +21,8 @@ import {
   type BigIntStats,
 } from "node:fs";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
+
+import { syncDirectoryEntry } from "@gsd/native/directory-sync";
 
 import {
   LEGACY_IMPORT_BASE_DATABASE_SCHEMA_VERSION,
@@ -63,8 +67,17 @@ const VERIFIED_BACKUP_SCHEMA_VERSION = 1 as const;
 const SHA256_PATTERN = /^sha256:[0-9a-f]{64}$/u;
 const BACKUP_LABEL_PATTERN = /^[a-z0-9]+(?:-[a-z0-9]+)*$/u;
 const CHECKPOINT_ATTEMPT_LIMIT = 3;
+const CHECKPOINT_RETRY_DELAY_MS = 25;
 const SNAPSHOT_FILE_NAME = "snapshot.sqlite";
 const SNAPSHOT_READ_BUFFER_SIZE = 64 * 1024;
+const STALE_STAGING_UUID_PATTERN = /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/u;
+
+// Block the thread briefly between retries without spinning the CPU, matching
+// the synchronous retry pattern used by the file lock.
+function sleepSync(ms: number): void {
+  if (ms <= 0) return;
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+}
 const BACKUP_PREFLIGHT_INPUT_KEYS = [
   "preview",
   "base",
@@ -374,13 +387,6 @@ function hasValidBackupStructure(value: unknown): value is LegacyImportVerifiedB
   } catch {
     return false;
   }
-}
-
-function deepFreeze<T>(value: T, seen = new Set<object>()): T {
-  if (value === null || typeof value !== "object" || seen.has(value)) return value;
-  seen.add(value);
-  for (const child of Object.values(value)) deepFreeze(child, seen);
-  return Object.freeze(value);
 }
 
 function validatePreviewAndBase(
@@ -971,6 +977,7 @@ function checkpointDatabase(db: DbAdapter): LegacyImportBackupCheckpoint {
           { attempts, busy, log, checkpointed },
         );
       }
+      sleepSync(attempts * CHECKPOINT_RETRY_DELAY_MS);
       continue;
     }
     if (log === -1 && checkpointed === -1) {
@@ -1635,17 +1642,20 @@ function confirmSnapshotFile(
   return confirmed;
 }
 
-function flushAndHashSnapshot(
-  staging: Pick<LegacyImportBackupPrivateStaging, "path">,
+function hashSnapshotPass(
+  path: string,
   expected: LegacyImportBackupSnapshotFileState,
   ops: LegacyImportBackupSnapshotOps,
-  synchronize = true,
+  synchronize: boolean,
 ): { sha256: LegacyImportSha256; state: LegacyImportBackupSnapshotFileState } {
   let fd: number;
   try {
+    // The flush pass opens read-write because fsync on Windows
+    // (FlushFileBuffers) requires a handle with GENERIC_WRITE. Read-only
+    // verification passes keep O_RDONLY so read-only artifacts stay verifiable.
     fd = openSync(
-      staging.path,
-      fsConstants.O_RDONLY | (fsConstants.O_NOFOLLOW ?? 0),
+      path,
+      (synchronize ? fsConstants.O_RDWR : fsConstants.O_RDONLY) | (fsConstants.O_NOFOLLOW ?? 0),
     );
   } catch {
     preflightFail(
@@ -1800,6 +1810,33 @@ function flushAndHashSnapshot(
   }
   if (thrown !== undefined) throw thrown;
   return result!;
+}
+
+function flushAndHashSnapshot(
+  staging: Pick<LegacyImportBackupPrivateStaging, "path">,
+  expected: LegacyImportBackupSnapshotFileState,
+  ops: LegacyImportBackupSnapshotOps,
+  synchronize = true,
+): { sha256: LegacyImportSha256; state: LegacyImportBackupSnapshotFileState } {
+  const first = hashSnapshotPass(staging.path, expected, ops, synchronize);
+  // A same-size in-place rewrite during the first read leaves identity and byte
+  // size unchanged, and on coarse-granularity filesystems leaves mtime/ctime
+  // unchanged too, so timestamps alone cannot prove the bytes we hashed are the
+  // bytes on disk. Re-read the file independently: a stable snapshot must hash
+  // identically and keep the same identity, otherwise it was mutated or
+  // replaced while being captured.
+  const second = hashSnapshotPass(staging.path, first.state, ops, false);
+  if (
+    second.sha256 !== first.sha256
+    || !sameSnapshotFileState(second.state, first.state)
+  ) {
+    preflightFail(
+      "snapshot",
+      "LEGACY_IMPORT_BACKUP_SNAPSHOT_INVALID",
+      "legacy import backup snapshot changed while being hashed",
+    );
+  }
+  return first;
 }
 
 function normalizeSnapshotFailure(error: unknown): LegacyImportBackupError {
@@ -2017,6 +2054,7 @@ function requireOwnedSnapshot(
 function requireRollbackJournalHeader(
   path: string,
   expected: LegacyImportBackupSnapshotFileState,
+  ops: Pick<LegacyImportBackupSnapshotOps, "read">,
 ): void {
   let fd: number;
   try {
@@ -2028,7 +2066,7 @@ function requireRollbackJournalHeader(
   try {
     const before = fstatSync(fd, { bigint: true });
     const header = new Uint8Array(20);
-    const bytesRead = readSync(fd, header, 0, header.length, 0);
+    const bytesRead = ops.read(fd, header, 0, header.length);
     const after = fstatSync(fd, { bigint: true });
     if (
       bytesRead !== header.length
@@ -2129,7 +2167,7 @@ function runIndependentVerification(
   const db = connection.db;
   try {
     return readIndependentDatabaseTransaction(db, () => {
-      const openedPath = requireOnlyMainDatabase(db, expectedPath);
+      requireOnlyMainDatabase(db, connection.openedPath ?? expectedPath);
       requireExactlyOk(db, "quick_check");
       requireExactlyOk(db, "integrity_check");
       if (db.prepare("PRAGMA foreign_key_check").all().length !== 0) {
@@ -2162,7 +2200,7 @@ function runIndependentVerification(
           },
         );
       }
-      return { base: independentBase, openedPath };
+      return { base: independentBase, openedPath: expectedPath };
     }, () => {
       verificationFail(
         "LEGACY_IMPORT_BACKUP_TRANSACTION_FAILED",
@@ -2198,7 +2236,7 @@ export function _verifyLegacyImportBackupSnapshotForTest(
   const staging = privateStagingFrom(input.snapshot);
   try {
     const before = requireOwnedSnapshot(input.snapshot, ops);
-    requireRollbackJournalHeader(input.snapshot.staging_path, before);
+    requireRollbackJournalHeader(input.snapshot.staging_path, before, ops);
 
     let connection: SqliteReadOnlyConnection;
     try {
@@ -2258,7 +2296,7 @@ export function _verifyLegacyImportBackupSnapshotForTest(
     if (connectionFailure !== undefined) throw connectionFailure;
 
     const after = requireOwnedSnapshot(input.snapshot, ops);
-    requireRollbackJournalHeader(input.snapshot.staging_path, after);
+    requireRollbackJournalHeader(input.snapshot.staging_path, after, ops);
     return deepFreeze({
       snapshot: input.snapshot,
       independent_base: independentBase!,
@@ -2400,7 +2438,7 @@ function inspectBackupArtifact(
       { backup_ref: backup.backup_ref },
     );
   }
-  requireRollbackJournalHeader(backup.backup_ref, evidence.state);
+  requireRollbackJournalHeader(backup.backup_ref, evidence.state, ops);
   requireArtifactSidecarsAbsent(backup.backup_ref, ops.lstat);
   return evidence.state;
 }
@@ -2489,6 +2527,7 @@ export function verifyLegacyImportBackupArtifact(
 }
 
 const BACKUP_PREPARATION_ATTEMPT_LIMIT = 3;
+const BACKUP_PREPARATION_RETRY_DELAY_MS = 50;
 const BACKUP_SIDECAR_SUFFIXES = ["-journal", "-shm", "-wal"] as const;
 
 export interface LegacyImportBackupPreparationDependencies {
@@ -2518,7 +2557,7 @@ interface LegacyImportBackupPreparationOps extends LegacyImportBackupSnapshotOps
 }
 
 function preparationFail(
-  stage: "source" | "metadata" | "publication" | "sync",
+  stage: "source" | "metadata" | "publication" | "sync" | "destination",
   code: LegacyImportBackupErrorCode,
   message: string,
   context: Readonly<Record<string, LegacyImportValue>> = {},
@@ -2527,37 +2566,18 @@ function preparationFail(
   throw new LegacyImportBackupError(code, message, context, stage, retryable);
 }
 
-function isUnsupportedDirectorySync(error: unknown): boolean {
-  const code = systemErrorCode(error);
-  return code === "EINVAL"
-    || code === "ENOTSUP"
-    || (process.platform === "win32" && (code === "EISDIR" || code === "EPERM"));
-}
-
 function syncDirectory(path: string): "synced" | "unsupported" {
-  let fd: number;
-  try {
-    fd = openSync(path, fsConstants.O_RDONLY | (fsConstants.O_DIRECTORY ?? 0));
-  } catch (error) {
-    if (isUnsupportedDirectorySync(error)) return "unsupported";
-    throw error;
+  if (process.platform === "win32") {
+    syncDirectoryEntry(path);
+    return "synced";
   }
-  let failure: unknown;
-  let result: "synced" | "unsupported" = "synced";
+  const fd = openSync(path, fsConstants.O_RDONLY | (fsConstants.O_DIRECTORY ?? 0));
   try {
     fsyncSync(fd);
-  } catch (error) {
-    if (isUnsupportedDirectorySync(error)) result = "unsupported";
-    else failure = error;
   } finally {
-    try {
-      closeSync(fd);
-    } catch (error) {
-      failure = error;
-    }
+    closeSync(fd);
   }
-  if (failure !== undefined) throw failure;
-  return result;
+  return "synced";
 }
 
 function preparationOps(
@@ -2803,7 +2823,7 @@ function requirePublishedExact(
       || evidence.state.byteSize !== snapshot.backup_byte_size
       || !sameIdentity(evidence.state.identity, state.identity)
     ) throw new Error("published bytes changed");
-    requireRollbackJournalHeader(finalPath, evidence.state);
+    requireRollbackJournalHeader(finalPath, evidence.state, ops);
     requireNoPublishedSidecars(finalPath, ops);
     return evidence.state;
   } catch (error) {
@@ -2868,6 +2888,12 @@ function verifyExistingPublishedBackup(
       verificationFail(
         "LEGACY_IMPORT_BACKUP_CLOSE_FAILED",
         "existing verified backup failed read-only configuration and close",
+      );
+    }
+    if (error instanceof SqliteReadOnlyConfigurationError) {
+      verificationFail(
+        "LEGACY_IMPORT_BACKUP_READ_ONLY_CONFIGURATION_FAILED",
+        "existing verified backup could not enforce read-only safeguards",
       );
     }
     preparationFail(
@@ -2936,7 +2962,9 @@ function syncPublishedDirectory(
 ): void {
   requirePublicationDestinationPin(preflight, finalPath, ops);
   try {
-    ops.syncDirectory(preflight.destination_directory);
+    if (ops.syncDirectory(preflight.destination_directory) !== "synced") {
+      throw new Error("directory durability is unavailable");
+    }
   } catch {
     preparationFail(
       "sync",
@@ -2965,6 +2993,41 @@ function cleanupPreparedSnapshot(
   }
 }
 
+function requireFinalDestinationNotAliasingDatabase(
+  finalPath: string,
+  databaseIdentity: LegacyImportBackupFileIdentity,
+  ops: LegacyImportBackupPreparationOps,
+): void {
+  let leaf: BigIntStats;
+  try {
+    leaf = ops.lstat(finalPath);
+  } catch (error) {
+    if (systemErrorCode(error) === "ENOENT") return;
+    preparationFail(
+      "publication",
+      "LEGACY_IMPORT_BACKUP_PUBLICATION_FAILED",
+      "legacy import backup published name could not be inspected before publication",
+      { final_path: finalPath },
+    );
+  }
+  let targetIdentity = fileIdentity(leaf);
+  if (leaf.isSymbolicLink()) {
+    try {
+      targetIdentity = fileIdentity(statSync(finalPath, { bigint: true }));
+    } catch {
+      // A dangling link still reserves the final path and fails the link attempt.
+    }
+  }
+  if (sameIdentity(targetIdentity, databaseIdentity)) {
+    preparationFail(
+      "publication",
+      "LEGACY_IMPORT_BACKUP_DESTINATION_ALIASES_DATABASE",
+      "legacy import backup published name aliases the live database",
+      { final_path: finalPath },
+    );
+  }
+}
+
 function publishPreparedBackup(
   input: LegacyImportBackupPreflightInput,
   preflight: LegacyImportBackupPreflight,
@@ -2977,6 +3040,7 @@ function publishPreparedBackup(
   requirePublicationDestinationPin(preflight, finalPath, ops);
   const staged = requireOwnedSnapshot(verification.snapshot, ops, false);
   requireNoPublishedSidecars(finalPath, ops);
+  requireFinalDestinationNotAliasingDatabase(finalPath, preflight.database_identity, ops);
 
   let disposition: LegacyImportBackupPublicationDisposition = "published";
   try {
@@ -3035,6 +3099,66 @@ function normalizePreparationFailure(error: unknown): LegacyImportBackupError {
   );
 }
 
+function sweepStaleStagingDirectories(
+  preflight: LegacyImportBackupPreflight,
+  ops: LegacyImportBackupPreparationOps,
+): void {
+  let entries: string[];
+  try {
+    entries = readdirSync(preflight.destination_directory);
+  } catch {
+    preparationFail(
+      "destination",
+      "LEGACY_IMPORT_BACKUP_DESTINATION_INVALID",
+      "legacy import backup destination could not be swept for stale staging directories",
+      { destination_directory: preflight.destination_directory },
+      true,
+    );
+  }
+  const prefix = `.${preflight.label}.staging-`;
+  for (const entry of entries) {
+    if (!entry.startsWith(prefix) || !STALE_STAGING_UUID_PATTERN.test(entry.slice(prefix.length))) {
+      continue;
+    }
+    const stalePath = join(preflight.destination_directory, entry);
+    let stat: BigIntStats;
+    try {
+      stat = ops.lstat(stalePath);
+    } catch (error) {
+      if (systemErrorCode(error) === "ENOENT") continue;
+      throw new LegacyImportBackupError(
+        "LEGACY_IMPORT_BACKUP_STAGING_CLEANUP_FAILED",
+        "legacy import backup stale staging directory could not be inspected",
+        { staging_directory: stalePath },
+        "cleanup",
+        false,
+      );
+    }
+    if (!stat.isDirectory() || stat.isSymbolicLink()) {
+      throw new LegacyImportBackupError(
+        "LEGACY_IMPORT_BACKUP_STAGING_CLEANUP_FAILED",
+        "legacy import backup stale staging name does not reference an owned directory",
+        { staging_directory: stalePath },
+        "cleanup",
+        false,
+      );
+    }
+    try {
+      ops.removeStagingDirectory(stalePath);
+      requireStagingAbsent(stalePath, ops);
+    } catch (error) {
+      if (error instanceof LegacyImportBackupError) throw error;
+      throw new LegacyImportBackupError(
+        "LEGACY_IMPORT_BACKUP_STAGING_CLEANUP_FAILED",
+        "legacy import backup stale staging directory could not be removed",
+        { staging_directory: stalePath },
+        "cleanup",
+        false,
+      );
+    }
+  }
+}
+
 export function _prepareLegacyImportBackupForTest(
   value: LegacyImportBackupPreflightInput,
   dependencies: LegacyImportBackupPreparationDependencies,
@@ -3045,6 +3169,7 @@ export function _prepareLegacyImportBackupForTest(
     let snapshot: LegacyImportBackupSnapshot | null = null;
     try {
       const preflight = dependencies.preparePreflight(input);
+      sweepStaleStagingDirectories(preflight, ops);
       snapshot = dependencies.createSnapshot(preflight);
       const verification = dependencies.verifySnapshot({
         preview: input.preview,
@@ -3077,6 +3202,7 @@ export function _prepareLegacyImportBackupForTest(
         }
       }
       if (!failure.retryable || attempt === BACKUP_PREPARATION_ATTEMPT_LIMIT) throw failure;
+      sleepSync(attempt * BACKUP_PREPARATION_RETRY_DELAY_MS);
     }
   }
   throw new Error("unreachable legacy import backup preparation state");

@@ -1,5 +1,5 @@
-import { existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { existsSync, readFileSync, unlinkSync } from "node:fs";
+import { join } from "node:path";
 
 import { atomicWriteSync } from "./atomic-write.js";
 import {
@@ -71,8 +71,7 @@ function isProjectResearchDimensionSatisfied(dir: string, name: ProjectResearchD
 
 function writeIfMissing(path: string, content: string): boolean {
   if (existsSync(path)) return false;
-  mkdirSync(dirname(path), { recursive: true });
-  writeFileSync(path, content, "utf-8");
+  atomicWriteSync(path, content, "utf-8");
   return true;
 }
 
@@ -200,7 +199,6 @@ export function finalizeProjectResearchTimeout(
   reason: string,
 ): ProjectResearchFinalizeOutcome {
   const dir = researchDir(basePath);
-  mkdirSync(dir, { recursive: true });
   clearProjectResearchInflightMarker(basePath);
 
   const before = getProjectResearchStatus(basePath);

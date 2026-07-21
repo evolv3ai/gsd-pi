@@ -7,7 +7,6 @@ import {
   existsSync,
   mkdtempSync,
   mkdirSync,
-  promises as fsPromises,
   readFileSync,
   rmSync,
   unlinkSync,
@@ -21,6 +20,7 @@ import {
   _setDomainOperationFaultForTest,
   executeDomainOperation,
 } from "../db/domain-operation.js";
+import { _setManagedMutationBoundaryForTest } from "../atomic-write.js";
 import { clearParseCache } from "../files.js";
 import {
   _getAdapter,
@@ -439,6 +439,7 @@ function settlementState(): Record<string, unknown> {
 
 afterEach(() => {
   _setDomainOperationFaultForTest(null);
+  _setManagedMutationBoundaryForTest(null);
   closeDatabase();
   clearPathCache();
   clearParseCache();
@@ -541,15 +542,13 @@ test("changed stage replay payload conflicts without restaging Task metadata or 
   assert.deepEqual(settlementState(), before);
 });
 
-test("a summary projection failure leaves the immutable Result and staged legacy state intact for replay repair", async (t) => {
+test("a summary projection failure leaves the immutable Result and staged legacy state intact for replay repair", async () => {
   const { stageTaskCompletion } = await subject();
   const { basePath, attemptId } = createFixture();
-  const originalRename = fsPromises.rename.bind(fsPromises);
-  t.mock.method(fsPromises, "rename", async (...args: Parameters<typeof fsPromises.rename>) => {
-    if (String(args[1]).endsWith("SUMMARY.md")) {
+  _setManagedMutationBoundaryForTest((boundary, target) => {
+    if (boundary === "before-write" && target.endsWith("SUMMARY.md")) {
       throw new Error("simulated summary projection failure");
     }
-    return originalRename(...args);
   });
 
   await assert.rejects(stageTaskCompletion(stageInput(basePath)), /projection|summary/i);
@@ -567,7 +566,7 @@ test("a summary projection failure leaves the immutable Result and staged legacy
   assert.equal(count("workflow_attempt_results"), 1);
   assert.equal(count("verification_evidence"), 1);
 
-  t.mock.restoreAll();
+  _setManagedMutationBoundaryForTest(null);
   const replayed = await stageTaskCompletion(stageInput(basePath));
   assert.equal(replayed.status, "replayed");
   assert.equal(replayed.attemptId, attemptId);
@@ -577,16 +576,14 @@ test("a summary projection failure leaves the immutable Result and staged legacy
   assert.equal(taskState().status, "in_progress");
 });
 
-test("staging does not rewrite the unchanged PLAN projection", async (t) => {
+test("staging does not rewrite the unchanged PLAN projection", async () => {
   const { stageTaskCompletion } = await subject();
   const { basePath, planPath } = createFixture();
   writeFileSync(planPath, "# user-owned staging sentinel\n");
-  const originalRename = fsPromises.rename.bind(fsPromises);
-  t.mock.method(fsPromises, "rename", async (...args: Parameters<typeof fsPromises.rename>) => {
-    if (String(args[1]) === planPath) {
+  _setManagedMutationBoundaryForTest((boundary, target) => {
+    if (boundary === "before-write" && target === planPath) {
       throw new Error("PLAN projection must not run while staging");
     }
-    return originalRename(...args);
   });
 
   const staged = await stageTaskCompletion(stageInput(basePath));
@@ -986,18 +983,16 @@ test("exact stage and publication replay repair projections without duplicate fa
   }, beforeReplay);
 });
 
-test("auto publication replays a committed Task completion after PLAN projection failure", async (t) => {
+test("auto publication replays a committed Task completion after PLAN projection failure", async () => {
   const { publishVerifiedTaskCompletion, stageTaskCompletion } = await subject();
   const { publishVerifiedTaskExecution } = await import("../auto/task-execution-cutover.js");
   const { basePath, planPath, attemptId } = createFixture();
   await stageTaskCompletion(stageInput(basePath));
   recordPassingHostVerdict(basePath, attemptId);
-  const originalRename = fsPromises.rename.bind(fsPromises);
-  t.mock.method(fsPromises, "rename", async (...args: Parameters<typeof fsPromises.rename>) => {
-    if (String(args[1]).endsWith("PLAN.md")) {
+  _setManagedMutationBoundaryForTest((boundary, target) => {
+    if (boundary === "before-write" && target.endsWith("PLAN.md")) {
       throw new Error("simulated PLAN projection failure");
     }
-    return originalRename(...args);
   });
   const input = {
     unitType: "execute-task",
@@ -1026,7 +1021,7 @@ test("auto publication replays a committed Task completion after PLAN projection
     checkpoints: count("workflow_kernel_checkpoints"),
   };
 
-  t.mock.restoreAll();
+  _setManagedMutationBoundaryForTest(null);
   await publishVerifiedTaskExecution(input, dependencies);
 
   assert.match(readFileSync(planPath, "utf8"), /\[x\][^\n]*\*\*T01/i);

@@ -1,6 +1,8 @@
 // Project/App: gsd-pi
 // File Purpose: Deterministic classification boundary for legacy import Preview candidates.
 
+import { compareText, deepFreeze } from "./legacy-import-utils.js";
+
 import {
   LEGACY_IMPORT_BASE_DATABASE_SCHEMA_VERSION,
   type LegacyImportPreviewChange,
@@ -110,17 +112,6 @@ function fail(
   throw new LegacyImportClassificationError(code, message, context);
 }
 
-function compareText(left: string, right: string): number {
-  return left < right ? -1 : left > right ? 1 : 0;
-}
-
-function deepFreeze<T>(value: T, seen = new Set<object>()): T {
-  if (value === null || typeof value !== "object" || seen.has(value)) return value;
-  seen.add(value);
-  for (const child of Object.values(value)) deepFreeze(child, seen);
-  return Object.freeze(value);
-}
-
 function asRecord(value: LegacyImportValue, label: string): JsonRecord {
   if (value === null || Array.isArray(value) || typeof value !== "object") {
     fail(
@@ -144,10 +135,7 @@ function memberKey(rowSet: LegacyImportBaseRowSet, value: Readonly<JsonRecord>):
     case "slices": return `${String(value.milestone_id)}/${String(value.id)}`;
     case "tasks": return `${String(value.milestone_id)}/${String(value.slice_id)}/${String(value.id)}`;
     case "artifacts": return String(value.path);
-    case "assessments": return [value.milestone_id, value.slice_id, value.task_id, value.scope]
-      .filter((part) => part !== null && part !== undefined && part !== "")
-      .map(String)
-      .join("/");
+    case "assessments": return completeMemberKey(rowSet, value);
     default:
       fail(
         "LEGACY_IMPORT_CLASSIFICATION_COMPLETE_SET_INVALID",
@@ -664,11 +652,16 @@ function targetOrHierarchyIsUnresolved(
   target: LegacyImportTarget,
 ): boolean {
   if (targetIsUnresolved(unresolved, target)) return true;
-  if (!target.kind.endsWith("-status")) return false;
-  return targetIsUnresolved(unresolved, {
-    kind: target.kind.slice(0, -"-status".length),
-    key: target.key,
-  });
+  if (target.kind.endsWith("-status")) {
+    return targetIsUnresolved(unresolved, {
+      kind: target.kind.slice(0, -"-status".length),
+      key: target.key,
+    });
+  }
+  if (target.field === "status" && asHierarchyKind(target.kind) !== undefined) {
+    return targetIsUnresolved(unresolved, { kind: `${target.kind}-status`, key: target.key });
+  }
+  return false;
 }
 
 function overlappingPatchFields(left: PreparedCandidate, right: PreparedCandidate): string[] {

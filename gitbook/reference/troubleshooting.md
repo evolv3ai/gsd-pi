@@ -195,7 +195,7 @@ GSD exits during startup with `flat-phase migration failed` or `flat-phase migra
 
 **Cause:** The project still has the legacy nested `.gsd/milestones/` layout. Startup must migrate it to flat `.gsd/phases/` before path resolvers and state checks run. If the SQLite database cannot be opened, filesystem backup/rename/delete work fails, or the rendered projection cannot be verified, GSD stops instead of continuing against mixed disk state.
 
-**Fix:** Start GSD from the project root and make sure `.gsd/gsd.db*`, `.gsd/`, and `.gsd-backups/` are readable and writable on local disk. Close editors, terminals, sync tools, antivirus/indexers, or other processes that may be locking `.gsd/milestones/`, `.gsd/milestones.migrating/`, `.gsd/phases/`, or `.gsd-backups/`. If the database is damaged or missing, restore it from backup when available; use `/gsd recover --confirm` only after database access is restored, no adopted canonical lifecycle history remains, and markdown is the source you intentionally want to import. Retry by starting GSD again; interrupted migrations resume from `.gsd/milestones.migrating/`, and `.gsd-backups/migrate-*` snapshots should be kept until startup succeeds and `/gsd doctor` passes.
+**Fix:** Start GSD from the project root and make sure `.gsd/gsd.db*`, `.gsd/`, and `.gsd-backups/` are readable and writable on local disk. Close editors, terminals, sync tools, antivirus/indexers, or other processes that may be locking `.gsd/milestones/`, `.gsd/milestones.migrating/`, `.gsd/phases/`, or `.gsd-backups/`. If the database is damaged or missing, restore it from backup when available; for explicit markdown import, follow the [authoritative recovery contract](../../docs/user-docs/migration.md#post-migration). Retry by starting GSD again; interrupted migrations resume from `.gsd/milestones.migrating/`, and `.gsd-backups/migrate-*` snapshots should be kept until startup succeeds and `/gsd doctor` passes.
 
 ### `orphan_milestone_dir` doctor warning
 
@@ -258,13 +258,7 @@ Checks the authoritative database, refreshes `STATE.md` from derived database st
 
 ### Recover database hierarchy from markdown
 
-Use this only when the database is missing, damaged, or known to be stale but the rendered milestone, slice, and task markdown on disk is the best available source:
-
-```
-/gsd recover --confirm
-```
-
-`/gsd recover --confirm` first checks that the database contains no adopted canonical lifecycle history. If adoption exists, it fails before clearing anything because Markdown cannot reconstruct that history; restore a verified database backup instead. Otherwise it clears and reconstructs the legacy hierarchy tables from markdown, then derives state again to verify the result. Normal runtime does not silently import markdown projections, and worktree markdown is not synced back as authoritative state.
+Follow the [authoritative recovery contract](../../docs/user-docs/migration.md#post-migration) when markdown is the source you intentionally want to import into a missing or damaged database.
 
 ## Getting Help
 

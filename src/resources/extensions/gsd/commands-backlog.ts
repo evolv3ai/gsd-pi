@@ -8,10 +8,11 @@
 
 import type { ExtensionAPI, ExtensionCommandContext } from "@gsd/pi-coding-agent";
 
-import { existsSync, readFileSync, writeFileSync, mkdirSync } from "node:fs";
-import { join, dirname } from "node:path";
+import { existsSync, readFileSync } from "node:fs";
+import { join } from "node:path";
 
 import { gsdRoot } from "./paths.js";
+import { atomicWriteSync } from "./atomic-write.js";
 
 interface BacklogItem {
   id: string;
@@ -48,7 +49,6 @@ function parseBacklog(basePath: string): BacklogItem[] {
 
 function writeBacklog(basePath: string, items: BacklogItem[]): void {
   const filePath = backlogPath(basePath);
-  mkdirSync(dirname(filePath), { recursive: true });
   const lines = ["# Backlog\n"];
   for (const item of items) {
     const check = item.done ? "x" : " ";
@@ -56,7 +56,7 @@ function writeBacklog(basePath: string, items: BacklogItem[]): void {
     lines.push(`- [${check}] ${item.id} — ${item.title}${note}`);
   }
   lines.push(""); // trailing newline
-  writeFileSync(filePath, lines.join("\n"), "utf-8");
+  atomicWriteSync(filePath, lines.join("\n"), "utf-8");
 }
 
 function nextBacklogId(items: BacklogItem[]): string {

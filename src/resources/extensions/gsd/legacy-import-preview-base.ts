@@ -26,7 +26,7 @@ export const LEGACY_IMPORT_BASE_ROW_SETS = [
 
 export type LegacyImportBaseRowSet = (typeof LEGACY_IMPORT_BASE_ROW_SETS)[number];
 
-const IDENTITY_COLUMNS: Record<LegacyImportBaseRowSet, readonly string[]> = {
+export const LEGACY_IMPORT_BASE_IDENTITY_COLUMNS: Record<LegacyImportBaseRowSet, readonly string[]> = {
   milestones: ["id"],
   slices: ["milestone_id", "id"],
   tasks: ["milestone_id", "slice_id", "id"],
@@ -86,7 +86,8 @@ const ROW_SET_QUERIES: Record<LegacyImportBaseRowSet, string> = {
     WHERE category = 'architecture'
       AND instr(structured_fields, '"sourceDecisionId"') > 0`,
   item_lifecycles: `SELECT
-    project_id, item_kind, milestone_id, slice_id, task_id, lifecycle_status
+    project_id, item_kind, milestone_id, slice_id, task_id, lifecycle_status,
+    state_version, last_operation_id
     FROM workflow_item_lifecycles`,
 };
 
@@ -238,7 +239,7 @@ function identityFor(
   value: Readonly<Record<string, LegacyImportValue>>,
 ): string {
   const identity: Record<string, LegacyImportValue> = {};
-  for (const column of IDENTITY_COLUMNS[rowSet]) {
+  for (const column of LEGACY_IMPORT_BASE_IDENTITY_COLUMNS[rowSet]) {
     const entry = value[column];
     const nullableHierarchyPart = (
       (rowSet === "assessments" || rowSet === "item_lifecycles")

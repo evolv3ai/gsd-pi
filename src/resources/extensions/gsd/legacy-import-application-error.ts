@@ -2,6 +2,7 @@
 // File Purpose: Shared typed failure contract for legacy Import Application modules.
 
 import type { LegacyImportValue } from "./legacy-import-contract.js";
+import { deepFreeze } from "./legacy-import-utils.js";
 
 export type LegacyImportApplicationErrorStage =
   | "contract"
@@ -18,6 +19,7 @@ export type LegacyImportApplicationErrorCode =
   | "LEGACY_IMPORT_APPLICATION_REPLAY_CONFLICT"
   | "LEGACY_IMPORT_APPLICATION_PREVIEW_INVALID"
   | "LEGACY_IMPORT_APPLICATION_PREVIEW_UNRESOLVED"
+  | "LEGACY_IMPORT_APPLICATION_DESTRUCTIVE_CONSENT_REQUIRED"
   | "LEGACY_IMPORT_APPLICATION_PREVIEW_CHANGED"
   | "LEGACY_IMPORT_APPLICATION_BACKUP_INVALID"
   | "LEGACY_IMPORT_APPLICATION_BACKUP_CHANGED"
@@ -28,13 +30,6 @@ export type LegacyImportApplicationErrorCode =
   | "LEGACY_IMPORT_APPLICATION_WRITER_CONTENTION"
   | "LEGACY_IMPORT_APPLICATION_MUTATION_FAILED"
   | "LEGACY_IMPORT_APPLICATION_RECEIPT_INCONSISTENT";
-
-function deepFreeze<T>(value: T, seen = new Set<object>()): T {
-  if (value === null || typeof value !== "object" || seen.has(value)) return value;
-  seen.add(value);
-  for (const child of Object.values(value)) deepFreeze(child, seen);
-  return Object.freeze(value);
-}
 
 export class LegacyImportApplicationError extends Error {
   readonly stage: LegacyImportApplicationErrorStage;

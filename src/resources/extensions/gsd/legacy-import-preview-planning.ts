@@ -1,6 +1,8 @@
 // Project/App: gsd-pi
 // File Purpose: Pure actionless interpretation of captured legacy .planning bytes.
 
+import { compareText } from "./legacy-import-utils.js";
+
 import type {
   LegacyImportTarget,
   LegacyImportValue,
@@ -33,10 +35,6 @@ interface FlatMembership {
 }
 
 const PARSER_VERSION = "1";
-
-function compareText(left: string, right: string): number {
-  return left < right ? -1 : left > right ? 1 : 0;
-}
 
 function parserFor(path: string): string {
   if (path === ".planning/ROADMAP.md") return "planning-roadmap-parser";
@@ -150,7 +148,11 @@ function headingTitle(file: SourceFile): string {
 }
 
 function normalizePhase(value: string): string {
-  return value.split(".").map((part) => String(Number(part))).join(".");
+  const parts = value.split(".");
+  if (parts.some((part) => part.length === 0)) {
+    throw new Error(`legacy import phase number "${value}" contains an empty segment`);
+  }
+  return parts.map((part) => String(Number(part))).join(".");
 }
 
 function naturalPlanOrder(left: string, right: string): number {
@@ -212,9 +214,24 @@ function buildFlatMembership(files: readonly SourceFile[]): FlatMembership {
   return { phaseTargets, taskTargets };
 }
 
-function interpretProject(file: SourceFile, candidates: PendingCandidate[]): void {
+function interpretProject(
+  file: SourceFile,
+  candidates: PendingCandidate[],
+  diagnoses: PendingDiagnosis[],
+): void {
   const title = firstLine(file, /^#\s+(.+)$/u)?.match[1]?.trim() ?? "";
   const vision = file.lines.slice(1).map((line) => line.text).join("\n").trim();
+  if (title.length === 0 || vision.length === 0) {
+    file.outcome = "unparsed";
+    addCandidate(candidates, file, { kind: "legacy-artifact", key: file.entry.logical_path }, {
+      path: file.entry.logical_path, preservation: "verbatim",
+    }, "malformed-project-preserve", 0, file.bytes.length, "preserve");
+    addDiagnosis(
+      diagnoses, file, "malformed-project", "blocker",
+      "Project input lacks a heading title or vision body and cannot become an authoritative milestone.", "requires-user",
+    );
+    return;
+  }
   addCandidate(candidates, file, { kind: "milestone", key: "M001" }, {
     id: "M001", title, vision,
   }, "planning-project-milestone");
@@ -668,8 +685,12 @@ function interpretFlatPlan(
     }, "planning-plan-number-alias");
     return;
   }
-  const taskId = /\/(T\d+)$/u.exec(taskTarget)?.[1] ?? `T${String(Number(filePlan)).padStart(2, "0")}`;
-  const sliceId = /\/(S\d+)\//u.exec(taskTarget)?.[1] ?? membership.phaseTargets.get(normalizePhase(phase)) ?? "";
+  const membershipIdentity = /\/(S\d+)\/(T\d+)$/u.exec(taskTarget);
+  if (membershipIdentity === null) {
+    throw new Error(`legacy import planning membership target ${taskTarget} lacks slice and task identity`);
+  }
+  const sliceId = membershipIdentity[1];
+  const taskId = membershipIdentity[2];
   const sequence = Number(taskId.slice(1));
   addCandidate(candidates, file, { kind: "task", key: taskTarget }, {
     id: taskId, slice_id: sliceId, sequence, status: "planned", title: headingTitle(file), objective: xmlValue(file.text, "objective"),
@@ -695,7 +716,7 @@ function interpretFlatSummary(
     addCandidate(candidates, file, { kind: "legacy-artifact", key: file.entry.logical_path }, {
       path: file.entry.logical_path, preservation: "verbatim",
     }, "conflicting-summary-preserved-verbatim", 0, file.bytes.length, "preserve");
-    const evidence = summaryPhase?.value !== path[1] ? summaryPhase : summaryPlan;
+    const evidence = summaryPhase !== undefined && summaryPhase.value !== path[1] ? summaryPhase : summaryPlan;
     addDiagnosis(
       diagnoses, file, "summary-identity-conflict", "blocker",
       "Summary path and frontmatter identify different work; user choice is required.", "requires-user",
@@ -730,7 +751,11 @@ function interpretFlatSummary(
     return;
   }
   const body = file.lines.slice().reverse().find((line) => line.text.trim().length > 0 && !line.text.startsWith("#"));
-  const taskId = /\/(T\d+)$/u.exec(taskTarget)?.[1] ?? "T01";
+  const taskIdMatch = /\/(T\d+)$/u.exec(taskTarget);
+  if (taskIdMatch === null) {
+    throw new Error(`legacy import planning summary target ${taskTarget} lacks task identity`);
+  }
+  const taskId = taskIdMatch[1];
   const sliceId = /\/(S\d+)\//u.exec(taskTarget)?.[1] ?? "";
   addCandidate(candidates, file, { kind: "task", key: taskTarget, field: "status" }, {
     id: taskId, slice_id: sliceId, status: "complete", summary: body?.text.trim() ?? "",
@@ -1003,7 +1028,7 @@ function interpretRemaining(
     wholeFilePreservation(candidates, file, "phase-extra-preserve", { disposition: "preserved", reason: "phase-extra-not-modeled" });
     return;
   }
-  if (path === ".planning/PROJECT.md") return interpretProject(file, candidates);
+  if (path === ".planning/PROJECT.md") return interpretProject(file, candidates, diagnoses);
   if (path === ".planning/REQUIREMENTS.md") return interpretRequirements(file, candidates, diagnoses);
   if (path === ".planning/ROADMAP.md") {
     if (

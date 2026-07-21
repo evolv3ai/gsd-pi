@@ -5,7 +5,7 @@
 `createLegacyImportPreview` will be the only public composition boundary for a legacy import Preview. It will:
 
 1. capture every declared source root into one stable retained-byte snapshot;
-2. capture one atomic schema-v44 canonical base snapshot from the already-open database;
+2. capture one atomic schema-v45 canonical base snapshot from the already-open database;
 3. assign every retained non-directory source to exactly one interpreter;
 4. interpret and classify entirely in memory;
 5. re-enumerate and rehash the declared source roots;

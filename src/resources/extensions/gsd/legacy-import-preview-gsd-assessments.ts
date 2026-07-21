@@ -223,7 +223,9 @@ export function interpretLegacyGsdAssessments(
 
   for (const value of artifacts) {
     const { file, milestone, slice, role, verdict } = value;
-    file.parserId = role === "roadmap" || role === "backfill" ? "gsd-artifact-classifier" : "gsd-assessment-truth";
+    if (!candidates.some((candidate) => candidate.provenance.source_id === file.entry.source_id)) {
+      file.parserId = role === "roadmap" || role === "backfill" ? "gsd-artifact-classifier" : "gsd-assessment-truth";
+    }
     file.outcome = "preserved";
     if (role === "roadmap" || role === "backfill") {
       const backfill = role === "backfill";

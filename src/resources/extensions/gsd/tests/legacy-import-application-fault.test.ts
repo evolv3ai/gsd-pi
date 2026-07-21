@@ -32,6 +32,7 @@ import * as applicationModule from "../legacy-import-application.ts";
 import {
   LegacyImportApplicationError,
   applyLegacyImport,
+  createLegacyImportApplicationConsent,
   createLegacyImportApplicationIdentity,
   type LegacyImportApplicationInput,
   type LegacyImportApplicationReceipt,
@@ -134,6 +135,8 @@ interface MutationFaultCase {
   fixture: MutationFixture;
   sqlPattern: string;
   occurrence: number;
+  expectedStage: LegacyImportApplicationError["stage"];
+  expectedCode: LegacyImportApplicationError["code"];
 }
 
 interface SqlFaultController {
@@ -152,27 +155,40 @@ type ChildOutcome =
   | { receipt: LegacyImportApplicationReceipt }
   | { error: ChildErrorOutcome };
 
+const MUTATION_FAILED = {
+  expectedStage: "transaction",
+  expectedCode: "LEGACY_IMPORT_APPLICATION_MUTATION_FAILED",
+} as const;
+
 const MUTATION_FAULT_CASES: readonly MutationFaultCase[] = [
-  { family: "operation insert", fixture: "gsd-nested", sqlPattern: "insert into workflow_operations", occurrence: 1 },
-  { family: "row create", fixture: "gsd-nested", sqlPattern: "insert into tasks", occurrence: 1 },
-  { family: "dependency replacement", fixture: "gsd-nested", sqlPattern: "insert into slice_dependencies", occurrence: 1 },
-  { family: "lifecycle adoption", fixture: "planning-flat-complete", sqlPattern: "insert into workflow_item_lifecycles", occurrence: 1 },
-  { family: "decision-memory write", fixture: "decision-create", sqlPattern: "insert into memories", occurrence: 1 },
-  { family: "receipt insert", fixture: "gsd-nested", sqlPattern: "insert into workflow_import_applications", occurrence: 1 },
-  { family: "event", fixture: "gsd-nested", sqlPattern: "insert into workflow_domain_events", occurrence: 1 },
-  { family: "outbox", fixture: "gsd-nested", sqlPattern: "insert into workflow_outbox", occurrence: 1 },
-  { family: "projection work", fixture: "gsd-nested", sqlPattern: "insert into workflow_projection_work", occurrence: 1 },
-  { family: "authority CAS", fixture: "gsd-nested", sqlPattern: "update project_authority", occurrence: 1 },
-  { family: "row update", fixture: "row-actions", sqlPattern: "update slices set", occurrence: 1 },
-  { family: "row delete", fixture: "row-actions", sqlPattern: "delete from slices where", occurrence: 1 },
+  { family: "operation insert", fixture: "gsd-nested", sqlPattern: "insert into workflow_operations", occurrence: 1, ...MUTATION_FAILED },
+  { family: "row create", fixture: "gsd-nested", sqlPattern: "insert into tasks", occurrence: 1, ...MUTATION_FAILED },
+  { family: "dependency replacement", fixture: "gsd-nested", sqlPattern: "insert into slice_dependencies", occurrence: 1, ...MUTATION_FAILED },
+  { family: "lifecycle adoption", fixture: "planning-flat-complete", sqlPattern: "insert into workflow_item_lifecycles", occurrence: 1, ...MUTATION_FAILED },
+  { family: "decision-memory write", fixture: "decision-create", sqlPattern: "insert into memories", occurrence: 1, ...MUTATION_FAILED },
+  {
+    family: "receipt insert",
+    fixture: "gsd-nested",
+    sqlPattern: "insert into workflow_import_applications",
+    occurrence: 1,
+    expectedStage: "receipt",
+    expectedCode: "LEGACY_IMPORT_APPLICATION_RECEIPT_INCONSISTENT",
+  },
+  { family: "event", fixture: "gsd-nested", sqlPattern: "insert into workflow_domain_events", occurrence: 1, ...MUTATION_FAILED },
+  { family: "outbox", fixture: "gsd-nested", sqlPattern: "insert into workflow_outbox", occurrence: 1, ...MUTATION_FAILED },
+  { family: "projection work", fixture: "gsd-nested", sqlPattern: "insert into workflow_projection_work", occurrence: 1, ...MUTATION_FAILED },
+  { family: "authority CAS", fixture: "gsd-nested", sqlPattern: "update project_authority", occurrence: 1, ...MUTATION_FAILED },
+  { family: "row update", fixture: "row-actions", sqlPattern: "update slices set", occurrence: 1, ...MUTATION_FAILED },
+  { family: "row delete", fixture: "row-actions", sqlPattern: "delete from slices where", occurrence: 1, ...MUTATION_FAILED },
   {
     family: "dependency deletion",
     fixture: "row-actions",
     sqlPattern: "delete from slice_dependencies where milestone_id = :milestone_id and (slice_id = :slice_id or depends_on_slice_id = :slice_id)",
     occurrence: 1,
+    ...MUTATION_FAILED,
   },
-  { family: "decision update", fixture: "decision-actions", sqlPattern: "insert into memories", occurrence: 2 },
-  { family: "decision delete", fixture: "decision-actions", sqlPattern: "insert into memories", occurrence: 3 },
+  { family: "decision update", fixture: "decision-actions", sqlPattern: "insert into memories", occurrence: 2, ...MUTATION_FAILED },
+  { family: "decision delete", fixture: "decision-actions", sqlPattern: "insert into memories", occurrence: 3, ...MUTATION_FAILED },
 ];
 
 function db(): DbAdapter {
@@ -424,6 +440,9 @@ function prepareCase(fixture: MutationFixture = "gsd-nested"): PreparedApplicati
     previewInput,
     preview,
     backup,
+    ...(preview.preview.counts.delete > 0
+      ? { destructiveConsent: createLegacyImportApplicationConsent(preview) }
+      : {}),
   };
   return { workspace, databasePath, base, backup, input };
 }
@@ -639,6 +658,21 @@ async function waitForPath(path: string, timeoutMs: number, label: string): Prom
   }
 }
 
+async function waitForChildReady(
+  path: string,
+  label: string,
+  index: number,
+  outcome: Promise<ChildOutcome>,
+): Promise<void> {
+  const earlyOutcome = await Promise.race([
+    waitForPath(path, CHILD_DEADLINE_MS, label).then(() => null),
+    outcome,
+  ]);
+  if (earlyOutcome) {
+    throw new Error(`child ${index} exited before ${label}: ${JSON.stringify(earlyOutcome)}`);
+  }
+}
+
 async function runConcurrentApplications(
   prepared: PreparedApplicationCase,
   inputs: readonly [LegacyImportApplicationInput, LegacyImportApplicationInput],
@@ -649,25 +683,25 @@ async function runConcurrentApplications(
   const transactionReady = inputs.map((_, index) => (
     join(prepared.workspace, `transaction-ready-${childSequence}-${index}`)
   ));
-  const children = inputs.map((input, index) => spawnChild(prepared, input, {
-    barrier: { readyPath: startReady[index]!, releasePath: startRelease },
-    transactionBarrier: { readyPath: transactionReady[index]!, releasePath: transactionRelease },
-  })) as [
-    ChildProcessByStdio<null, Readable, Readable>,
-    ChildProcessByStdio<null, Readable, Readable>,
-  ];
-  const outcomes = children.map((child) => collectChild(child)) as [
-    Promise<ChildOutcome>,
-    Promise<ChildOutcome>,
-  ];
+  const children: ChildProcessByStdio<null, Readable, Readable>[] = [];
+  const outcomes: Promise<ChildOutcome>[] = [];
   try {
-    await Promise.all(startReady.map((path) => waitForPath(path, CHILD_DEADLINE_MS, "start barrier")));
+    for (const [index, input] of inputs.entries()) {
+      const child = spawnChild(prepared, input, {
+        barrier: { readyPath: startReady[index]!, releasePath: startRelease },
+        transactionBarrier: { readyPath: transactionReady[index]!, releasePath: transactionRelease },
+      });
+      const outcome = collectChild(child);
+      children.push(child);
+      outcomes.push(outcome);
+      await waitForChildReady(startReady[index]!, "start barrier", index, outcome);
+    }
     writeFileSync(startRelease, "release", "utf8");
-    await Promise.all(transactionReady.map((path) => (
-      waitForPath(path, CHILD_DEADLINE_MS, "transaction barrier")
+    await Promise.all(transactionReady.map((path, index) => (
+      waitForChildReady(path, "transaction barrier", index, outcomes[index]!)
     )));
     writeFileSync(transactionRelease, "release", "utf8");
-    return await Promise.all(outcomes);
+    return await Promise.all(outcomes) as [ChildOutcome, ChildOutcome];
   } finally {
     for (const child of children) {
       if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
@@ -851,6 +885,9 @@ for (const faultCase of MUTATION_FAULT_CASES) {
 
     assert.equal(controller.hitCount(), faultCase.occurrence, `${faultCase.sqlPattern} was not reached`);
     assert.ok(observed instanceof LegacyImportApplicationError);
+    assert.equal(observed.stage, faultCase.expectedStage);
+    assert.equal(observed.code, faultCase.expectedCode);
+    assert.equal(observed.retryable, false);
     assert.deepEqual(reopenAndSnapshot(prepared), before);
   });
 

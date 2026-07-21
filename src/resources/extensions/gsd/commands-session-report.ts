@@ -7,13 +7,13 @@
 
 import type { ExtensionCommandContext } from "@gsd/pi-coding-agent";
 
-import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 import { getLedger, getProjectTotals, aggregateByModel, formatCost, formatTokenCount, loadLedgerFromDisk } from "./metrics.js";
 import type { UnitMetrics } from "./metrics.js";
 import { gsdRoot } from "./paths.js";
 import { formatDuration } from "../shared/format-utils.js";
+import { atomicWriteSync } from "./atomic-write.js";
 
 function formatSessionReport(units: UnitMetrics[]): string {
   const totals = getProjectTotals(units);
@@ -88,10 +88,9 @@ export async function handleSessionReport(
   if (args.includes("--save")) {
     const report = formatSessionReport(units);
     const reportsDir = join(gsdRoot(basePath), "reports");
-    mkdirSync(reportsDir, { recursive: true });
     const timestamp = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
     const outPath = join(reportsDir, `session-${timestamp}.md`);
-    writeFileSync(outPath, `\`\`\`\n${report}\n\`\`\`\n`, "utf-8");
+    atomicWriteSync(outPath, `\`\`\`\n${report}\n\`\`\`\n`, "utf-8");
     ctx.ui.notify(`Report saved: ${outPath}`, "success");
     return;
   }

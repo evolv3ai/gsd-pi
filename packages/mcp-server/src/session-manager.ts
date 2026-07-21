@@ -57,7 +57,6 @@ function findExecutableOnPath(command: string): string | null {
   }
   return null;
 }
-
 function getPathEnvValue(env: NodeJS.ProcessEnv = process.env): string {
   return env['PATH'] ?? env['Path'] ?? env['path'] ?? '';
 }
@@ -478,4 +477,3 @@ function extractBlocker(event: SdkAgentEvent): PendingBlocker {
     event: uiEvent,
   };
 }
-

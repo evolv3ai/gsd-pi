@@ -1,5 +1,9 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 import {
   atomicWriteAsyncWithOps,
@@ -141,4 +145,175 @@ test("atomicWriteSync retries transient rename failures and succeeds", () => {
   assert.equal(harness.sleepCalls.length, 2);
   assert.equal(harness.unlinkCalls.length, 0);
   assert.equal(harness.files.get("C:/tmp/output.txt"), "new-content");
+});
+
+test("managed projection writes fall back when the pinned native engine lacks identity locks", (t) => {
+  const base = mkdtempSync(join(tmpdir(), "gsd-atomic-native-fallback-"));
+  t.after(() => rmSync(base, { recursive: true, force: true }));
+  const gsd = join(base, ".gsd");
+  mkdirSync(gsd);
+  writeFileSync(join(gsd, "gsd.db"), "database-present");
+  const output = join(gsd, "STATE.md");
+  const moduleUrl = new URL("../atomic-write.ts", import.meta.url).href;
+  const loaderPath = new URL("./resolve-ts.mjs", import.meta.url).pathname;
+  const script = `
+    const { atomicWriteSync } = await import(${JSON.stringify(moduleUrl)});
+    atomicWriteSync(process.argv[1], "fallback-content");
+  `;
+
+  const result = spawnSync(process.execPath, [
+    "--import", loaderPath,
+    "--experimental-strip-types",
+    "--input-type=module",
+    "--eval", script,
+    output,
+  ], {
+    encoding: "utf8",
+    env: { ...process.env, GSD_NATIVE_DISABLE: "1" },
+  });
+
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  assert.equal(readFileSync(output, "utf8"), "fallback-content");
+});
+
+// ─── Durability: fsync ordering in the fallback WithOps paths ────────────────
+
+function createFsyncSyncHarness(plan: Array<Error | null> = []) {
+  const files = new Map<string, string>();
+  const calls: string[] = [];
+  let tempCounter = 0;
+
+  const ops: AtomicWriteSyncOps = {
+    mkdir: () => {},
+    writeFile: (path, content) => {
+      files.set(path, String(content));
+    },
+    rename: (from, to) => {
+      calls.push(`rename:${from}`);
+      const outcome = plan.shift() ?? null;
+      if (outcome) throw outcome;
+      const content = files.get(from);
+      if (content === undefined) throw makeError("ENOENT", "temp missing");
+      files.set(to, content);
+      files.delete(from);
+    },
+    unlink: (path) => {
+      files.delete(path);
+    },
+    sleep: () => {},
+    createTempPath: (filePath) => `${filePath}.tmp.test-${++tempCounter}`,
+    fsyncFile: (path) => {
+      calls.push(`fsyncFile:${path}`);
+    },
+    fsyncDirectory: (path) => {
+      calls.push(`fsyncDirectory:${path}`);
+    },
+  };
+
+  return { ops, files, calls };
+}
+
+function createFsyncAsyncHarness(plan: Array<Error | null> = []) {
+  const files = new Map<string, string>();
+  const calls: string[] = [];
+  let tempCounter = 0;
+
+  const ops: AtomicWriteAsyncOps = {
+    mkdir: async () => {},
+    writeFile: async (path, content) => {
+      files.set(path, String(content));
+    },
+    rename: async (from, to) => {
+      calls.push(`rename:${from}`);
+      const outcome = plan.shift() ?? null;
+      if (outcome) throw outcome;
+      const content = files.get(from);
+      if (content === undefined) throw makeError("ENOENT", "temp missing");
+      files.set(to, content);
+      files.delete(from);
+    },
+    unlink: async (path) => {
+      files.delete(path);
+    },
+    sleep: async () => {},
+    createTempPath: (filePath) => `${filePath}.tmp.test-${++tempCounter}`,
+    fsyncFile: async (path) => {
+      calls.push(`fsyncFile:${path}`);
+    },
+    fsyncDirectory: async (path) => {
+      calls.push(`fsyncDirectory:${path}`);
+    },
+  };
+
+  return { ops, files, calls };
+}
+
+test("atomicWriteSync fsyncs the temp file before rename and the directory after rename", () => {
+  const harness = createFsyncSyncHarness();
+
+  atomicWriteSyncWithOps("/data/output.txt", "durable", "utf-8", harness.ops);
+
+  assert.deepEqual(harness.calls, [
+    "fsyncFile:/data/output.txt.tmp.test-1",
+    "rename:/data/output.txt.tmp.test-1",
+    "fsyncDirectory:/data",
+  ]);
+  assert.equal(harness.files.get("/data/output.txt"), "durable");
+});
+
+test("atomicWriteAsync fsyncs the temp file before rename and the directory after rename", async () => {
+  const harness = createFsyncAsyncHarness();
+
+  await atomicWriteAsyncWithOps("/data/output.txt", "durable", "utf-8", harness.ops);
+
+  assert.deepEqual(harness.calls, [
+    "fsyncFile:/data/output.txt.tmp.test-1",
+    "rename:/data/output.txt.tmp.test-1",
+    "fsyncDirectory:/data",
+  ]);
+  assert.equal(harness.files.get("/data/output.txt"), "durable");
+});
+
+test("atomicWriteSync fsyncs the temp once and the directory once after a retried rename", () => {
+  const harness = createFsyncSyncHarness([makeError("EBUSY"), makeError("EPERM"), null]);
+
+  atomicWriteSyncWithOps("/data/output.txt", "durable", "utf-8", harness.ops);
+
+  const fsyncFileCalls = harness.calls.filter((call) => call.startsWith("fsyncFile:"));
+  const fsyncDirectoryCalls = harness.calls.filter((call) => call.startsWith("fsyncDirectory:"));
+  assert.deepEqual(fsyncFileCalls, ["fsyncFile:/data/output.txt.tmp.test-1"]);
+  assert.deepEqual(fsyncDirectoryCalls, ["fsyncDirectory:/data"]);
+  assert.equal(harness.calls[0], "fsyncFile:/data/output.txt.tmp.test-1");
+  assert.equal(harness.calls.at(-1), "fsyncDirectory:/data");
+  assert.equal(harness.files.get("/data/output.txt"), "durable");
+});
+
+test("atomicWriteSync aborts before any rename when the temp fsync fails", () => {
+  const harness = createFsyncSyncHarness();
+  const fsyncFailure = makeError("EIO", "fsync failed");
+  harness.ops.fsyncFile = () => {
+    throw fsyncFailure;
+  };
+
+  assert.throws(
+    () => atomicWriteSyncWithOps("/data/output.txt", "durable", "utf-8", harness.ops),
+    (error: unknown) => error === fsyncFailure,
+  );
+  assert.equal(harness.calls.some((call) => call.startsWith("rename:")), false);
+  assert.equal(harness.files.has("/data/output.txt"), false);
+});
+
+test("atomicWriteAsync aborts before any rename when the temp fsync fails", async () => {
+  const harness = createFsyncAsyncHarness();
+  const fsyncFailure = makeError("EIO", "fsync failed");
+  harness.ops.fsyncFile = async () => {
+    throw fsyncFailure;
+  };
+
+  await assert.rejects(
+    atomicWriteAsyncWithOps("/data/output.txt", "durable", "utf-8", harness.ops),
+    (error: unknown) => error === fsyncFailure,
+  );
+  assert.equal(harness.calls.some((call) => call.startsWith("rename:")), false);
+  assert.equal(harness.files.has("/data/output.txt"), false);
 });

@@ -11,7 +11,6 @@
  */
 
 import { existsSync } from "node:fs";
-import { unlink } from "node:fs/promises";
 
 import {
   transaction,
@@ -25,9 +24,10 @@ import { clearPathCache, resolveMilestoneFile, targetMilestoneFile } from "../pa
 import { resolveCanonicalMilestoneRoot } from "../worktree-manager.js";
 import { isClosedStatus, isDeferredStatus } from "../status-guards.js";
 import { saveFile, clearParseCache, loadFile } from "../files.js";
+import { removeProjectionFileSync } from "../atomic-write.js";
 import { invalidateStateCache } from "../state.js";
 import { flushWorkflowProjections } from "../projection-flush.js";
-import { writeManifest } from "../workflow-manifest.js";
+import { writeManifestAndFlush } from "../workflow-manifest.js";
 import { appendEvent } from "../workflow-events.js";
 import { logWarning, logError } from "../workflow-logger.js";
 import {
@@ -103,7 +103,7 @@ export function _setCompleteMilestoneProjectionInterleaveForTest(
 async function removeOwnedProjection(path: string, content: string): Promise<void> {
   if (await loadFile(path) !== content) return;
   try {
-    await unlink(path);
+    removeProjectionFileSync(path);
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
   }
@@ -399,6 +399,7 @@ export async function handleCompleteMilestone(
         canonicalReceipt ? { operationId: canonicalReceipt.operationId, isCurrent } : undefined,
       );
       projectionStale ||= flushed.stale;
+      if (!flushed.stale && existsSync(summaryPath)) projectionStale = false;
       superseded ||= flushed.superseded;
     }
   } catch (projErr) {
@@ -407,7 +408,7 @@ export async function handleCompleteMilestone(
   }
   if (!superseded && isCurrent()) {
     try {
-      writeManifest(artifactBasePath);
+      await writeManifestAndFlush(artifactBasePath);
     } catch (mfErr) {
       logWarning("tool", `complete-milestone manifest warning: ${(mfErr as Error).message}`);
     }

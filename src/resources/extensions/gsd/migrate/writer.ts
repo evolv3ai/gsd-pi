@@ -21,6 +21,7 @@ import type {
 export interface WrittenFiles {
   /** Absolute paths of all files written */
   paths: string[];
+  artifactPaths: string[];
   /** Count by category */
   counts: {
     roadmaps: number;
@@ -443,6 +444,7 @@ export async function writeGSDDirectory(
   const gsdDir = gsdRoot(targetPath);
   const milestonesBase = join(gsdDir, 'milestones');
   const paths: string[] = [];
+  const artifactPaths: string[] = [];
   const counts: WrittenFiles['counts'] = {
     roadmaps: 0,
     plans: 0,
@@ -459,6 +461,7 @@ export async function writeGSDDirectory(
   const projectPath = join(gsdDir, 'PROJECT.md');
   await saveFile(projectPath, formatProject(project.projectContent));
   paths.push(projectPath);
+  artifactPaths.push(projectPath);
   counts.other++;
 
   const decisionsPath = join(gsdDir, 'DECISIONS.md');
@@ -469,6 +472,7 @@ export async function writeGSDDirectory(
   const statePath = join(gsdDir, 'STATE.md');
   await saveFile(statePath, formatState(project.milestones));
   paths.push(statePath);
+  artifactPaths.push(statePath);
   counts.other++;
 
   if (project.requirements.length > 0) {
@@ -492,6 +496,7 @@ export async function writeGSDDirectory(
     const contextPath = join(mDir, `${milestone.id}-CONTEXT.md`);
     await saveFile(contextPath, formatContext(milestone.id));
     paths.push(contextPath);
+    artifactPaths.push(contextPath);
     counts.contexts++;
 
     // Research (skip if null)
@@ -499,6 +504,7 @@ export async function writeGSDDirectory(
       const researchPath = join(mDir, `${milestone.id}-RESEARCH.md`);
       await saveFile(researchPath, milestone.research);
       paths.push(researchPath);
+      artifactPaths.push(researchPath);
       counts.research++;
     }
 
@@ -521,6 +527,7 @@ export async function writeGSDDirectory(
       ].join('\n');
       await saveFile(validationPath, validationContent);
       paths.push(validationPath);
+      artifactPaths.push(validationPath);
       counts.other++;
 
       // Also write a milestone summary if one doesn't exist
@@ -538,6 +545,7 @@ export async function writeGSDDirectory(
       ].join('\n');
       await saveFile(summaryPath, summaryContent);
       paths.push(summaryPath);
+      artifactPaths.push(summaryPath);
       counts.other++;
     }
 
@@ -557,6 +565,7 @@ export async function writeGSDDirectory(
         const sliceResearchPath = join(sDir, `${slice.id}-RESEARCH.md`);
         await saveFile(sliceResearchPath, slice.research);
         paths.push(sliceResearchPath);
+        artifactPaths.push(sliceResearchPath);
         counts.research++;
       }
 
@@ -567,6 +576,7 @@ export async function writeGSDDirectory(
           const summaryPath = join(sDir, `${slice.id}-SUMMARY.md`);
           await saveFile(summaryPath, summaryContent);
           paths.push(summaryPath);
+          artifactPaths.push(summaryPath);
           counts.sliceSummaries++;
         }
       }
@@ -586,6 +596,7 @@ export async function writeGSDDirectory(
             const taskSummaryPath = join(tasksDir, `${task.id}-SUMMARY.md`);
             await saveFile(taskSummaryPath, taskSummaryContent);
             paths.push(taskSummaryPath);
+            artifactPaths.push(taskSummaryPath);
             counts.taskSummaries++;
           }
         }
@@ -593,5 +604,5 @@ export async function writeGSDDirectory(
     }
   }
 
-  return { paths, counts };
+  return { paths, artifactPaths, counts };
 }

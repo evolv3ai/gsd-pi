@@ -1,6 +1,8 @@
 // Project/App: gsd-pi
 // File Purpose: Pure exactly-once composition of captured legacy import Preview interpretations.
 
+import { compareText, deepFreeze } from "./legacy-import-utils.js";
+
 import type { LegacyImportPreviewSource } from "./legacy-import-contract.js";
 import type { LegacyImportDatabaseTargetInspectionEvidence } from "./legacy-import-preview-database-target.js";
 import {
@@ -43,17 +45,6 @@ export class LegacyImportCompositionError extends Error {
     this.retryable = false;
     this.context = Object.freeze({ ...context });
   }
-}
-
-function compareText(left: string, right: string): number {
-  return left < right ? -1 : left > right ? 1 : 0;
-}
-
-function deepFreeze<T>(value: T, seen = new Set<object>()): T {
-  if (value === null || typeof value !== "object" || seen.has(value)) return value;
-  seen.add(value);
-  for (const child of Object.values(value)) deepFreeze(child, seen);
-  return Object.freeze(value);
 }
 
 function projectCapture(

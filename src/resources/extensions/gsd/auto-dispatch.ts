@@ -53,6 +53,7 @@ import {
 } from "./paths.js";
 import { validateArtifact } from "./schemas/validate.js";
 import { existsSync, mkdirSync, readFileSync, writeFileSync, unlinkSync } from "node:fs";
+import { atomicWriteSync, removeProjectionFileSync } from "./atomic-write.js";
 import { logWarning, logError } from "./workflow-logger.js";
 import { dirname, join, sep } from "node:path";
 import { hasImplementationArtifacts } from "./milestone-implementation-evidence.js";
@@ -639,8 +640,7 @@ function backfillMissingAssessmentsFromSummaries(basePath: string, mid: string):
     }
 
     if (didCreateAssessment) {
-      mkdirSync(dirname(assessmentPath), { recursive: true });
-      writeFileSync(assessmentPath, content, "utf-8");
+      atomicWriteSync(assessmentPath, content, "utf-8");
     }
   }
 }
@@ -684,8 +684,7 @@ function recordAdoptedMilestoneValidationWaiver(
     "",
   ].join("\n");
   try {
-    mkdirSync(dirname(validationPath), { recursive: true });
-    writeFileSync(validationPath, content, "utf-8");
+    atomicWriteSync(validationPath, content, "utf-8");
   } catch (error) {
     logWarning(
       "projection",
@@ -1921,7 +1920,6 @@ export const DISPATCH_RULES: DispatchRule[] = [
             level: "warning",
           };
         }
-        if (!existsSync(mDir)) mkdirSync(mDir, { recursive: true });
         // Use relMilestoneFile for the layout-aware filename:
         //   legacy   → milestones/M001/M001-VALIDATION.md
         //   flat-phase → phases/01-slug/01-VALIDATION.md
@@ -1945,7 +1943,7 @@ export const DISPATCH_RULES: DispatchRule[] = [
           "",
           `Milestone validation was skipped via ${skipSource}.`,
         ].join("\n");
-        writeFileSync(validationPath, content, "utf-8");
+        atomicWriteSync(validationPath, content, "utf-8");
         try {
           // DB-backed state derivation keys off assessments, not only the file
           // projection. Persist the skipped validation there too so the next
@@ -1975,7 +1973,7 @@ export const DISPATCH_RULES: DispatchRule[] = [
           }
         } catch (err) {
           try {
-            unlinkSync(validationPath);
+            removeProjectionFileSync(validationPath);
           } catch (unlinkErr) {
             logWarning(
               "dispatch",

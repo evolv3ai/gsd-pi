@@ -5,7 +5,7 @@
 
 import { describe, it, afterEach } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
@@ -55,6 +55,22 @@ describe("gsd_doctor orphan milestone directory check (#4996)", () => {
     assert.equal(orphan?.severity, "warning");
     assert.equal(orphan?.fixable, true);
     assert.ok(orphan?.message.includes("M003"), "message should name the milestone");
+  });
+
+  it("removes an empty stub orphan milestone dir safely when the fix is approved", async () => {
+    base = makeBase();
+    stubDir(base, "M003");
+    const issues: DoctorIssue[] = [];
+    const fixes: string[] = [];
+
+    await checkRuntimeHealth(base, issues, fixes, code => code === "orphan_milestone_dir");
+
+    assert.equal(
+      fixes.includes("removed orphan milestone directory: M003"),
+      true,
+      JSON.stringify({ issues, fixes }),
+    );
+    assert.equal(existsSync(join(base, ".gsd", "milestones", "M003")), false);
   });
 
   it("(b) populated milestone dir is NOT reported", async () => {

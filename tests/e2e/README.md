@@ -60,8 +60,8 @@ describe("my feature", () => {
 
 - **`spawn.ts`** — `gsdSync` / `gsdAsync` wrappers. Both:
   - Resolve `GSD_SMOKE_BINARY` → `node <path>` vs PATH `gsd` automatically.
-  - Strip every `GSD_*` env var inherited from the host (prevents local
-    config leaking into CI).
+  - Strip inherited `GSD_*` env vars (prevents local config leaking into CI),
+    except `GSD_NATIVE_PREFER_LOCAL=1`, which selects the addon built by CI.
   - Set `TMPDIR` to the canonical (realpath) tmpdir to avoid the macOS
     `/var` vs `/private/var` symlink mismatch.
   - Force `GSD_NON_INTERACTIVE=1`.

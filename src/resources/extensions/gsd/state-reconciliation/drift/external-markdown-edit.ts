@@ -191,7 +191,7 @@ function externalMarkdownEditBlocker(record: ExternalMarkdownEditDrift): string 
     `External modeled edit detected in \`.gsd/${record.projectionPath}\`.`,
     "The database is authoritative, so GSD paused before importing or overwriting this projection.",
     "Recommended: run `/gsd rebuild markdown` to restore the database projection.",
-    "If this edit should replace database state, review it first, then run `/gsd recover --confirm` through the explicit Preview/Application flow.",
+    "If this edit should replace database state, review it first, then run `/gsd recover` and approve its exact hash through the explicit Preview/Application flow.",
   ].join(" ");
 }
 

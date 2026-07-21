@@ -6,6 +6,7 @@
  * Usage:
  *   node native/scripts/build.js          # release build
  *   node native/scripts/build.js --dev    # debug build
+ *   node native/scripts/build.js --dev --test-fault-injection
  *
  * Runs `cargo build` in the engine crate directory and copies the resulting
  * shared library to `native/addon/` with a `.node` extension so Node.js
@@ -23,9 +24,11 @@ const engineDir = path.join(nativeRoot, "crates", "engine");
 const addonDir = path.join(nativeRoot, "addon");
 
 const isDev = process.argv.includes("--dev");
+const testFaultInjection = process.argv.includes("--test-fault-injection");
 const profile = isDev ? "debug" : "release";
 const cargoArgs = ["build"];
 if (!isDev) cargoArgs.push("--release");
+if (testFaultInjection) cargoArgs.push("--features", "test-fault-injection");
 
 console.log(`Building gsd-engine (${profile})...`);
 

@@ -93,17 +93,8 @@ function withPlatform<T>(platform: NodeJS.Platform, fn: () => T): T {
 }
 
 function openRawSqliteForTest(dbPath: string): { exec(sql: string): void; close(): void } {
-  try {
-    const mod = _require('node:sqlite') as { DatabaseSync: new (path: string) => { exec(sql: string): void; close(): void } };
-    return new mod.DatabaseSync(dbPath);
-  } catch {
-    type SqliteCtor = new (path: string) => { exec(sql: string): void; close(): void };
-    const mod = _require('better-sqlite3') as
-      | SqliteCtor
-      | { default: SqliteCtor };
-    const DatabaseCtor: SqliteCtor = typeof mod === 'function' ? mod : mod.default;
-    return new DatabaseCtor(dbPath);
-  }
+  const mod = _require('node:sqlite') as { DatabaseSync: new (path: string) => { exec(sql: string): void; close(): void } };
+  return new mod.DatabaseSync(dbPath);
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -114,10 +105,7 @@ describe('gsd-db', () => {
   test('gsd-db: provider detection', () => {
     const provider = getDbProvider();
     assert.ok(provider !== null, 'provider should be non-null');
-    assert.ok(
-      provider === 'node:sqlite' || provider === 'better-sqlite3',
-      `provider should be a known name, got: ${provider}`,
-    );
+    assert.equal(provider, 'node:sqlite');
   });
 
   test('gsd-db: fresh DB schema init (memory)', () => {

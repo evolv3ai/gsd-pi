@@ -1,6 +1,8 @@
 // Project/App: gsd-pi
 // File Purpose: Sole crash-convergent owner for an eligible live legacy-import database restore.
 
+import { deepFreeze } from "./legacy-import-utils.js";
+
 import { createHash, randomUUID } from "node:crypto";
 import {
   chmodSync,
@@ -23,6 +25,8 @@ import {
   writeFileSync,
 } from "node:fs";
 import { dirname, isAbsolute, join } from "node:path";
+
+import { syncDirectoryEntry } from "@gsd/native/directory-sync";
 
 import type { ExecutionInvocation } from "./execution-invocation.js";
 import {
@@ -64,6 +68,7 @@ import {
   getDb,
   getDbPath,
   immediateTransaction,
+  promoteDatabaseForReplacementRecovery,
   reopenDatabaseAfterReplacement,
   type DatabaseReplacementReopenEvidence,
   type DatabaseReplacementReceiptCapability,
@@ -160,6 +165,12 @@ export interface LegacyImportLiveRestoreResult {
   readonly outboxIds: readonly number[];
   readonly projectionWorkIds: readonly string[];
   readonly verification: Readonly<LegacyImportLiveRestoreVerification>;
+}
+
+export interface LegacyImportLiveRestoreReplayInput {
+  readonly applicationIdentityHash: string;
+  readonly backup: Readonly<LegacyImportVerifiedBackup>;
+  readonly consent: Readonly<LegacyImportRestoreAssessmentConsent>;
 }
 
 type LiveRestoreBoundary =
@@ -286,13 +297,6 @@ function fail(
     evidence,
     cause === undefined ? undefined : { cause },
   );
-}
-
-function deepFreeze<T>(value: T, seen = new Set<object>()): T {
-  if (value === null || typeof value !== "object" || seen.has(value)) return value;
-  seen.add(value);
-  for (const child of Object.values(value)) deepFreeze(child, seen);
-  return Object.freeze(value);
 }
 
 function isPlainRecord(value: unknown): value is Record<string, unknown> {
@@ -422,8 +426,28 @@ function hashIntent(intent: RestoreIntent): string {
 }
 
 function syncFile(path: string): void {
-  const fd = openSync(path, fsConstants.O_RDONLY | (fsConstants.O_NOFOLLOW ?? 0));
+  // The sync pass opens read-write on Windows because fsync (FlushFileBuffers)
+  // requires a handle with GENERIC_WRITE. POSIX keeps O_RDONLY (same convention
+  // as legacy-import-backup.ts hashSnapshotPass).
+  const access = process.platform === "win32" ? fsConstants.O_RDWR : fsConstants.O_RDONLY;
+  const fd = openSync(path, access | (fsConstants.O_NOFOLLOW ?? 0));
   try {
+    // DURABILITY CAVEAT (macOS): Node's fsyncSync issues plain fsync(2). On
+    // macOS fsync does not flush the drive's onboard write cache to stable
+    // media — that requires fcntl(fd, F_FULLFSYNC, 0) (macOS only; Linux
+    // fsync is already a full flush). The @gsd/native syncDirectoryEntry
+    // binding used for directory syncs routes through Rust File::sync_all,
+    // which Rust std lowers to fcntl(F_FULLFSYNC) on Apple platforms and
+    // FlushFileBuffers on Windows — only these file-content syncs remain on
+    // plain fsync. So on macOS the intent and candidate durability proven
+    // here is process-crash-safe and kernel-crash-safe, but a power loss at
+    // exactly the wrong instant could still lose the last synced
+    // intent/candidate bytes. The crash-recovery design already tolerates
+    // that (a lost intent re-drives convergence from durable receipts), so
+    // strengthening this to F_FULLFSYNC — via a koffi fcntl binding mirroring
+    // process-start-identity.ts, with a probe-and-fallback for filesystems
+    // that return ENOTSUP — is a hardening follow-up rather than a
+    // correctness fix.
     fsyncSync(fd);
   } finally {
     closeSync(fd);
@@ -431,6 +455,10 @@ function syncFile(path: string): void {
 }
 
 function syncDirectory(path: string): void {
+  if (process.platform === "win32") {
+    syncDirectoryEntry(path);
+    return;
+  }
   const fd = openSync(path, fsConstants.O_RDONLY | (fsConstants.O_DIRECTORY ?? 0));
   try {
     fsyncSync(fd);
@@ -483,11 +511,12 @@ function requireDatabasePath(): string {
     fail("LEGACY_IMPORT_LIVE_RESTORE_PATH_INVALID", "contract", "live restore requires the active file-backed database");
   }
   try {
-    if (realpathSync(path) !== path) throw new Error("database path is not canonical");
+    const stat = lstatSync(path);
+    if (!stat.isFile() || stat.isSymbolicLink()) throw new Error("database path is not one regular file");
+    return realpathSync(path);
   } catch (error) {
     fail("LEGACY_IMPORT_LIVE_RESTORE_PATH_INVALID", "contract", "active database path is not one canonical regular path", false, {}, error);
   }
-  return path;
 }
 
 function requestHash(input: RestoreInputSnapshot): string {
@@ -848,6 +877,41 @@ function readIntent(path: string): RestoreIntent | null {
   return deepFreeze(value as unknown as RestoreIntent);
 }
 
+export function retainedLegacyImportRestoreOperationId(): string | null {
+  const intent = readIntent(getDatabaseReplacementPaths(requireDatabasePath()).activeIntentPath);
+  return intent?.applicationOperationId ?? null;
+}
+
+export function assertRetainedLegacyImportRestoreIntent(
+  applicationOperationId: string,
+  applicationIdentityHash: string,
+  backup: Readonly<LegacyImportVerifiedBackup>,
+  approval: {
+    readonly assessment: Readonly<LegacyImportRestoreAssessment>;
+    readonly consent: Readonly<LegacyImportRestoreAssessmentConsent>;
+  },
+): void {
+  const intent = readIntent(getDatabaseReplacementPaths(requireDatabasePath()).activeIntentPath);
+  if (intent === null
+    || intent.applicationOperationId !== applicationOperationId
+    || intent.applicationIdentityHash !== applicationIdentityHash
+    || intent.backupId !== backup.backup_id
+    || intent.backupSha256 !== backup.backup_sha256
+    || intent.backupByteSize !== backup.backup_byte_size
+    || intent.backupSchemaVersion !== backup.backup_database_schema_version
+    || intent.backupProjectRevision !== backup.base_project_revision
+    || intent.backupAuthorityEpoch !== backup.base_authority_epoch
+    || intent.assessmentEvidenceHash !== approval.assessment.evidenceHash
+    || intent.differenceHash !== approval.assessment.facts.difference?.differenceHash
+    || intent.consentHash !== hashLegacyImportValue(approval.consent)) {
+    fail(
+      "LEGACY_IMPORT_LIVE_RESTORE_INTENT_CONFLICT",
+      "converge",
+      "active restore intent does not match the retained Import Application",
+    );
+  }
+}
+
 function ensureRecoveryDirectory(path: string): void {
   mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
   mkdirSync(path, { recursive: true, mode: 0o700 });
@@ -1055,6 +1119,24 @@ function isSqliteWriterContention(error: unknown): boolean {
   return code.includes("SQLITE_BUSY") || /SQLITE_BUSY|database is locked/iu.test(message);
 }
 
+/**
+ * detachActiveDatabaseForReplacement() reports WAL checkpoint and journal-mode
+ * contention as GSD_STALE_STATE rather than SQLITE_BUSY. A checkpoint that
+ * observed busy != 0, or a journal mode that stayed WAL because another
+ * connection holds the database, is the same transient contention recognized
+ * at claim time, so it must classify as retryable here too. A checkpoint that
+ * ran (busy = 0) but returned inconsistent frame counts is a genuine
+ * invariant failure and stays non-retryable.
+ */
+function isTransientDetachContention(error: unknown): boolean {
+  const message = typeof error === "object" && error !== null && "message" in error
+    ? String((error as { message?: unknown }).message ?? "")
+    : String(error);
+  const checkpoint = /requires a complete TRUNCATE checkpoint; observed (\d+)\//u.exec(message);
+  if (checkpoint !== null) return checkpoint[1] !== "0";
+  return /requires DELETE journal mode before detach; observed wal/iu.test(message);
+}
+
 function verifyCandidate(
   input: RestoreInputSnapshot,
   application: LegacyImportApplicationEvidence,
@@ -1190,6 +1272,19 @@ function loadStoredResult(
     SELECT projection_work_id FROM workflow_projection_work
     WHERE enqueue_operation_id = :operation_id ORDER BY projection_work_id
   `).all({ ":operation_id": operationId }).map((entry) => String(entry["projection_work_id"]));
+  if (
+    row["application_identity_hash"] !== input.applicationIdentityHash
+    || row["backup_id"] !== input.backup.backup_id
+    || row["backup_sha256"] !== input.backup.backup_sha256
+    || row["difference_hash"] !== input.assessment.facts.difference?.differenceHash
+    || row["consent_hash"] !== hashLegacyImportValue(input.consent)
+    || row["verification_hash"] !== hashLegacyImportValue(verification)
+    || eventIds.length !== 1
+    || outboxIds.length !== 1
+    || projectionWorkIds.length !== 1
+  ) {
+    fail("LEGACY_IMPORT_LIVE_RESTORE_RECEIPT_FAILED", "receipt", "durable restore receipt is inconsistent");
+  }
   return deepFreeze({
     status,
     operationId,
@@ -1276,17 +1371,92 @@ function existingTerminalResult(input: RestoreInputSnapshot): LegacyImportLiveRe
     backup: input.backup,
   });
   if (assessment.decision !== "already-restored") return null;
-  const base = verifyOpenDatabaseIntegrity();
+  const current = verifyOpenDatabaseIntegrity();
   if (
-    base.authority.project_id !== input.backup.project_id
-    || base.authority.revision !== input.backup.base_project_revision + 1
-    || base.authority.authority_epoch !== input.backup.base_authority_epoch
-    || base.relevant_rows_hash !== input.backup.relevant_rows_hash
+    current.authority.project_id !== input.backup.project_id
+    || current.authority.project_root_realpath !== input.backup.project_root_realpath
+    || current.authority.revision < input.backup.base_project_revision + 1
+    || current.authority.authority_epoch < input.backup.base_authority_epoch
   ) {
     fail("LEGACY_IMPORT_LIVE_RESTORE_VERIFICATION_FAILED", "verify", "recorded restore authority does not match the approved backup successor");
   }
-  const verification = verificationForBase(base, input.backup.backup_sha256);
+  requireRegularFile(input.backup.backup_ref, input.backup.backup_byte_size);
+  if (hashFile(input.backup.backup_ref) !== input.backup.backup_sha256) {
+    fail("LEGACY_IMPORT_LIVE_RESTORE_VERIFICATION_FAILED", "verify", "retained restore backup no longer matches its receipt");
+  }
+  const restoredBase = backupBase(input.backup.backup_ref);
+  if (
+    restoredBase.authority.project_id !== input.backup.project_id
+    || restoredBase.authority.project_root_realpath !== input.backup.project_root_realpath
+    || restoredBase.authority.revision !== input.backup.base_project_revision
+    || restoredBase.authority.authority_epoch !== input.backup.base_authority_epoch
+    || restoredBase.database_schema_version !== input.backup.backup_database_schema_version
+    || restoredBase.relevant_rows_hash !== input.backup.relevant_rows_hash
+  ) {
+    fail("LEGACY_IMPORT_LIVE_RESTORE_VERIFICATION_FAILED", "verify", "retained restore backup does not match its durable evidence");
+  }
+  const verification = verificationForBase(restoredBase, input.backup.backup_sha256);
   return loadStoredResult(input, verification, "replayed");
+}
+
+export function replayLegacyImportLiveRestore(
+  value: Readonly<LegacyImportLiveRestoreReplayInput>,
+): LegacyImportLiveRestoreResult {
+  // The replay boundary enforces the same strict exact-keys contract as the
+  // live restore boundary (snapshotInput): no extra top-level keys and an
+  // exact evidence-bound Consent, so a hand-rolled replay envelope cannot
+  // smuggle tolerated fields past validation.
+  if (!hasExactDataKeys(value, [
+    "applicationIdentityHash",
+    "backup",
+    "consent",
+  ]) || !isStrictLegacyImportData(value) || !isValidLegacyImportVerifiedBackup(value["backup"])) {
+    fail("LEGACY_IMPORT_LIVE_RESTORE_CONTRACT_INVALID", "contract", "live restore replay input is invalid");
+  }
+  const replayConsent = value["consent"];
+  if (!hasExactDataKeys(replayConsent, [
+    "consentSchemaVersion",
+    "decision",
+    "destructiveDatabaseRestore",
+    "evidenceHash",
+  ]) || replayConsent["consentSchemaVersion"] !== LEGACY_IMPORT_RESTORE_ASSESSMENT_CONSENT_SCHEMA_VERSION
+    || replayConsent["decision"] !== "proceed"
+    || replayConsent["destructiveDatabaseRestore"] !== true) {
+    fail("LEGACY_IMPORT_LIVE_RESTORE_CONTRACT_INVALID", "contract", "durable restore replay requires the exact evidence-bound Consent");
+  }
+  requireHash(value["applicationIdentityHash"], "applicationIdentityHash");
+  requireHash(replayConsent["evidenceHash"], "consent.evidenceHash");
+  const assessment = assessLegacyImportRestore({
+    applicationIdentityHash: value.applicationIdentityHash,
+    backup: value.backup,
+    consent: value.consent,
+  });
+  if (assessment.decision !== "already-restored") {
+    fail("LEGACY_IMPORT_LIVE_RESTORE_NOT_ELIGIBLE", "recheck", "durable restore replay is unavailable");
+  }
+  const row = getDb().prepare(`SELECT difference_hash, consent_hash
+    FROM workflow_import_restores WHERE application_identity_hash = :identity`).get({
+    ":identity": value.applicationIdentityHash,
+  });
+  if (typeof row?.["difference_hash"] !== "string"
+    || !/^sha256:[0-9a-f]{64}$/.test(String(row["difference_hash"]))
+    || row["consent_hash"] !== hashLegacyImportValue(value.consent)) {
+    fail("LEGACY_IMPORT_LIVE_RESTORE_RECEIPT_FAILED", "receipt", "durable restore Consent is inconsistent");
+  }
+  const replayAssessment = {
+    ...assessment,
+    facts: { ...assessment.facts, difference: { differenceHash: row["difference_hash"] } },
+  } as unknown as LegacyImportRestoreAssessment;
+  const input = {
+    invocation: { idempotencyKey: `legacy-import/recover-restore/${value.applicationIdentityHash}`, sourceTransport: "internal", actorType: "system", actorId: "gsd-recover" },
+    applicationIdentityHash: value.applicationIdentityHash,
+    backup: value.backup,
+    assessment: replayAssessment,
+    consent: value.consent,
+  } as RestoreInputSnapshot;
+  const result = existingTerminalResult(input);
+  if (!result) fail("LEGACY_IMPORT_LIVE_RESTORE_RECEIPT_FAILED", "receipt", "durable restore receipt is missing");
+  return result;
 }
 
 function convergePublished(
@@ -1494,7 +1664,10 @@ export function _restoreLegacyImportLiveForTest(
   const intent = intentFor(input, hash, lineage, fileIdentity(databasePath, "active database"));
 
   const active = readIntent(activeIntentPath);
-  if (active !== null) requireMatchingIntent(active, intent);
+  if (active !== null) {
+    requireMatchingIntent(active, intent);
+    promoteDatabaseForReplacementRecovery();
+  }
   const terminal = existingTerminalResult(input);
   if (terminal !== null) {
     if (active !== null) {
@@ -1597,6 +1770,18 @@ export function _restoreLegacyImportLiveForTest(
   let published = false;
   let ownsIntent = false;
   try {
+    try {
+      assertDatabaseMaintenanceAllowsReplacement(databasePath);
+    } catch (error) {
+      fail(
+        "LEGACY_IMPORT_LIVE_RESTORE_INTENT_CONFLICT",
+        "recheck",
+        "database maintenance owns the replacement boundary",
+        true,
+        { requestHash: hash },
+        error,
+      );
+    }
     immediateTransaction(() => {
       try {
         assertDatabaseMaintenanceAllowsReplacement(databasePath);
@@ -1733,11 +1918,13 @@ export function _restoreLegacyImportLiveForTest(
       try { cleanupRecoveryDirectory(recoveryDirectory, intent, ops); } catch { /* surface original */ }
     }
     if (error instanceof LegacyImportLiveRestoreError) throw error;
-    if (!published && !ownsIntent && isSqliteWriterContention(error)) {
+    if (!published && (isSqliteWriterContention(error) || isTransientDetachContention(error))) {
       fail(
         "LEGACY_IMPORT_LIVE_RESTORE_INTENT_CONFLICT",
-        "recheck",
-        "a canonical writer owns the database while live restore is claiming authority",
+        ownsIntent ? "stage" : "recheck",
+        ownsIntent
+          ? "a concurrent database connection holds the active database while live restore is detaching it"
+          : "a canonical writer owns the database while live restore is claiming authority",
         true,
         { requestHash: hash },
         error,

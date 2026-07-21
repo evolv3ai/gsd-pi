@@ -17,17 +17,22 @@ import {
   openDatabase,
   transaction,
 } from "../gsd-db.ts";
+import { snapshotDatabaseFile } from "../db/engine.ts";
 import { createDbAdapter } from "../db-adapter.ts";
 import {
+  _executeAuthorityCutoverDomainOperation,
   _setDomainOperationFaultForTest,
+  assertDomainOperationReceiptComponents,
   executeImportDomainOperation,
   executeDomainOperation,
+  type AuthorityCutoverDomainOperationRequest,
   type DomainOperationContext,
   type DomainOperationMutation,
   type DomainOperationRequest,
   type DomainOperationResult,
   type ImportDomainOperationRequest,
 } from "../db/domain-operation.ts";
+import { insertAuthorityCutoverReceipt } from "../db/writers/authority-recovery.ts";
 import {
   GSD_IDEMPOTENCY_CONFLICT,
   GSD_REVISION_CONFLICT,
@@ -110,7 +115,7 @@ function createV30Backup(): string {
   `);
   closeDatabase();
   const backupPath = join(dirname(sourcePath), "v30-backup.db");
-  copyFileSync(sourcePath, backupPath);
+  snapshotDatabaseFile(sourcePath, backupPath);
   return backupPath;
 }
 
@@ -1179,4 +1184,86 @@ test("two real processes racing one expected tuple yield one commit and one stal
   assert.equal(row("SELECT COUNT(*) AS count FROM workflow_domain_events").count, 1);
   assert.equal(row("SELECT COUNT(*) AS count FROM workflow_outbox").count, 1);
   assert.equal(row("SELECT COUNT(*) AS count FROM workflow_projection_work").count, 1);
+});
+
+test("receipt component verification accepts the import.apply and authority.cutover stored hashes", (t) => {
+  openFixture(t);
+
+  // import.apply durably stores the sealed Preview hash as request_hash, not
+  // the conventional requestHash(request) — verification must recompute the
+  // operation-type-appropriate stored hash or it rejects every import receipt.
+  const preview = importPreview();
+  const applyRequest = importRequest(preview);
+  const applyMutation = mutation();
+  const applied = executeImportDomainOperation(applyRequest, (context) => {
+    insertImportApplication(context, preview);
+    return applyMutation;
+  });
+  assert.equal(applied.requestHash, preview.preview_hash);
+  assertDomainOperationReceiptComponents(
+    applied,
+    applyRequest as unknown as DomainOperationRequest,
+    applyMutation,
+  );
+
+  // authority.cutover durably stores the epoch-advancing request hash, while
+  // the assert path used to recompute unconditionally with
+  // advanceAuthorityEpoch=false and reject every cutover receipt.
+  const evidenceHash = `sha256:${"3".repeat(64)}`;
+  const consentHash = `sha256:${"4".repeat(64)}`;
+  const cutoverRequest: AuthorityCutoverDomainOperationRequest = {
+    operationType: "authority.cutover",
+    idempotencyKey: "cutover/receipt-components",
+    expectedRevision: 1,
+    expectedAuthorityEpoch: 0,
+    actorType: "agent",
+    actorId: "authority-cutover",
+    sourceTransport: "internal",
+    payload: {
+      authorityContractVersion: 1,
+      evidenceHash,
+      consentHash,
+    },
+  };
+  const cutoverMutation = mutation();
+  const cutover = _executeAuthorityCutoverDomainOperation(cutoverRequest, (context) => {
+    insertAuthorityCutoverReceipt(context, {
+      authorityContractVersion: 1,
+      evidenceHash,
+      consentHash,
+    });
+    return cutoverMutation;
+  });
+  assert.equal(cutover.resultingAuthorityEpoch, 1);
+  assertDomainOperationReceiptComponents(cutover, cutoverRequest, cutoverMutation);
+});
+
+test("receipt component verification still rejects request identity drift", (t) => {
+  openFixture(t);
+  const preview = importPreview();
+  const applyRequest = importRequest(preview);
+  const applied = executeImportDomainOperation(applyRequest, (context) => {
+    insertImportApplication(context, preview);
+    return mutation();
+  });
+
+  assert.throws(
+    () => assertDomainOperationReceiptComponents(
+      applied,
+      {
+        ...applyRequest,
+        idempotencyKey: "legacy-import/application-drifted",
+      } as unknown as DomainOperationRequest,
+      mutation(),
+    ),
+    /receipt components or header are incomplete or corrupt/,
+  );
+  assert.throws(
+    () => assertDomainOperationReceiptComponents(
+      applied,
+      { ...applyRequest, payload: {} } as unknown as DomainOperationRequest,
+      mutation(),
+    ),
+    /sealed Preview artifact|receipt components or header/i,
+  );
 });

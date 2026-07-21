@@ -2,6 +2,7 @@
 // File Purpose: Public v1 contract for explicit transactional legacy Import Application.
 
 import type { ExecutionInvocation } from "./execution-invocation.js";
+import { deepFreeze } from "./legacy-import-utils.js";
 import {
   LegacyImportBackupError,
   isValidLegacyImportVerifiedBackup,
@@ -48,6 +49,7 @@ import { getDb, readTransaction } from "./db/engine.js";
 import {
   applyLegacyImportApplicationPlan,
   insertLegacyImportApplicationReceipt,
+  type LegacyImportApplicationInstructionResult,
 } from "./db/writers/legacy-import-application.js";
 import {
   GSD_IDEMPOTENCY_CONFLICT,
@@ -64,6 +66,7 @@ export {
 export const LEGACY_IMPORT_APPLICATION_OPERATION_TYPE = "import.apply" as const;
 export const LEGACY_IMPORT_APPLICATION_EVENT_TYPE = "legacy-import.applied" as const;
 export const LEGACY_IMPORT_APPLICATION_REPLAY_IDENTITY_SCHEMA_VERSION = 1 as const;
+export const LEGACY_IMPORT_APPLICATION_CONSENT_SCHEMA_VERSION = 1 as const;
 
 export type LegacyImportApplicationBoundaryPoint =
   | "after-coordination"
@@ -92,6 +95,15 @@ export interface LegacyImportApplicationInput {
   readonly previewInput: Readonly<LegacyImportPreviewCreateInput>;
   readonly preview: Readonly<LegacyImportPreviewArtifact>;
   readonly backup: Readonly<LegacyImportVerifiedBackup>;
+  readonly destructiveConsent?: Readonly<LegacyImportApplicationConsent>;
+}
+
+export interface LegacyImportApplicationConsent {
+  readonly consentSchemaVersion: typeof LEGACY_IMPORT_APPLICATION_CONSENT_SCHEMA_VERSION;
+  readonly decision: "proceed";
+  readonly previewHash: LegacyImportSha256;
+  readonly changeSetHash: LegacyImportSha256;
+  readonly deleteCount: number;
 }
 
 export interface LegacyImportApplicationInvocationIdentity {
@@ -134,13 +146,6 @@ export interface LegacyImportApplicationReceipt {
   readonly eventIds: readonly string[];
   readonly outboxIds: readonly number[];
   readonly projectionWorkIds: readonly string[];
-}
-
-function deepFreeze<T>(value: T, seen = new Set<object>()): T {
-  if (value === null || typeof value !== "object" || seen.has(value)) return value;
-  seen.add(value);
-  for (const child of Object.values(value)) deepFreeze(child, seen);
-  return Object.freeze(value);
 }
 
 function isPlainRecord(value: unknown): value is Record<string, unknown> {
@@ -272,8 +277,77 @@ interface LegacyImportApplicationSnapshot {
   readonly identity: LegacyImportApplicationIdentity;
 }
 
+function normalizeDestructiveConsent(value: unknown): LegacyImportApplicationConsent | undefined {
+  if (value === undefined) return undefined;
+  if (!hasExactKeys(value, [
+    "consentSchemaVersion",
+    "decision",
+    "previewHash",
+    "changeSetHash",
+    "deleteCount",
+  ])) {
+    failContract("legacy import destructive consent does not satisfy the exact v1 contract");
+  }
+  if (
+    value["consentSchemaVersion"] !== LEGACY_IMPORT_APPLICATION_CONSENT_SCHEMA_VERSION
+    || value["decision"] !== "proceed"
+    || typeof value["previewHash"] !== "string"
+    || typeof value["changeSetHash"] !== "string"
+    || !/^sha256:[0-9a-f]{64}$/u.test(value["previewHash"])
+    || !/^sha256:[0-9a-f]{64}$/u.test(value["changeSetHash"])
+    || !Number.isSafeInteger(value["deleteCount"])
+    || Number(value["deleteCount"]) < 1
+  ) {
+    failContract("legacy import destructive consent is invalid");
+  }
+  return {
+    consentSchemaVersion: LEGACY_IMPORT_APPLICATION_CONSENT_SCHEMA_VERSION,
+    decision: "proceed",
+    previewHash: value["previewHash"] as LegacyImportSha256,
+    changeSetHash: value["changeSetHash"] as LegacyImportSha256,
+    deleteCount: Number(value["deleteCount"]),
+  };
+}
+
+export function createLegacyImportApplicationConsent(
+  preview: Readonly<LegacyImportPreviewArtifact>,
+): LegacyImportApplicationConsent {
+  if (!isValidLegacyImportPreviewArtifact(preview) || preview.preview.counts.delete < 1) {
+    failContract("legacy import destructive consent requires a sealed Preview with deletes");
+  }
+  return deepFreeze({
+    consentSchemaVersion: LEGACY_IMPORT_APPLICATION_CONSENT_SCHEMA_VERSION,
+    decision: "proceed",
+    previewHash: preview.preview_hash,
+    changeSetHash: preview.preview.change_set_hash,
+    deleteCount: preview.preview.counts.delete,
+  });
+}
+
+function requireDestructiveConsent(snapshot: LegacyImportApplicationSnapshot): void {
+  const preview = snapshot.input.preview;
+  if (preview.preview.counts.delete === 0) return;
+  const consent = snapshot.input.destructiveConsent;
+  if (
+    consent?.previewHash === preview.preview_hash
+    && consent.changeSetHash === preview.preview.change_set_hash
+    && consent.deleteCount === preview.preview.counts.delete
+  ) return;
+  throw new LegacyImportApplicationError(
+    "preview",
+    "LEGACY_IMPORT_APPLICATION_DESTRUCTIVE_CONSENT_REQUIRED",
+    "legacy import deletes require consent bound to the sealed Preview",
+    false,
+    {
+      preview_hash: preview.preview_hash,
+      change_set_hash: preview.preview.change_set_hash,
+      delete_count: preview.preview.counts.delete,
+    },
+  );
+}
+
 function snapshotLegacyImportApplication(value: unknown): LegacyImportApplicationSnapshot {
-  if (!hasExactKeys(value, ["invocation", "previewInput", "preview", "backup"])) {
+  if (!hasExactKeys(value, ["invocation", "previewInput", "preview", "backup"], ["destructiveConsent"])) {
     failContract("legacy import Application input does not satisfy the exact v1 contract");
   }
   if (!isStrictLegacyImportData(value)) {
@@ -292,6 +366,7 @@ function snapshotLegacyImportApplication(value: unknown): LegacyImportApplicatio
   const normalizedPreviewInput = normalizePreviewInput(detached["previewInput"]);
   requireBackupLinkage(detached["backup"], preview);
   const invocation = normalizeInvocation(detached["invocation"]);
+  const destructiveConsent = normalizeDestructiveConsent(detached["destructiveConsent"]);
   const replayIdentity: LegacyImportApplicationReplayIdentity = {
     replayIdentitySchemaVersion: LEGACY_IMPORT_APPLICATION_REPLAY_IDENTITY_SCHEMA_VERSION,
     invocation,
@@ -312,6 +387,7 @@ function snapshotLegacyImportApplication(value: unknown): LegacyImportApplicatio
     previewInput: normalizedPreviewInput,
     preview,
     backup: detached["backup"],
+    ...(destructiveConsent === undefined ? {} : { destructiveConsent }),
   };
   return deepFreeze({
     input,
@@ -450,6 +526,7 @@ function applicationEventPayload(
   snapshot: LegacyImportApplicationSnapshot,
   plan: LegacyImportApplicationPlan,
   applicationRelevantRowsHash: LegacyImportSha256,
+  instructionResults: readonly LegacyImportApplicationInstructionResult[],
 ): DomainJsonValue {
   return {
     replayIdentitySchemaVersion: LEGACY_IMPORT_APPLICATION_REPLAY_IDENTITY_SCHEMA_VERSION,
@@ -461,7 +538,56 @@ function applicationEventPayload(
     planSchemaVersion: plan.planSchemaVersion,
     eventFacts: plan.eventFacts as unknown as DomainJsonValue,
     projectionKeys: [...plan.projectionKeys],
+    instructionResults: instructionResults.map((result) => ({
+      action: result.action,
+      targetKind: result.targetKind,
+      targetIdentityHash: result.targetIdentityHash,
+      expectedAffectedRows: result.expectedAffectedRows,
+      affectedRows: result.affectedRows,
+    })),
   };
+}
+
+const INSTRUCTION_RESULT_ACTIONS: ReadonlySet<string> = new Set([
+  "create",
+  "update",
+  "delete",
+  "create-decision-memory",
+  "update-decision-memory",
+  "delete-decision-memory",
+  "replace-slice-dependencies",
+  "delete-slice-dependencies",
+  "adopt-lifecycle",
+  "preserve",
+]);
+
+function isStoredInstructionResult(value: unknown): value is LegacyImportApplicationInstructionResult {
+  if (!isPlainRecord(value)) return false;
+  const keys = Object.keys(value).sort().join("\0");
+  if (keys !== ["action", "affectedRows", "expectedAffectedRows", "targetIdentityHash", "targetKind"].sort().join("\0")) {
+    return false;
+  }
+  return typeof value["action"] === "string"
+    && INSTRUCTION_RESULT_ACTIONS.has(value["action"])
+    && typeof value["targetKind"] === "string"
+    && typeof value["targetIdentityHash"] === "string"
+    && /^sha256:[0-9a-f]{64}$/.test(value["targetIdentityHash"])
+    && Number.isSafeInteger(value["expectedAffectedRows"])
+    && (value["expectedAffectedRows"] as number) >= 0
+    && Number.isSafeInteger(value["affectedRows"])
+    && (value["affectedRows"] as number) >= 0;
+}
+
+function storedApplicationInstructionResults(
+  payloadJson: unknown,
+): readonly LegacyImportApplicationInstructionResult[] {
+  try {
+    const value = (JSON.parse(String(payloadJson)) as DbRow)["instructionResults"];
+    if (Array.isArray(value) && value.every(isStoredInstructionResult)) return value;
+  } catch {
+    // Normalized below.
+  }
+  return receiptInconsistent("legacy import Application instruction results are invalid");
 }
 
 function storedApplicationRelevantRowsHash(payloadJson: unknown): LegacyImportSha256 {
@@ -569,6 +695,7 @@ function requireReplayAggregate(
     snapshot,
     plan,
     storedApplicationRelevantRowsHash(event?.["payload_json"]),
+    storedApplicationInstructionResults(event?.["payload_json"]),
   ));
   if (
     aggregate.events.length !== 1
@@ -732,12 +859,12 @@ function requireSameBase(
   );
 }
 
-function requireCoordinationIdle(projectRootRealpath: string): void {
+function requireCoordinationIdle(): void {
   const db = getDb();
   const counts = {
-    active_workers: Number(db.prepare(`SELECT COUNT(*) AS count FROM workers
-      WHERE project_root_realpath = :project_root_realpath AND status = 'active'`)
-      .get({ ":project_root_realpath": projectRootRealpath })?.["count"] ?? 0),
+    active_workers: Number(db.prepare(
+      "SELECT COUNT(*) AS count FROM workers WHERE status = 'active'",
+    ).get()?.["count"] ?? 0),
     held_leases: Number(db.prepare(
       "SELECT COUNT(*) AS count FROM milestone_leases WHERE status = 'held'",
     ).get()?.["count"] ?? 0),
@@ -802,6 +929,11 @@ function mapTransactionFailure(error: unknown): LegacyImportApplicationError {
     "LEGACY_IMPORT_APPLICATION_MUTATION_FAILED",
     "legacy import Application transaction failed",
     false,
+    error instanceof GSDError
+      ? { cause_code: error.code }
+      : error instanceof Error
+        ? { cause_name: error.name }
+        : {},
   );
 }
 
@@ -812,6 +944,7 @@ export function applyLegacyImport(input: unknown): LegacyImportApplicationReceip
   if (existing) return existing;
 
   const plan = compileLegacyImportApplicationPlan(snapshot.input.preview);
+  requireDestructiveConsent(snapshot);
   let preview: LegacyImportPreviewArtifact;
   try {
     preview = revalidateLegacyImportPreview(snapshot.input.previewInput, snapshot.input.preview);
@@ -835,7 +968,7 @@ export function applyLegacyImport(input: unknown): LegacyImportApplicationReceip
     operation = executeImportDomainOperation(importRequest(snapshot), (context) => {
       const transactionalBase = captureApplicationBase();
       requireSameBase(base, transactionalBase);
-      requireCoordinationIdle(base.authority.project_root_realpath);
+      requireCoordinationIdle();
       reachApplicationBoundary("after-coordination");
       try {
         validateLegacyImportVerifiedBackup(snapshot.input.backup, { preview, base: transactionalBase });
@@ -844,7 +977,7 @@ export function applyLegacyImport(input: unknown): LegacyImportApplicationReceip
         throw error;
       }
       reachApplicationBoundary("after-final-validation");
-      applyLegacyImportApplicationPlan(context, plan);
+      const writerResult = applyLegacyImportApplicationPlan(context, plan);
       const applicationRelevantRowsHash = captureApplicationBase().relevant_rows_hash;
       reachApplicationBoundary("after-plan");
       try {
@@ -864,7 +997,12 @@ export function applyLegacyImport(input: unknown): LegacyImportApplicationReceip
           eventType: LEGACY_IMPORT_APPLICATION_EVENT_TYPE,
           entityType: "legacy-import",
           entityId: preview.preview.preview_id,
-          payload: applicationEventPayload(snapshot, plan, applicationRelevantRowsHash),
+          payload: applicationEventPayload(
+            snapshot,
+            plan,
+            applicationRelevantRowsHash,
+            writerResult.instructionResults,
+          ),
           destinations: ["projection"],
         }],
         projections: plan.projectionKeys.map((projectionKey) => ({

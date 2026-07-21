@@ -1,6 +1,8 @@
 // Project/App: gsd-pi
 // File Purpose: Pure hierarchy interpretation for captured legacy .gsd projections.
 
+import { compareText } from "./legacy-import-utils.js";
+
 import type { LegacyImportValue } from "./legacy-import-contract.js";
 import {
   addLegacyImportCandidate,
@@ -55,10 +57,6 @@ interface FrontmatterField {
 
 const FLAT_PREFIX = ".gsd/phases/";
 const NESTED_PREFIX = ".gsd/milestones/";
-
-function compareText(left: string, right: string): number {
-  return left < right ? -1 : left > right ? 1 : 0;
-}
 
 function utf8Length(value: string): number {
   return Buffer.byteLength(value, "utf8");
@@ -220,6 +218,19 @@ function preserveHeading(
 function roadmapSlices(file: SourceFile): SliceClaim[] {
   const claims: SliceClaim[] = [];
   for (const line of file.lines) {
+    const currentChecklist = /^-\s+\[([ xX])\]\s+\*\*(S\d+):\s+(.+?)\*\*\s+`risk:([^`]+)`\s+`depends:\[([^\]]*)\]`$/u.exec(line.text);
+    if (currentChecklist !== null) {
+      claims.push({
+        id: currentChecklist[2],
+        title: currentChecklist[3].trim(),
+        status: currentChecklist[1].toLowerCase() === "x" ? "complete" : "pending",
+        line,
+        span: matchSpan(line, currentChecklist),
+        dependsOn: currentChecklist[5].split(",").map((value) => value.trim()).filter(Boolean),
+        risk: currentChecklist[4].trim(),
+      });
+      continue;
+    }
     const checklist = /^-\s+\[([ xX])\]\s+(S\d+)\s+(.+?)(?:\s+\(depends on (S\d+)(?:-(S\d+))?\))?$/u.exec(line.text);
     if (checklist !== null) {
       claims.push({
@@ -659,7 +670,8 @@ function nestedTaskCandidates(
   candidates: PendingCandidate[],
   diagnoses: PendingDiagnosis[],
 ): void {
-  const checkbox = firstMatch(file, /^-\s+\[([ xX])\]\s+(T\d+)\s+(.+)$/u);
+  const checkbox = firstMatch(file, /^-\s+\[([ xX])\]\s+\*\*(T\d+):\s+(.+?)\*\*(?:\s+`est:[^`]+`)?$/u)
+    ?? firstMatch(file, /^-\s+\[([ xX])\]\s+(T\d+)\s+(.+)$/u);
   const heading = firstMatch(file, /^##\s+(T\d+)\s+(.+)$/u);
   const xml = firstMatch(file, /<task\s+id="(T\d+)"\s+status="([^"]+)">([^<]+)<\/task>/u);
   const h1 = firstMatch(file, /^#\s+(T\d+):\s+(.+)$/u);
@@ -805,6 +817,15 @@ function interpretNested(
         candidates,
         "nested-ghost-preserved",
         { reason: "ghost-milestone-without-roadmap" },
+      );
+      continue;
+    }
+    if (!file.entry.logical_path.includes("/slices/")) {
+      preserveHeading(
+        file,
+        candidates,
+        "nested-milestone-artifact-preserved",
+        { milestone_id: claimsByDirectory.get(milestoneDirectory)!.canonicalId },
       );
       continue;
     }

@@ -1042,6 +1042,50 @@ describe("legacy preview change classification", () => {
     assert.ok(!result.changes.some((change) => change.target.key === "M001/S01/T01"));
   });
 
+  test("blocks a hierarchy field-status candidate when its status-kind spelling is unresolved", () => {
+    const diagnosis: LegacyImportPreviewDiagnosis = {
+      diagnosis_id: "diagnosis-task-status-route",
+      code: "task-status-route-selection",
+      severity: "blocker",
+      source_id: "source-manifest",
+      locator: { start_byte: 12, end_byte: 96, line: 2 },
+      raw_value: "choose a task status route",
+      message: "The retained task status needs an explicit route.",
+    };
+    const result = classifyLegacyImportChanges(
+      base(),
+      interpretation([
+        candidate(
+          { kind: "task", key: "M001/S01/T01", field: "status" },
+          "active",
+        ),
+      ], {
+        diagnoses: [diagnosis],
+        resolutions: [{
+          diagnosis_id: diagnosis.diagnosis_id,
+          disposition: "requires-user",
+          target: { kind: "task-status", key: "M001/S01/T01" },
+        }],
+      }),
+    );
+
+    assert.equal(result.applicable, false);
+    assert.ok(!result.changes.some((change) => change.target.key === "M001/S01/T01"));
+  });
+
+  test("rejects an assessment delete identity it cannot encode injectively", () => {
+    const identity = { milestone_id: "M001", slice_id: null, task_id: "T01", scope: "uat" };
+    assertClassificationError(
+      () => classifyLegacyImportChanges(
+        base([row("assessments", identity, { ...identity, status: "pass" })]),
+        interpretation([], {
+          completeRowSets: [completeRowSet("assessments", "assessment", [], [])],
+        }),
+      ),
+      "LEGACY_IMPORT_CLASSIFICATION_COMPLETE_SET_INVALID",
+    );
+  });
+
   test("derives exact task and assessment delete identities from complete snapshots", () => {
     const cases: readonly {
       rowSet: "tasks" | "assessments";
@@ -1065,6 +1109,15 @@ describe("legacy preview change classification", () => {
           milestone_id: "M001", slice_id: "S01", task_id: "T01", scope: "uat", status: "pass",
         },
         expectedKey: "M001/S01/T01/uat",
+      },
+      {
+        rowSet: "assessments",
+        targetKind: "assessment",
+        identity: { milestone_id: "M002", slice_id: null, task_id: null, scope: "milestone" },
+        value: {
+          milestone_id: "M002", slice_id: null, task_id: null, scope: "milestone", status: "pass",
+        },
+        expectedKey: "M002/milestone",
       },
     ];
 

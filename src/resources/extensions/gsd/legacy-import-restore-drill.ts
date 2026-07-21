@@ -1,6 +1,8 @@
 // Project/App: gsd-pi
 // File Purpose: Disposable fresh-process restore rehearsal for verified legacy-import backups.
 
+import { deepFreeze } from "./legacy-import-utils.js";
+
 import { spawnSync } from "node:child_process";
 import {
   chmodSync,
@@ -15,6 +17,7 @@ import {
   readFileSync,
   readdirSync,
   realpathSync,
+  rmSync,
   rmdirSync,
   unlinkSync,
 } from "node:fs";
@@ -123,13 +126,6 @@ function hasExactKeys(value: unknown, keys: readonly string[]): value is Record<
   ) return false;
   const actual = Object.keys(value);
   return actual.length === keys.length && keys.every((key) => Object.hasOwn(value, key));
-}
-
-function deepFreeze<T>(value: T, seen = new Set<object>()): T {
-  if (value === null || typeof value !== "object" || seen.has(value)) return value;
-  seen.add(value);
-  for (const child of Object.values(value)) deepFreeze(child, seen);
-  return Object.freeze(value);
 }
 
 function drillError(
@@ -245,10 +241,48 @@ function confirmOwnedDirectory(directory: OwnedDrillDirectory): void {
   }
 }
 
+const DRILL_DIRECTORY_PREFIX = "gsd-legacy-import-restore-drill-";
+// A drill always finishes in well under a minute (its fresh-process
+// verification has a 60s timeout), so residue older than a day can only come
+// from a crashed or SIGKILLed drill that can never return to clean itself.
+const STALE_DRILL_DIRECTORY_MAX_AGE_MS = 24 * 60 * 60 * 1000;
+
 function makeDrillDirectory(): string {
-  const path = mkdtempSync(join(tmpdir(), "gsd-legacy-import-restore-drill-"));
+  sweepStaleDrillDirectories(tmpdir(), Date.now());
+  const path = mkdtempSync(join(tmpdir(), DRILL_DIRECTORY_PREFIX));
   chmodSync(path, 0o700);
   return realpathSync(path);
+}
+
+/**
+ * Best-effort janitor for drill directories orphaned by crashed/SIGKILLed
+ * drills. Only exact-prefix real directories older than the staleness
+ * threshold are removed; a live drill, a foreign entry, or any filesystem
+ * error must never block or fail a new drill, so every failure is swallowed.
+ */
+function sweepStaleDrillDirectories(root: string, nowMs: number): void {
+  let entries: string[];
+  try {
+    entries = readdirSync(root);
+  } catch {
+    return;
+  }
+  for (const entry of entries) {
+    if (!entry.startsWith(DRILL_DIRECTORY_PREFIX)) continue;
+    try {
+      const stat = lstatSync(join(root, entry), { bigint: true });
+      if (!stat.isDirectory() || stat.isSymbolicLink()) continue;
+      const ageMs = nowMs - Number(stat.mtimeMs);
+      if (!Number.isFinite(ageMs) || ageMs < STALE_DRILL_DIRECTORY_MAX_AGE_MS) continue;
+      rmSync(join(root, entry), { recursive: true, force: true });
+    } catch {
+      // best effort: the next drill start retries the sweep
+    }
+  }
+}
+
+export function _sweepStaleRestoreDrillDirectoriesForTest(root: string, nowMs: number): void {
+  sweepStaleDrillDirectories(root, nowMs);
 }
 
 function copyFile(source: string, destination: string): void {
@@ -267,7 +301,11 @@ function copyFile(source: string, destination: string): void {
 function fsyncFile(path: string): void {
   let fd: number;
   try {
-    fd = openSync(path, fsConstants.O_RDONLY | (fsConstants.O_NOFOLLOW ?? 0));
+    // The sync pass opens read-write on Windows because fsync (FlushFileBuffers)
+    // requires a handle with GENERIC_WRITE. POSIX keeps O_RDONLY (same
+    // convention as legacy-import-backup.ts hashSnapshotPass).
+    const access = process.platform === "win32" ? fsConstants.O_RDWR : fsConstants.O_RDONLY;
+    fd = openSync(path, access | (fsConstants.O_NOFOLLOW ?? 0));
   } catch {
     throw drillError(
       "LEGACY_IMPORT_BACKUP_SYNC_FAILED",
@@ -588,12 +626,28 @@ export function _drillLegacyImportBackupRestoreForTest(
     try {
       ops.removeDrillDirectory(directory);
       directory = undefined;
-    } catch {
-      failure = drillError(
+    } catch (cleanupError) {
+      const cleanupFailure = drillError(
         "LEGACY_IMPORT_BACKUP_STAGING_CLEANUP_FAILED",
         "restore drill cleanup failed",
         "cleanup",
       );
+      if (failure === undefined) {
+        failure = cleanupFailure;
+      } else {
+        // The drill body failure stays primary; the cleanup failure is
+        // chained at the end of its cause chain so a cleanup crash can never
+        // silently discard the original error.
+        let tail = failure;
+        while (tail instanceof Error && tail.cause instanceof Error) tail = tail.cause;
+        if (tail instanceof Error) {
+          try {
+            tail.cause = cleanupFailure;
+          } catch {
+            // a frozen primary cannot carry the chain; the primary still wins
+          }
+        }
+      }
     }
   }
   if (failure !== undefined) throw failure;

@@ -88,6 +88,14 @@
     "./ttsr": {
       "types": "./dist/ttsr/index.d.ts",
       "default": "./dist/ttsr/index.js"
+    },
+    "./file-identity": {
+      "types": "./dist/file-identity/index.d.ts",
+      "default": "./dist/file-identity/index.js"
+    },
+    "./directory-sync": {
+      "types": "./dist/directory-sync/index.d.ts",
+      "default": "./dist/directory-sync/index.js"
     }
   },
   "files": [

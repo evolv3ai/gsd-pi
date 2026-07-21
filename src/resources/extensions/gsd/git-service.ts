@@ -364,9 +364,13 @@ export interface PreMergeCheckResult {
 export const RUNTIME_EXCLUSION_PATHS: readonly string[] = [
   ".gsd-worktrees/",
   ".gsd-backups/**",
+  ".gsd-migration-import-*/**",
   ".gsd/activity/",
   ".gsd/audit/",
+  ".gsd/backups/**",
   ".gsd/forensics/",
+  ".gsd/migration-applications/**",
+  ".gsd/recovery-applications/**",
   ".gsd/runtime/",
   ".gsd/worktrees/",
   ".gsd/parallel/",

@@ -21,7 +21,7 @@ import type { GateEvaluationConfig, GateId } from "../types.js";
 import { invalidateStateCache } from "../state.js";
 import { renderPlanCheckboxes, renderPlanFromDb } from "../markdown-renderer.js";
 import { flushWorkflowProjections } from "../projection-flush.js";
-import { writeManifest } from "../workflow-manifest.js";
+import { writeManifestAndFlush } from "../workflow-manifest.js";
 import { appendEvent } from "../workflow-events.js";
 import { logWarning } from "../workflow-logger.js";
 import { validatePathOnlyPlanningFields, validatePlanningPathScope } from "../planning-path-scope.js";
@@ -621,7 +621,7 @@ export async function handlePlanSlice(
     // ── Post-mutation hook: manifest, event log ─────────────────────────
     try {
       await flushWorkflowProjections(basePath, { milestoneId: params.milestoneId });
-      writeManifest(basePath);
+      await writeManifestAndFlush(basePath);
       if (operationStatus === "committed") {
         appendEvent(basePath, {
           cmd: "plan-slice",

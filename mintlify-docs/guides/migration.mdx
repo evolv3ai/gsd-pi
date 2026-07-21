@@ -23,8 +23,8 @@ The migration tool:
 - Maps phases → slices, plans → tasks, milestones → milestones
 - Treats an explicit path as the target project root, so `/gsd migrate ~/projects/my-old-project` writes to `~/projects/my-old-project/.gsd`
 - Blocks zero-slice migrations and refuses to run while active, paused, or worktree session state exists
-- Backs up any existing `.gsd/` to `.gsd-backups/migrate-YYYYMMDD-HHMMSS/`, deletes the old `.gsd/`, and restores the backup if migration fails
-- Writes imported hierarchy into the GSD database, then renders and verifies markdown projections from that database
+- Uses the verified backup, retained Import Application, and retry behavior defined by the [authoritative migration contract](../../docs/user-docs/migration.md#what-gets-migrated)
+- Writes imported hierarchy into the GSD database, then renders markdown projections from that database
 - Preserves completion state (`[x]` phases stay done, summaries carry over)
 - Consolidates research files and archives the full legacy `.planning` source under `.gsd/migration/legacy/`
 - Records `.gsd/migration/MIGRATION.md` and `.gsd/migration/manifest.json` audit artifacts
@@ -53,3 +53,5 @@ Verify the output:
 ```
 
 This checks `.gsd/` integrity and flags any structural issues.
+
+Use `/gsd inspect` for database diagnostics. For recovery or explicit legacy import, follow the [authoritative migration contract](../../docs/user-docs/migration.md#post-migration).

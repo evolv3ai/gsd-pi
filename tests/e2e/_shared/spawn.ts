@@ -77,6 +77,12 @@ export function buildE2eEnv(extra: Record<string, string> = {}): NodeJS.ProcessE
 		if (k.startsWith("GSD_")) continue;
 		base[k] = v;
 	}
+	// CI builds the native addon from this checkout and selects it explicitly.
+	// Preserve only that build-parity flag; all user/runtime GSD_* configuration
+	// remains isolated from the child process.
+	if (process.env.GSD_NATIVE_PREFER_LOCAL === "1") {
+		base.GSD_NATIVE_PREFER_LOCAL = "1";
+	}
 	// Force non-interactive — every e2e test runs in CI by default.
 	base.GSD_NON_INTERACTIVE = "1";
 	// Keep TMPDIR canonical for the child too.

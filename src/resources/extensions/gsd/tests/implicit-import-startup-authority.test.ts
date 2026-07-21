@@ -16,10 +16,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, test } from "node:test";
 
-import {
-  openProjectDbIfPresent,
-  reconcileProjectMilestonesFromDisk,
-} from "../auto-start.ts";
+import { openProjectDbIfPresent } from "../auto-start.ts";
 import { migrateToFlatPhase } from "../flat-phase-migration.ts";
 import {
   _getAdapter,
@@ -151,27 +148,41 @@ test("startup database open and derive ignore markdown-only hierarchy without ch
   );
 });
 
-test("PROJECT.md startup reconciliation cannot create canonical milestone rows", () => {
+test("PROJECT.md startup reconciliation cannot create canonical milestone rows", async () => {
   const base = createMarkdownOnlyProject();
   writeFileSync(
     join(base, ".gsd", "PROJECT.md"),
     "# Project\n\n## Milestone Sequence\n- [ ] M010: Disk-only milestone - Must remain projection-only\n",
     "utf8",
   );
-  assert.equal(openDatabase(join(base, ".gsd", "gsd.db")), true);
-  const before = durableSnapshot();
-  const changesBefore = totalChanges();
+  const databasePath = join(base, ".gsd", "gsd.db");
+  assert.equal(openDatabase(databasePath), true);
+  const beforeOpen = durableSnapshot();
+  closeDatabase();
   const sourceTreeBefore = nonDatabaseTreeSnapshot(join(base, ".gsd"));
 
-  const inserted = reconcileProjectMilestonesFromDisk(base);
+  // The real bootstrap startup path (bootstrapAutoSession → openProjectDbIfPresent
+  // → deriveStateFromDb) must leave the PROJECT.md milestone sequence as
+  // projection-only bytes: zero authority writes, zero canonical rows.
+  await openProjectDbIfPresent(base);
 
-  assert.equal(inserted, 0);
-  assert.deepEqual(durableSnapshot(), before);
-  assert.equal(totalChanges(), changesBefore);
+  assert.equal(isDbAvailable(), true);
+  assert.deepEqual(durableSnapshot(), beforeOpen);
+  assert.equal(totalChanges(), 0, "startup database open performs no authority write");
+  const beforeDerive = durableSnapshot();
+  const changesBeforeDerive = totalChanges();
+  invalidateStateCache();
+
+  const state = await deriveStateFromDb(base);
+
+  assert.equal(state.registry.length, 0, "PROJECT.md milestone sequence must not enter the registry");
+  assert.equal(state.activeMilestone, null);
+  assert.deepEqual(durableSnapshot(), beforeDerive);
+  assert.equal(totalChanges(), changesBeforeDerive);
   assert.deepEqual(
     nonDatabaseTreeSnapshot(join(base, ".gsd")),
     sourceTreeBefore,
-    "PROJECT refusal leaves the complete non-database source tree exact",
+    "PROJECT.md startup refusal leaves the complete non-database source tree exact",
   );
 });
 
@@ -186,7 +197,7 @@ test("flat-phase layout migration cannot ingest markdown-only hierarchy into an 
 
   await assert.rejects(
     () => migrateToFlatPhase(base),
-    /Recommended: run `\/gsd recover --confirm`/,
+    /Recommended: run `\/gsd recover`/,
   );
 
   assert.deepEqual(durableSnapshot(), before);
@@ -200,4 +211,41 @@ test("flat-phase layout migration cannot ingest markdown-only hierarchy into an 
   );
   assert.equal(existsSync(join(base, ".gsd", "phases")), false);
   assert.equal(existsSync(join(base, ".gsd-backups")), false);
+});
+
+test("no production module imports the legacy markdown importer (md-importer is test-only)", () => {
+  // md-importer's migrateFromMarkdown/migrateHierarchyToDb are an unconsented,
+  // unverified markdown→DB write path kept alive for test scaffolding only.
+  // Every production markdown→DB import must go through the crash-safe Import
+  // Application (workflow_import_applications). This guard fails if any
+  // non-test module starts importing md-importer directly.
+  const gsdSourceDir = join(import.meta.dirname, "..");
+  const MD_IMPORTER_RE =
+    /from\s+["'][^"']*md-importer(?:\.js|\.ts)?["']|import\(\s*["'][^"']*md-importer(?:\.js|\.ts)?["']\s*\)|require\(\s*["'][^"']*md-importer(?:\.js|\.ts)?["']\s*\)/;
+
+  const productionFiles: string[] = [];
+  const stack = [gsdSourceDir];
+  while (stack.length > 0) {
+    const dir = stack.pop()!;
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      const full = join(dir, entry.name);
+      if (entry.isDirectory()) {
+        if (entry.name !== "tests" && entry.name !== "node_modules") stack.push(full);
+      } else if (entry.name.endsWith(".ts") && !entry.name.endsWith(".test.ts") && !entry.name.endsWith(".d.ts")) {
+        productionFiles.push(full);
+      }
+    }
+  }
+  assert.ok(productionFiles.length > 0, "should find GSD production source files");
+
+  const offenders = productionFiles
+    .filter((file) => MD_IMPORTER_RE.test(readFileSync(file, "utf-8")))
+    .map((file) => file.slice(gsdSourceDir.length + 1));
+  assert.deepEqual(
+    offenders,
+    [],
+    `Production modules must not import the test-only legacy markdown importer ` +
+      `(md-importer); route markdown→DB imports through the Import Application ` +
+      `instead. Offenders:\n  ${offenders.join("\n  ")}`,
+  );
 });

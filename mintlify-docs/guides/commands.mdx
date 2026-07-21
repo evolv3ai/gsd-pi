@@ -59,6 +59,9 @@ description: "Every GSD command, keyboard shortcut, and CLI flag."
 | `/gsd hooks` | Show configured post-unit and pre-dispatch hooks |
 | `/gsd run-hook` | Manually trigger a specific hook |
 | `/gsd migrate` | Migrate a v1 `.planning` directory to `.gsd` format |
+| `/gsd recover` | Preview a legacy markdown import, then approve its exact hash through a verified, backed-up Import Application |
+| `/gsd rebuild markdown` | Rebuild markdown projections from the canonical database; stale completion projections are quarantined, not imported |
+| `/gsd rebuild database` | Reserved for DB-native rebuilds; does not import markdown projections |
 
 ## Milestone management
 
@@ -68,10 +71,14 @@ description: "Every GSD command, keyboard shortcut, and CLI flag."
 | `/gsd new-milestone [--deep]` | Create a new milestone; `--deep` opts the project into deep planning mode |
 | `/gsd skip` | Prevent a unit from auto-mode dispatch |
 | `/gsd undo` | Revert last completed unit |
-| `/gsd undo-task` | Reset a specific task's completion state |
-| `/gsd reset-slice` | Reset a slice and all its tasks |
+| `/gsd undo-task` | Reopen a terminal task through canonical DB recovery authority, then refresh projections |
+| `/gsd reset-slice` | Reopen the full terminal slice and every terminal task in one guarded database operation, preserve prior execution history, then refresh readable status |
 | `/gsd park` | Park a milestone — skip without deleting |
 | `/gsd unpark` | Reactivate a parked milestone |
+
+### Lifecycle safety
+
+See the [authoritative lifecycle safety contract](../../docs/user-docs/commands.md#lifecycle-safety) for completion, skip, reset, and projection-repair behavior.
 
 ## Parallel orchestration
 
@@ -163,6 +170,7 @@ In terminals without Kitty keyboard protocol support (macOS Terminal.app, JetBra
 gsd headless              # run auto mode
 gsd headless next         # run a single unit
 gsd headless query        # instant JSON snapshot (~50ms, no LLM)
+gsd headless recover      # print the sealed recovery Preview for approval
 gsd headless --timeout 600000 auto   # with timeout
 gsd auto --thinking medium           # auto shorthand with thinking override
 gsd headless new-milestone --context brief.md --auto
@@ -178,7 +186,11 @@ gsd headless new-milestone --context brief.md --auto
 | `--context <file>` | Context file for `new-milestone` (use `-` for stdin) |
 | `--auto` | Chain into auto-mode after milestone creation |
 
-**Exit codes:** `0` = complete, `1` = error/timeout, `2` = blocked.
+**Exit codes:** `0` = complete, `1` = error/timeout, `10` = blocked, `11` = cancelled.
+
+### `gsd headless recover`
+
+See the [authoritative commands reference](../../docs/user-docs/commands.md#gsd-headless-recover) for the sealed Preview approval flow, evidence-bound recovery flags, and exit behavior.
 
 ### `gsd headless query`
 

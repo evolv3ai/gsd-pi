@@ -1,5 +1,7 @@
 # gsd-core ↔ gsd-pi Backwards Compatibility Implementation Plan
 
+> Historical implementation plan, not the current authority contract. See [Switching between gsd-core and gsd-pi](../../user-docs/switching-between-gsd-tools.md) for current behavior.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Let users open the same `.gsd/` project interchangeably in gsd-core (markdown-only) and gsd-pi (DB-authoritative) without either tool silently destroying the other's edits, by folding a compatibility layer into gsd-pi's existing ADR-017 reconciliation pipeline.

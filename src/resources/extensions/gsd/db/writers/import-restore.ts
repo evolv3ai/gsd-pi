@@ -286,8 +286,8 @@ export interface LegacyTaskInsert {
 
 /**
  * Bulk delete + insert a legacy milestone hierarchy for markdown → DB migration.
- * Used by workflow-migration.ts to populate engine tables from parsed ROADMAP/PLAN
- * files. All operations run inside a single transaction.
+ * Populates engine tables from parsed ROADMAP/PLAN files.
+ * All operations run inside a single transaction.
  */
 export function bulkInsertLegacyHierarchy(payload: {
   milestones: LegacyMilestoneInsert[];

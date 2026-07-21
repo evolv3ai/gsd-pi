@@ -191,7 +191,7 @@ test("handleRebuild database target is reserved and does not import markdown", a
     assert.equal(task?.status, "pending", "reserved DB rebuild must not mutate task status");
     assert.equal(task?.full_summary_md, "", "reserved DB rebuild must not import markdown");
     assert.match(notes.at(-1)?.message ?? "", /reserved/);
-    assert.match(notes.at(-1)?.message ?? "", /\/gsd recover --confirm/);
+    assert.match(notes.at(-1)?.message ?? "", /\/gsd recover/);
     assert.equal(notes.at(-1)?.kind, "warning");
   } finally {
     cleanup(base);

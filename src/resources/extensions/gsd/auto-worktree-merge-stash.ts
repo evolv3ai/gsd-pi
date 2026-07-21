@@ -5,6 +5,7 @@
 // stash-pop conflict recovery.
 
 import { execFileSync } from "node:child_process";
+import { closeSync, constants, fstatSync, lstatSync, openSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
 
 import {
@@ -26,6 +27,7 @@ import {
   stashRefFromError,
 } from "./worktree-git-recovery.js";
 import { logWarning } from "./workflow-logger.js";
+import { checkpointDatabase } from "./gsd-db.js";
 
 export interface PreMergeStash {
   stash(): void;
@@ -57,7 +59,17 @@ export function createPreMergeStash(
         marker = createStashMarker(milestoneId);
         execFileSync(
           "git",
-          ["stash", "push", "--include-untracked", "-m", `gsd: pre-merge stash for ${milestoneId} [${marker}]`],
+          [
+            "stash",
+            "push",
+            "--include-untracked",
+            "-m",
+            `gsd: pre-merge stash for ${milestoneId} [${marker}]`,
+            "--",
+            ".",
+            ":(exclude).gsd/.milestone-shelter",
+            ":(exclude,glob).gsd/.milestone-shelter/**",
+          ],
           { cwd: basePath, stdio: ["ignore", "pipe", "pipe"], encoding: "utf-8" },
         );
         stashed = true;
@@ -96,9 +108,39 @@ export function createPreMergeStash(
 function closeDbBeforeStashIfNeeded(cycleDbHandles: boolean): void {
   if (!cycleDbHandles) return;
   try {
+    const databasePath = getWorkflowDatabasePath();
+    if (!databasePath) throw new Error("active workflow database path is unavailable");
+    checkpointDatabase();
     closeWorkflowDatabase();
+    removeCheckpointedSqliteSidecars(databasePath);
   } catch (err) {
     logWarning("worktree", `pre-stash db close failed: ${err instanceof Error ? err.message : String(err)}`);
+  }
+}
+
+function removeCheckpointedSqliteSidecars(databasePath: string): void {
+  for (const suffix of ["-wal", "-shm"]) {
+    const path = `${databasePath}${suffix}`;
+    let descriptor: number;
+    try {
+      descriptor = openSync(path, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") continue;
+      throw error;
+    }
+    try {
+      const opened = fstatSync(descriptor, { bigint: true });
+      const live = lstatSync(path, { bigint: true });
+      if (!opened.isFile() || live.isSymbolicLink() || opened.dev !== live.dev || opened.ino !== live.ino) {
+        throw new Error(`SQLite ${suffix} sidecar identity changed after checkpoint`);
+      }
+      if (suffix === "-wal" && opened.size !== 0n) {
+        throw new Error("SQLite WAL remained non-empty after checkpoint");
+      }
+    } finally {
+      closeSync(descriptor);
+    }
+    unlinkSync(path);
   }
 }
 

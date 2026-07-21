@@ -1,6 +1,8 @@
 // Project/App: gsd-pi
 // File Purpose: Public read-only creation, revalidation, identity, and sealing boundary for legacy import Preview artifacts.
 
+import { compareText, deepFreeze } from "./legacy-import-utils.js";
+
 import { createHash } from "node:crypto";
 
 import {
@@ -48,10 +50,6 @@ const SHA256_PATTERN = /^sha256:[0-9a-f]{64}$/u;
 
 export const LEGACY_IMPORT_PREVIEW_IMPORT_KIND = "legacy-markdown";
 export const LEGACY_IMPORT_PREVIEW_IMPORTER_VERSION = "1";
-
-function compareText(left: string, right: string): number {
-  return left < right ? -1 : left > right ? 1 : 0;
-}
 
 export interface LegacyImportPreviewArtifact {
   preview: LegacyImportPreviewEnvelope;
@@ -236,13 +234,6 @@ function validateSealInput(input: LegacyImportPreviewSealInput): void {
     throw new Error("change_set_hash does not match Preview changes");
   }
   validateCounts(input);
-}
-
-function deepFreeze<T>(value: T, seen = new Set<object>()): T {
-  if (value === null || typeof value !== "object" || seen.has(value)) return value;
-  seen.add(value);
-  for (const child of Object.values(value)) deepFreeze(child, seen);
-  return Object.freeze(value);
 }
 
 export function isStrictLegacyImportData(
@@ -469,9 +460,11 @@ function validTarget(value: unknown): boolean {
 function validLocator(value: unknown): boolean {
   if (!hasExactKeys(value, ["start_byte"], ["end_byte", "line", "json_pointer"])) return false;
   if (!isNonNegativeSafeInteger(value["start_byte"])) return false;
+  // Zero-length spans are valid evidence for empty files and empty string tokens;
+  // inverted spans remain invalid.
   if (
     value["end_byte"] !== undefined
-    && (!isNonNegativeSafeInteger(value["end_byte"]) || value["end_byte"] <= value["start_byte"])
+    && (!isNonNegativeSafeInteger(value["end_byte"]) || value["end_byte"] < value["start_byte"])
   ) return false;
   if (value["line"] !== undefined && (!isNonNegativeSafeInteger(value["line"]) || value["line"] < 1)) {
     return false;

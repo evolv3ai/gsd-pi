@@ -22,6 +22,7 @@ import {
 } from "../db/domain-operation.ts";
 import { adoptOrTransitionLifecycle } from "../db/writers/lifecycle-commands.ts";
 import { applyLegacyImportApplicationPlan } from "../db/writers/legacy-import-application.ts";
+import { LegacyImportApplicationError } from "../legacy-import-application-error.ts";
 import type {
   LegacyImportApplicationPlan,
   LegacyImportApplicationPlanInstruction,
@@ -320,6 +321,21 @@ function assertInstructionResults(
   })));
 }
 
+function expectWriterFailure(run: () => unknown, message: RegExp): LegacyImportApplicationError {
+  let observed: unknown;
+  try {
+    run();
+  } catch (error) {
+    observed = error;
+  }
+  assert.ok(observed instanceof LegacyImportApplicationError);
+  assert.equal(observed.stage, "transaction");
+  assert.equal(observed.code, "LEGACY_IMPORT_APPLICATION_MUTATION_FAILED");
+  assert.equal(observed.retryable, false);
+  assert.match(observed.message, message);
+  return observed;
+}
+
 function durableSnapshot(): Record<string, unknown> {
   return {
     authority: rows("SELECT * FROM project_authority ORDER BY singleton"),
@@ -455,10 +471,10 @@ test("writer requires the active import context, Preview hash, and base fence", 
     projectId: "project-1",
     resultingRevision: 1,
     resultingAuthorityEpoch: 0,
-  }, plan), /active|context|transaction/i);
+  }, plan), /^Error: lifecycle writer requires an active Domain Operation context$/);
   assert.deepEqual(durableSnapshot(), before);
 
-  assert.throws(() => executeDomainOperation({
+  expectWriterFailure(() => executeDomainOperation({
     operationType: "milestone.describe",
     idempotencyKey: "writer/wrong-operation",
     expectedRevision: 0,
@@ -469,7 +485,7 @@ test("writer requires the active import context, Preview hash, and base fence", 
   }, (context) => {
     applyLegacyImportApplicationPlan(context, plan);
     return mutation(plan);
-  }), /import\.apply|import application/i);
+  }), /^legacy import Application writer requires an active import\.apply context$/);
   assert.deepEqual(durableSnapshot(), before);
 
   for (const invalid of [
@@ -477,7 +493,10 @@ test("writer requires the active import context, Preview hash, and base fence", 
     planFor(artifact, [], { baseProjectRevision: 1 }),
     planFor(artifact, [], { baseAuthorityEpoch: 1 }),
   ]) {
-    assert.throws(() => applyImport(artifact, invalid), /preview|hash|revision|epoch|base|fence/i);
+    expectWriterFailure(
+      () => applyImport(artifact, invalid),
+      /^legacy import Application preview or authority fence does not match the active context$/,
+    );
     assert.deepEqual(durableSnapshot(), before);
   }
 });
@@ -496,40 +515,93 @@ test("writer binds to the active Preview hash and permits receipt-last compositi
   assert.equal(count("workflow_import_applications"), 1);
 });
 
-test("writer preflights the whole allowlist and refuses lifecycle updates before any mutation", () => {
+test("writer repairs lifecycle shadow drift without replacing canonical authority", () => {
+  openFixture();
+  seedHierarchy();
+  executeDomainOperation({
+    operationType: "lifecycle.adopt",
+    idempotencyKey: `seed-completed-lifecycle/${importSequence += 1}`,
+    expectedRevision: 0,
+    expectedAuthorityEpoch: 0,
+    actorType: "agent",
+    sourceTransport: "test",
+    payload: { task: "M001/S01/T01" },
+  }, (context) => {
+    adoptOrTransitionLifecycle(context, {
+      itemKind: "task",
+      milestoneId: "M001",
+      sliceId: "S01",
+      taskId: "T01",
+      lifecycleStatus: "completed",
+      adoptedFromStatus: "completed",
+      occurredAt: "2026-07-17T00:00:00.000Z",
+    });
+    return {
+      events: [{
+        eventType: "lifecycle.adopted",
+        entityType: "task",
+        entityId: "M001/S01/T01",
+        payload: { status: "completed" },
+        destinations: ["projection"],
+      }],
+      projections: [{
+        projectionKey: "planning/m001/s01/t01",
+        projectionKind: "markdown",
+        rendererVersion: "v1",
+      }],
+    };
+  });
+  db().prepare("UPDATE tasks SET status = 'planned' WHERE milestone_id = 'M001' AND slice_id = 'S01' AND id = 'T01'").run();
+  const lifecycleBefore = row(`SELECT lifecycle_id, lifecycle_status, state_version, last_operation_id
+    FROM workflow_item_lifecycles WHERE task_id = 'T01'`);
+  const artifact = emptyPreview(1);
+  const instructions: LegacyImportApplicationPlanInstruction[] = [
+    rowInstruction(
+      "update", "task", "M001/S01/T01", "tasks",
+      { milestone_id: "M001", slice_id: "S01", id: "T01" },
+      { status: "complete" }, "change-shadow-status",
+    ),
+    {
+      action: "adopt-lifecycle",
+      lifecycleAction: "update",
+      targetKind: "task-lifecycle",
+      targetKey: "M001/S01/T01",
+      itemKind: "task",
+      milestoneId: "M001",
+      sliceId: "S01",
+      taskId: "T01",
+      lifecycleStatus: "completed",
+      changeIds: ["change-shadow-status"],
+    },
+  ];
+
+  const result = applyImport(artifact, planFor(artifact, instructions));
+
+  assert.equal(row("SELECT status FROM tasks WHERE id = 'T01'")["status"], "complete");
+  assert.deepEqual(row(`SELECT lifecycle_id, lifecycle_status, state_version, last_operation_id
+    FROM workflow_item_lifecycles WHERE task_id = 'T01'`), lifecycleBefore);
+  assertInstructionResults(result, [
+    { action: "update", targetKind: "task", targetKey: "M001/S01/T01", expectedAffectedRows: 1 },
+    { action: "adopt-lifecycle", targetKind: "task-lifecycle", targetKey: "M001/S01/T01", expectedAffectedRows: 0 },
+  ]);
+});
+
+test("writer preflights the whole allowlist before any mutation", () => {
   openFixture();
   const artifact = emptyPreview();
   const milestone = rowInstruction(
     "create", "milestone", "M001", "milestones", { id: "M001" },
     { id: "M001", title: "Must never be attempted" }, "change-milestone",
   );
-  const lifecycleUpdate: LegacyImportApplicationPlanInstruction = {
-    action: "adopt-lifecycle",
-    lifecycleAction: "update",
-    targetKind: "task-lifecycle",
-    targetKey: "M001/S01/T01",
-    itemKind: "task",
-    milestoneId: "M001",
-    sliceId: "S01",
-    taskId: "T01",
-    lifecycleStatus: "completed",
-    changeIds: ["change-lifecycle-update"],
-  };
   const before = durableSnapshot();
-
-  assert.throws(
-    () => applyImport(artifact, planFor(artifact, [milestone, lifecycleUpdate])),
-    /lifecycle.*update|adopted.*lifecycle|canonical lifecycle/i,
-  );
-  assert.deepEqual(durableSnapshot(), before);
 
   const unsupportedField = rowInstruction(
     "create", "milestone", "M001", "milestones", { id: "M001" },
     { id: "M001", invented_column: "unsafe" }, "change-unsupported-field",
   );
-  assert.throws(
+  expectWriterFailure(
     () => applyImport(artifact, planFor(artifact, [unsupportedField])),
-    /allow|unsupported|column|field|mapping/i,
+    /^legacy import values contains unsupported field invented_column$/,
   );
   assert.deepEqual(durableSnapshot(), before);
 
@@ -537,9 +609,9 @@ test("writer preflights the whole allowlist and refuses lifecycle updates before
     ...structuredClone(milestone),
     rowSet: "tasks",
   } as unknown as LegacyImportApplicationPlanInstruction;
-  assert.throws(
+  expectWriterFailure(
     () => applyImport(artifact, planFor(artifact, [mismatched])),
-    /allow|unsupported|row|mapping|target/i,
+    /^legacy import row target mapping is unsupported$/,
   );
   assert.deepEqual(durableSnapshot(), before);
 });
@@ -564,16 +636,25 @@ test("writer preflights forged lifecycle identities and incomplete task coordina
     changeIds: ["preflight-lifecycle"],
   };
   const invalid = [
-    { ...lifecycle, targetKind: "slice-lifecycle" },
-    { ...lifecycle, targetKey: "M001/S01/T99" },
-    { ...lifecycle, sliceId: "", targetKey: "M001//T01" },
-  ] as unknown as LegacyImportApplicationPlanInstruction[];
+    {
+      instruction: { ...lifecycle, targetKind: "slice-lifecycle" },
+      message: /^legacy import lifecycle target identity is inconsistent$/,
+    },
+    {
+      instruction: { ...lifecycle, targetKey: "M001/S01/T99" },
+      message: /^legacy import lifecycle target identity is inconsistent$/,
+    },
+    {
+      instruction: { ...lifecycle, sliceId: "", targetKey: "M001//T01" },
+      message: /^legacy import lifecycle identity shape is invalid$/,
+    },
+  ] as unknown as Array<{ instruction: LegacyImportApplicationPlanInstruction; message: RegExp }>;
   const before = durableSnapshot();
 
-  for (const instruction of invalid) {
-    assert.throws(
+  for (const { instruction, message } of invalid) {
+    expectWriterFailure(
       () => applyImport(artifact, planFor(artifact, [milestone, instruction])),
-      /lifecycle|identity|target|slice/i,
+      message,
     );
     assert.deepEqual(durableSnapshot(), before);
   }
@@ -629,7 +710,10 @@ test("writer creates parents first, patches only named fields, and rolls back a 
       description: "No matching row",
     }, "late-update"),
   ]);
-  assert.throws(() => applyImport(failingArtifact, lateFailure), /exactly one|affected|missing|update/i);
+  expectWriterFailure(
+    () => applyImport(failingArtifact, lateFailure),
+    /^legacy import update must affect exactly one row$/,
+  );
   assert.deepEqual(durableSnapshot(), before);
 });
 
@@ -665,7 +749,10 @@ test("writer rolls back decision memory and dependency mutations when a later fa
     }, "rollback-late-failure"),
   ]);
 
-  assert.throws(() => applyImport(artifact, plan), /exactly one|affected|missing|update/i);
+  expectWriterFailure(
+    () => applyImport(artifact, plan),
+    /^legacy import update must affect exactly one row$/,
+  );
   assert.deepEqual(durableSnapshot(), before);
 });
 
@@ -717,7 +804,10 @@ test("writer replaces slice dependencies as one exact set", () => {
   const invalidArtifact = emptyPreview();
   const before = durableSnapshot();
   const invalid = { ...instruction, dependsOnSliceIds: ["S99"] };
-  assert.throws(() => applyImport(invalidArtifact, planFor(invalidArtifact, [invalid])), /dependency|parent|foreign|missing/i);
+  expectWriterFailure(
+    () => applyImport(invalidArtifact, planFor(invalidArtifact, [invalid])),
+    /^legacy import slice dependency parent is missing$/,
+  );
   assert.deepEqual(durableSnapshot(), before);
 });
 
@@ -762,9 +852,9 @@ test("writer adopts only a missing lifecycle at state version zero without fabri
   adoptSeededTask();
   const existingArtifact = emptyPreview(1, 0, "existing-lifecycle");
   const before = durableSnapshot();
-  assert.throws(
+  expectWriterFailure(
     () => applyImport(existingArtifact, planFor(existingArtifact, [instruction])),
-    /already|existing|adopted|lifecycle/i,
+    /^legacy import lifecycle already exists or was not adopted exactly$/,
   );
   assert.deepEqual(durableSnapshot(), before);
 });
@@ -825,7 +915,10 @@ test("writer validates assessment and artifact parents against the exact live hi
         path: ".gsd/invalid-artifact.md", milestone_id: "M001", slice_id: "S99",
         task_id: "T99", full_content: "invalid",
       }, "invalid-artifact");
-    assert.throws(() => applyImport(invalidArtifact, planFor(invalidArtifact, [invalid])), /parent|slice|task|missing|hierarchy/i);
+    expectWriterFailure(
+      () => applyImport(invalidArtifact, planFor(invalidArtifact, [invalid])),
+      /^legacy import hierarchy parent slice is missing$/,
+    );
     assert.deepEqual(durableSnapshot(), before);
   }
 });
@@ -1022,7 +1115,10 @@ test("writer deletes an unadopted hierarchy child-first and refuses to strand li
   const deletion = rowInstruction("delete", "task", "M001/S01/T01", "tasks", {
     milestone_id: "M001", slice_id: "S01", id: "T01",
   }, {}, "delete-adopted-task");
-  assert.throws(() => applyImport(adoptedArtifact, planFor(adoptedArtifact, [deletion])), /lifecycle|history|adopted|delete/i);
+  expectWriterFailure(
+    () => applyImport(adoptedArtifact, planFor(adoptedArtifact, [deletion])),
+    /^legacy import cannot delete hierarchy with adopted lifecycle history$/,
+  );
   assert.deepEqual(durableSnapshot(), before);
 });
 
@@ -1047,9 +1143,9 @@ test("writer refuses hierarchy deletion that would strand assessment or artifact
       milestone_id: "M001", slice_id: "S01", id: "T01",
     }, {}, `delete-task-with-${evidenceKind}`);
 
-    assert.throws(
+    expectWriterFailure(
       () => applyImport(artifact, planFor(artifact, [deletion])),
-      /assessment|artifact|history|evidence|delete/i,
+      new RegExp(`^legacy import cannot delete hierarchy with retained ${evidenceKind}s history$`),
     );
     assert.deepEqual(durableSnapshot(), before);
     closeDatabase();
@@ -1066,9 +1162,9 @@ test("writer blocks matching hierarchy domain history but ignores the same ID fo
   }, {}, "delete-task-with-domain-history");
   const before = durableSnapshot();
 
-  assert.throws(
+  expectWriterFailure(
     () => applyImport(matchingArtifact, planFor(matchingArtifact, [deletion])),
-    /domain|event|history|immutable|delete/i,
+    /^legacy import cannot delete hierarchy with immutable domain history$/,
   );
   assert.deepEqual(durableSnapshot(), before);
 

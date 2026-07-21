@@ -9,8 +9,8 @@
  * stdout/stderr are intentionally excluded from the JSON to avoid unbounded file sizes.
  */
 
-import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { atomicWriteSync } from "./atomic-write.js";
 import type { VerificationResult } from "./types.ts";
 
 // ─── JSON Evidence Artifact ──────────────────────────────────────────────────
@@ -114,7 +114,6 @@ export function writeVerificationJSON(
   maxRetries?: number,
   sliceId?: string,
 ): void {
-  mkdirSync(tasksDir, { recursive: true });
 
   const evidence: EvidenceJSON = {
     schemaVersion: 1,
@@ -154,7 +153,7 @@ export function writeVerificationJSON(
 
   const fileName = sliceId ? `${sliceId}-${taskId}-VERIFY.json` : `${taskId}-VERIFY.json`;
   const filePath = join(tasksDir, fileName);
-  writeFileSync(filePath, JSON.stringify(evidence, null, 2) + "\n", "utf-8");
+  atomicWriteSync(filePath, JSON.stringify(evidence, null, 2) + "\n", "utf-8");
 }
 
 // ─── Pre-Execution Evidence ──────────────────────────────────────────────────
@@ -179,7 +178,6 @@ export function writePreExecutionEvidence(
   milestoneId: string,
   sliceId: string,
 ): void {
-  mkdirSync(sliceDir, { recursive: true });
 
   const evidence: PreExecutionEvidenceJSON = {
     schemaVersion: 1,
@@ -192,7 +190,7 @@ export function writePreExecutionEvidence(
   };
 
   const filePath = join(sliceDir, `${sliceId}-PRE-EXEC-VERIFY.json`);
-  writeFileSync(filePath, JSON.stringify(evidence, null, 2) + "\n", "utf-8");
+  atomicWriteSync(filePath, JSON.stringify(evidence, null, 2) + "\n", "utf-8");
 }
 
 // ─── Markdown Evidence Table ─────────────────────────────────────────────────

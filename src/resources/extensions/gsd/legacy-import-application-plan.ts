@@ -8,6 +8,7 @@ import type {
   LegacyImportTarget,
   LegacyImportValue,
 } from "./legacy-import-contract.js";
+import { compareText, deepFreeze } from "./legacy-import-utils.js";
 import { LegacyImportApplicationError } from "./legacy-import-application-error.js";
 import type { LegacyImportBaseRowSet } from "./legacy-import-preview-base.js";
 import {
@@ -96,6 +97,9 @@ export interface LegacyImportApplicationPreserveInstruction {
   readonly targetKind: string;
   readonly targetKey: string;
   readonly targetField?: string;
+  readonly rowSet?: LegacyImportBaseRowSet;
+  readonly identity?: SqlRecord;
+  readonly values?: SqlRecord;
   readonly changeIds: readonly [string];
 }
 
@@ -203,13 +207,6 @@ function failUnresolved(preview: LegacyImportPreviewEnvelope): never {
     false,
     { preview_id: preview.preview_id, unresolved_count: preview.counts.unresolved },
   );
-}
-
-function deepFreeze<T>(value: T, seen = new Set<object>()): T {
-  if (value === null || typeof value !== "object" || seen.has(value)) return value;
-  seen.add(value);
-  for (const child of Object.values(value)) deepFreeze(child, seen);
-  return Object.freeze(value);
 }
 
 function targetIdentityHash(kind: string, key: string): LegacyImportSha256 {
@@ -555,10 +552,6 @@ function rowRank(rowSet: LegacyImportBaseRowSet): number {
   }
 }
 
-function compareText(left: string, right: string): number {
-  return left < right ? -1 : left > right ? 1 : 0;
-}
-
 function compareRows(left: MutableRowClaim, right: MutableRowClaim): number {
   return rowRank(left.rowSet) - rowRank(right.rowSet) || compareText(left.targetKey, right.targetKey);
 }
@@ -774,11 +767,30 @@ export function compileLegacyImportApplicationPlan(value: unknown): LegacyImport
   for (const change of preview.changes) {
     if (change.action === "preserve") {
       preserveChangeIds.push(change.change_id);
+      const adapter = (LEGACY_IMPORT_TARGET_ADAPTERS as Readonly<
+        Partial<Record<string, LegacyImportTargetAdapter>>
+      >)[change.target.kind];
+      const exactRow = adapter !== undefined
+        && change.target.field === undefined
+        && isRecord(change.normalized)
+        && Object.keys(change.normalized).every((field) => (
+          adapter.fields.has(adapter.aliases[field] ?? field) || adapter.metadata.has(field)
+        ))
+        ? (() => {
+          const prepared = preparedTarget(change.target);
+          return {
+            rowSet: prepared.adapter.rowSet,
+            identity: prepared.identity,
+            values: { ...prepared.identity, ...rowPatch(prepared, change.target, change.normalized) },
+          };
+        })()
+        : {};
       preserves.push({
         action: "preserve",
         targetKind: change.target.kind,
         targetKey: change.target.key,
         ...(change.target.field === undefined ? {} : { targetField: change.target.field }),
+        ...exactRow,
         changeIds: [change.change_id],
       });
       continue;
@@ -788,7 +800,22 @@ export function compileLegacyImportApplicationPlan(value: unknown): LegacyImport
       if (change.action === "delete") {
         fail("LEGACY_IMPORT_APPLICATION_MAPPING_UNSUPPORTED", "legacy import cannot delete durable lifecycle authority");
       }
+      if (change.action !== "create" && change.action !== "update") {
+        fail("LEGACY_IMPORT_APPLICATION_MAPPING_UNSUPPORTED", "legacy import lifecycle action is unsupported");
+      }
       const identity = lifecycleIdentity(itemKind, change.target.key);
+      const lifecycleStatus = normalizedLifecycleStatus(change.normalized);
+      if (change.action === "update") {
+        const status = isRecord(change.normalized) ? change.normalized["status"] : change.normalized;
+        const prepared = preparedTarget({ kind: itemKind, key: change.target.key });
+        addRowClaim(
+          rows,
+          prepared,
+          "update",
+          rowPatch(prepared, { kind: itemKind, key: change.target.key, field: "status" }, status),
+          change.change_id,
+        );
+      }
       const auxiliary = lifecycleAuxiliaryPatch(itemKind, change.target, change.normalized);
       if (auxiliary !== undefined) {
         addRowClaim(rows, auxiliary.prepared, "update", auxiliary.patch, change.change_id);
@@ -800,7 +827,7 @@ export function compileLegacyImportApplicationPlan(value: unknown): LegacyImport
         targetKey: change.target.key,
         itemKind,
         ...identity,
-        lifecycleStatus: normalizedLifecycleStatus(change.normalized),
+        lifecycleStatus,
         changeIds: [change.change_id],
       });
       continue;

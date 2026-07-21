@@ -52,7 +52,12 @@ interface MaintenanceChildConfig {
   pauseAfterClaim?: boolean;
 }
 
-type ChildConfig = RestoreChildConfig | WriterChildConfig | CutoverChildConfig | MaintenanceChildConfig;
+interface WalReaderChildConfig {
+  action: "wal-reader";
+  databasePath: string;
+}
+
+type ChildConfig = RestoreChildConfig | WriterChildConfig | CutoverChildConfig | MaintenanceChildConfig | WalReaderChildConfig;
 
 interface ChildError {
   code: string;
@@ -193,6 +198,23 @@ function runMaintenance(config: MaintenanceChildConfig): unknown {
   }
 }
 
+function runWalReader(_config: WalReaderChildConfig): unknown {
+  const adapter = _getAdapter();
+  if (!adapter) throw new Error("live restore wal reader adapter is unavailable");
+  // Commit one harmless page write so the WAL holds a committed frame, then
+  // hold a read snapshot: a TRUNCATE checkpoint cannot reset the WAL while
+  // this snapshot is open, so a restore detaching the active database
+  // observes busy contention until the snapshot is released.
+  const row = adapter.prepare("PRAGMA user_version").get();
+  const current = typeof row?.["user_version"] === "number" ? row["user_version"] : 0;
+  adapter.exec(`PRAGMA user_version = ${current}`);
+  adapter.exec("BEGIN");
+  adapter.prepare("SELECT COUNT(*) AS count FROM milestones").get();
+  ready("reader-snapshot");
+  adapter.exec("ROLLBACK");
+  return { status: "released" };
+}
+
 function main(): void {
   let databaseOpen = false;
   let outcome: unknown;
@@ -208,6 +230,8 @@ function main(): void {
       outcome = { result: runWriter(config) };
     } else if (config.action === "cutover") {
       outcome = { result: runCutover(config) };
+    } else if (config.action === "wal-reader") {
+      outcome = { result: runWalReader(config) };
     } else {
       outcome = { result: runMaintenance(config) };
     }
