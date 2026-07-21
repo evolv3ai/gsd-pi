@@ -431,7 +431,18 @@ function readStableProjectionSourceFallback(sourcePath: string): Buffer {
   const readNoFollow = (): { identity: string; content: Buffer } => {
     const fd = openSync(sourcePath, fsConstants.O_RDONLY | (fsConstants.O_NOFOLLOW ?? 0));
     try {
-      return { identity: statIdentity(fstatSync(fd, { bigint: true })), content: readFileSync(fd) };
+      const opened = fstatSync(fd, { bigint: true });
+      // Defense for platforms/filesystems where O_NOFOLLOW is unavailable or a
+      // no-op (constant 0, e.g. Windows): if the open silently followed a
+      // symlink, the fd resolves to the link target while an lstat of the path
+      // (which never follows) reports the link itself. Reject on any identity
+      // mismatch, or on a non-regular opened node, so a regular file to symlink
+      // swap cannot escape the source root even without O_NOFOLLOW enforcement.
+      const onDisk = lstatSync(sourcePath, { bigint: true });
+      if (!opened.isFile() || statIdentity(opened) !== statIdentity(onDisk)) {
+        throw new Error(`projection copy source is not a regular file: ${sourcePath}`);
+      }
+      return { identity: statIdentity(opened), content: readFileSync(fd) };
     } finally {
       closeSync(fd);
     }
