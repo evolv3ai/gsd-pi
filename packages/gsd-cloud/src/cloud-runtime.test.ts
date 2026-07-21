@@ -10,6 +10,7 @@ import { join } from "node:path";
 import WebSocket from "ws";
 import { CloudRuntime } from "./cloud-runtime.js";
 import { RuntimeTelemetryStore } from "./runtime-telemetry.js";
+import { decodeBinaryFrame, encodeBinaryFrame } from "./binary-frame.js";
 
 const noopLogger = { info: () => undefined, warn: () => undefined, error: () => undefined, debug: () => undefined };
 const noopExecutor = { execute: async () => ({}), advertisedProjects: async () => [] };
@@ -33,9 +34,11 @@ type RuntimeInternals = {
   firstConnectDeferred: PromiseWithResolvers<void> | undefined;
   initialConnectAttempts: number;
   reconnect: ReturnType<typeof setTimeout> | undefined;
+  terminalManager: unknown;
   handleSocketOpen: (socket: unknown) => void;
   handleSocketClose: (socket: unknown) => void;
   handleSocketMessage: (socket: unknown, text: string) => Promise<void>;
+  handleBinaryInput: (socket: unknown, frame: Buffer) => void;
   connect: () => void;
 };
 
@@ -378,4 +381,152 @@ test("malformed gateway failures flush runtime telemetry before rejecting", asyn
     assert.equal(status.state, "error");
     assert.match(status.last_error ?? "", /absolute HTTP\(S\) URL/);
 
+});
+
+
+test("terminal control messages route to the terminal manager", async (t) => {
+  const runtime = makeRuntime();
+  const internals = runtime as unknown as RuntimeInternals;
+  t.after(() => runtime.stop());
+  const socket = fakeSocket();
+  internals.socket = socket;
+
+  const calls: unknown[][] = [];
+  internals.terminalManager = {
+    startSession: (...a: unknown[]) => calls.push(["startSession", ...a]),
+    resize: (...a: unknown[]) => calls.push(["resize", ...a]),
+    stopSession: () => calls.push(["stopSession"]),
+    onBrowserDisconnect: () => calls.push(["onBrowserDisconnect"]),
+    onBrowserReconnect: () => null,
+    getActiveSessionId: () => null,
+    dispose: () => undefined,
+  };
+
+  await internals.handleSocketMessage(socket, JSON.stringify({ type: "terminal.start", sessionId: "s1", cols: 100, rows: 40 }));
+  await internals.handleSocketMessage(socket, JSON.stringify({ type: "terminal.resize", cols: 120, rows: 50 }));
+  await internals.handleSocketMessage(socket, JSON.stringify({ type: "terminal.detached" }));
+  await internals.handleSocketMessage(socket, JSON.stringify({ type: "terminal.stop" }));
+
+  assert.deepEqual(calls, [
+    ["startSession", "s1", 100, 40],
+    ["resize", 120, 50],
+    ["onBrowserDisconnect"],
+    ["stopSession"],
+  ]);
+  // Terminal messages must never fall through to the tool_call path.
+  assert.equal(socket.sent.length, 0);
+});
+
+test("binary terminal frames reach the PTY and attached replays buffered output", async (t) => {
+  const runtime = makeRuntime();
+  const internals = runtime as unknown as RuntimeInternals;
+  t.after(() => runtime.stop());
+  const socket = fakeSocket();
+  internals.socket = socket;
+
+  const writes: string[] = [];
+  internals.terminalManager = {
+    write: (data: Buffer) => writes.push(data.toString("utf8")),
+    onBrowserReconnect: () => ({ replayData: [Buffer.from("replay-1"), Buffer.from("replay-2")] }),
+    getActiveSessionId: () => "s1",
+    dispose: () => undefined,
+  };
+
+  internals.handleBinaryInput(socket, encodeBinaryFrame("terminal:s1", Buffer.from("ls -la\n")));
+  internals.handleBinaryInput(socket, encodeBinaryFrame("other-channel", Buffer.from("ignored")));
+  assert.deepEqual(writes, ["ls -la\n"]);
+
+  await internals.handleSocketMessage(socket, JSON.stringify({ type: "terminal.attached" }));
+  assert.equal(socket.sent.length, 2);
+  // The fake socket captures the raw Buffers the runtime passes to send().
+  const sentBuffers = socket.sent as unknown as Buffer[];
+  assert.deepEqual(
+    sentBuffers.map((f) => decodeBinaryFrame(f).channel),
+    ["terminal:s1", "terminal:s1"],
+  );
+  assert.deepEqual(
+    sentBuffers.map((f) => decodeBinaryFrame(f).data.toString("utf8")),
+    ["replay-1", "replay-2"],
+  );
+});
+
+test("attached replay follows the active PTY session, not the sessionId the browser claims", async (t) => {
+  const runtime = makeRuntime();
+  const internals = runtime as unknown as RuntimeInternals;
+  t.after(() => runtime.stop());
+  const socket = fakeSocket();
+  internals.socket = socket;
+
+  internals.terminalManager = {
+    write: () => undefined,
+    onBrowserReconnect: () => ({ replayData: [Buffer.from("replay")] }),
+    getActiveSessionId: () => "active",
+    dispose: () => undefined,
+  };
+
+  // The attach names a stale/incorrect session, but a different PTY is live.
+  // Replay must be addressed to the active session's channel so output is not
+  // mis-multiplexed onto a channel chosen by untrusted input.
+  await internals.handleSocketMessage(socket, JSON.stringify({ type: "terminal.attached", sessionId: "stale" }));
+  const sentBuffers = socket.sent as unknown as Buffer[];
+  assert.deepEqual(
+    sentBuffers.map((f) => decodeBinaryFrame(f).channel),
+    ["terminal:active"],
+  );
+});
+
+test("terminal.resize clamps malformed dimensions and never throws into the message loop", async (t) => {
+  const runtime = makeRuntime();
+  const internals = runtime as unknown as RuntimeInternals;
+  t.after(() => runtime.stop());
+  const socket = fakeSocket();
+  internals.socket = socket;
+
+  const resizes: Array<[number, number]> = [];
+  let throwNext = false;
+  internals.terminalManager = {
+    resize: (cols: number, rows: number) => {
+      resizes.push([cols, rows]);
+      if (throwNext) throw new Error("pty resize boom");
+    },
+    dispose: () => undefined,
+  };
+
+  // Hostile/malformed dimensions coerce to the clamped fallbacks instead of
+  // reaching node-pty as strings/NaN/0/negatives (which would throw).
+  await internals.handleSocketMessage(socket, JSON.stringify({ type: "terminal.resize", cols: "abc", rows: 0 }));
+  await internals.handleSocketMessage(socket, JSON.stringify({ type: "terminal.resize", cols: -5, rows: 999999 }));
+  assert.deepEqual(resizes, [[80, 24], [80, 1000]]);
+
+  // A resize that throws (node-pty rejecting a value) is swallowed with a
+  // warning rather than surfacing as an unhandled rejection.
+  throwNext = true;
+  await assert.doesNotReject(
+    internals.handleSocketMessage(socket, JSON.stringify({ type: "terminal.resize", cols: 100, rows: 40 })),
+  );
+});
+
+test("terminal.attached skips replay when the channel name would exceed 255 bytes", async (t) => {
+  const runtime = makeRuntime();
+  const internals = runtime as unknown as RuntimeInternals;
+  t.after(() => runtime.stop());
+  const socket = fakeSocket();
+  internals.socket = socket;
+
+  let reconnectCalls = 0;
+  internals.terminalManager = {
+    onBrowserReconnect: () => { reconnectCalls += 1; return { replayData: [Buffer.from("x")] }; },
+    getActiveSessionId: () => null,
+    dispose: () => undefined,
+  };
+
+  // No active PTY, so the untrusted sessionId forms the channel; an over-long
+  // id would make encodeBinaryFrame throw. The guard skips replay (before even
+  // touching the reconnect buffer) instead of crashing the message loop.
+  const hugeSessionId = "s".repeat(300);
+  await assert.doesNotReject(
+    internals.handleSocketMessage(socket, JSON.stringify({ type: "terminal.attached", sessionId: hugeSessionId })),
+  );
+  assert.equal(socket.sent.length, 0);
+  assert.equal(reconnectCalls, 0);
 });
