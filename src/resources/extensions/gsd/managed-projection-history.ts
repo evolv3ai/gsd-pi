@@ -2186,14 +2186,17 @@ function createInitialProjectionDirectory(directoryPath: string): boolean {
     projectionRoot = dirname(projectionRoot);
   }
   if (basename(projectionRoot).toLocaleLowerCase("en-US") !== ".gsd") return false;
-  if (!isProjectionRootIdentityLockAvailable()) {
-    mkdirSync(directoryPath, { recursive: true });
-    return true;
-  }
   const targetRoot = dirname(projectionRoot);
   const rootStat = lstatSync(targetRoot, { bigint: true });
   if (!rootStat.isDirectory() || rootStat.isSymbolicLink()) {
     throw new Error("managed projection project root is not identity-stable");
+  }
+  // Validate the project root is an identity-stable, non-symlink directory in
+  // both paths before branching, so the plain-fs fallback cannot mkdir under a
+  // symlinked or non-directory root that the native lock would have rejected.
+  if (!isProjectionRootIdentityLockAvailable()) {
+    mkdirSync(directoryPath, { recursive: true });
+    return true;
   }
   const handle = acquireProjectionRootIdentityLock(
     realpathSync(targetRoot),
