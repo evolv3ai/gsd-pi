@@ -769,6 +769,7 @@ if (isPrintMode) {
   if (mode === 'mcp') {
     printStartupTimings()
     const { startMcpServer } = await import('./mcp-server.js')
+    const { buildMcpModeTools } = await import('./mcp-mode-tools.js')
 
     // Activate every registered tool before starting the MCP transport.
     // `session.agent.state.tools` is the *active* subset, not the full
@@ -779,9 +780,10 @@ if (isPrintMode) {
     // this MCP session, which is what an external client expects.
     const allToolNames = session.getAllTools().map((t) => t.name)
     session.setActiveToolsByName(allToolNames)
+    const tools = await buildMcpModeTools(session.agent.state.tools ?? [])
 
     await startMcpServer({
-      tools: session.agent.state.tools ?? [],
+      tools,
       version: process.env.GSD_VERSION || '0.0.0',
     })
     // MCP server runs until the transport closes; keep alive

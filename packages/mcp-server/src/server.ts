@@ -210,7 +210,13 @@ function resolveStatusSession(
 
   if (projectDir) {
     const session = sessionManager.getSessionByDir(projectDir);
-    return session ? { session } : { error: `Session not found for projectDir: ${projectDir}` };
+    if (session) return { session };
+    if (sessionManager.listSessions().length === 0) {
+      return {
+        error: 'No tracked GSD sessions. Call gsd_execute first, or pass projectDir for a session tracked by this server.',
+      };
+    }
+    return { error: `Session not found for projectDir: ${projectDir}` };
   }
 
   const only = sessionManager.getOnlySession();

@@ -30,6 +30,17 @@ type McpServerWithRegisteredTools = {
 	_registeredTools: Record<string, RegisteredTool>;
 };
 
+export function toMoonshotCompatibleInputSchema(inputSchema: unknown): Record<string, unknown> {
+	const inputObj = normalizeObjectSchema(inputSchema as Parameters<typeof normalizeObjectSchema>[0]);
+	const rawInputSchema = inputObj
+		? toJsonSchemaCompat(inputObj, {
+				strictUnions: true,
+				pipeStrategy: "input",
+			})
+		: EMPTY_OBJECT_JSON_SCHEMA;
+	return sanitizeSchemaForMoonshot(rawInputSchema);
+}
+
 /**
  * Replace the MCP SDK ListTools handler so every advertised inputSchema is
  * flattened for Moonshot/Kimi grammar. Call after all tools are registered.
@@ -39,19 +50,11 @@ export function installMoonshotCompatibleToolSchemas(mcpServer: McpServerWithReg
 		tools: Object.entries(mcpServer._registeredTools)
 			.filter(([, tool]) => tool.enabled)
 			.map(([name, tool]) => {
-				const inputObj = normalizeObjectSchema(tool.inputSchema as Parameters<typeof normalizeObjectSchema>[0]);
-				const rawInputSchema = inputObj
-					? toJsonSchemaCompat(inputObj, {
-							strictUnions: true,
-							pipeStrategy: "input",
-						})
-					: EMPTY_OBJECT_JSON_SCHEMA;
-
 				const toolDefinition: Record<string, unknown> = {
 					name,
 					title: tool.title,
 					description: tool.description,
-					inputSchema: sanitizeSchemaForMoonshot(rawInputSchema),
+					inputSchema: toMoonshotCompatibleInputSchema(tool.inputSchema),
 					annotations: tool.annotations,
 					execution: tool.execution,
 					_meta: tool._meta,

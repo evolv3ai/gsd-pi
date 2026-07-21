@@ -4,6 +4,11 @@
 
 export { SessionManager } from './session-manager.js';
 export { createMcpServer } from './server.js';
+export {
+  createWorkflowMcpAdapterToolDefs,
+  GSD_MODE_MCP_WORKFLOW_ADAPTER_TOOL_NAMES,
+} from './mcp-adapter-tools.js';
+export type { GenericMcpToolDef } from './mcp-adapter-tools.js';
 export { registerWorkflowTools, WORKFLOW_TOOL_NAMES } from './workflow-tools.js';
 export type {
   SessionStatus,
