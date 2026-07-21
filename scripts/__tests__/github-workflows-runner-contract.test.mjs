@@ -2,7 +2,7 @@
 // File Purpose: Ensure active workflows use approved runners and cache actions.
 
 import assert from "node:assert/strict";
-import { readdirSync, readFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { test } from "node:test";
 import YAML from "yaml";
@@ -108,6 +108,30 @@ test("ci workflow opts into Node 24 actions runtime", () => {
   const workflow = YAML.parse(readFileSync(".github/workflows/ci.yml", "utf8"));
 
   assert.equal(workflow.env.FORCE_JAVASCRIPT_ACTIONS_TO_NODE24, "true");
+});
+
+test("node22 smoke installs the strictest workspace engine floor", () => {
+  const workflow = YAML.parse(readFileSync(".github/workflows/ci.yml", "utf8"));
+  const setupNode = workflow.jobs["node22-smoke"].steps.find(
+    (step) => step.name === "Setup Node.js 22 (engines floor)",
+  );
+  const manifests = [
+    "package.json",
+    ...readdirSync("packages", { withFileTypes: true })
+      .filter((entry) => entry.isDirectory())
+      .map((entry) => join("packages", entry.name, "package.json")),
+  ].filter(existsSync);
+  const engineFloors = manifests
+    .map((path) => JSON.parse(readFileSync(path, "utf8")).engines?.node)
+    .filter((value) => typeof value === "string")
+    .map((range) => {
+      const match = /^>=(\d+\.\d+\.\d+)$/.exec(range);
+      assert.ok(match, `unsupported Node engine range ${range}`);
+      return match[1];
+    });
+  const strictestFloor = engineFloors.sort((left, right) => left.localeCompare(right, undefined, { numeric: true })).at(-1);
+
+  assert.equal(setupNode.with["node-version"], strictestFloor);
 });
 
 test("native Linux ARM64 build matrix uses a Rust target triple", () => {
