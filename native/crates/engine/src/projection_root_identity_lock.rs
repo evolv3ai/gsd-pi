@@ -283,7 +283,7 @@ impl ProjectionRootIdentityLock {
         {
             let (path, guards) = self.safe_windows_path(&relative_path, true)?;
             if !path.exists() {
-                fs::create_dir(&path).map_err(projection_error)?;
+                fs::create_dir(&path).map_err(|error| projection_path_error(&path, error))?;
             }
             reject_windows_reparse(&path)?;
             let directory = open_windows_directory(&path)?;
@@ -414,7 +414,7 @@ impl ProjectionRootIdentityLock {
                 .create_new(true)
                 .share_mode(0x0000_0001 | 0x0000_0002 | FILE_SHARE_DELETE)
                 .open(&path)
-                .map_err(projection_error)?;
+                .map_err(|error| projection_path_error(&path, error))?;
             file.write_all(content.as_ref()).map_err(projection_error)?;
             file.sync_all().map_err(projection_error)?;
             sync_windows_parent(&guards, self.file.as_ref())?;
@@ -443,7 +443,7 @@ impl ProjectionRootIdentityLock {
         #[cfg(windows)]
         {
             let (path, guards) = self.safe_windows_path(&relative_path, true)?;
-            fs::create_dir(&path).map_err(projection_error)?;
+            fs::create_dir(&path).map_err(|error| projection_path_error(&path, error))?;
             let node = open_windows_directory(&path)?;
             node.sync_all().map_err(projection_error)?;
             sync_windows_parent(&guards, self.file.as_ref())?;
@@ -1613,7 +1613,7 @@ impl ProjectionRootIdentityLock {
         for part in &parts[..parts.len() - 1] {
             path.push(part);
             if create && !path.exists() {
-                fs::create_dir(&path).map_err(projection_error)?;
+                fs::create_dir(&path).map_err(|error| projection_path_error(&path, error))?;
                 sync_windows_parent(&guards, self.file.as_ref())?;
             }
             reject_windows_reparse(&path)?;
@@ -1760,7 +1760,7 @@ impl ProjectionRootIdentityLock {
             .create_new(true)
             .share_mode(0x0000_0001 | 0x0000_0002 | FILE_SHARE_DELETE)
             .open(&temporary)
-            .map_err(projection_error)?;
+            .map_err(|error| projection_path_error(&temporary, error))?;
         file.write_all(content).map_err(projection_error)?;
         file.sync_all().map_err(projection_error)?;
         sync_windows_parent(&guards, self.file.as_ref())?;
@@ -1908,6 +1908,15 @@ fn projection_error(error: impl std::fmt::Display) -> Error {
     )
 }
 
+/// Windows open/create/scan failures must name the path they faulted on: the
+/// exclusively held (share_mode(0)) projection root rejects any by-path re-open
+/// with ERROR_SHARING_VIOLATION (os error 32), and a bare "projection root
+/// operation failed" gives no way to tell which open collided with the hold.
+#[cfg(windows)]
+fn projection_path_error(path: &Path, error: impl std::fmt::Display) -> Error {
+    projection_error(format!("{}: {error}", path.display()))
+}
+
 /// Clears the thread-local errno before a readdir loop so a null return can
 /// distinguish end-of-directory from an I/O error. Without this, an I/O error
 /// would silently truncate listings that feed fail-closed occupant checks.
@@ -1970,7 +1979,7 @@ fn open_windows_directory(path: &Path) -> Result<File> {
         .share_mode(0x0000_0001 | 0x0000_0002 | FILE_SHARE_DELETE)
         .custom_flags(FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT)
         .open(path)
-        .map_err(projection_error)?;
+        .map_err(|error| projection_path_error(path, error))?;
     let information = windows_file_information(&file)?;
     if information.file_attributes & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
         return Err(Error::new(
@@ -1992,7 +2001,7 @@ fn open_windows_root_directory(path: &Path) -> Result<File> {
         .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE)
         .custom_flags(FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT)
         .open(path)
-        .map_err(projection_error)?;
+        .map_err(|error| projection_path_error(path, error))?;
     if windows_file_information(&file)?.file_attributes & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
         return Err(projection_error(
             "projection root contains an unsupported reparse point",
@@ -2012,7 +2021,7 @@ fn open_windows_node(path: &Path, write: bool) -> Result<File> {
         // sibling nodes mid-operation (ERROR_SHARING_VIOLATION / os error 32).
         .share_mode(0x0000_0001 | 0x0000_0002 | FILE_SHARE_DELETE)
         .custom_flags(FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT);
-    let file = options.open(path).map_err(projection_error)?;
+    let file = options.open(path).map_err(|error| projection_path_error(path, error))?;
     let information = windows_file_information(&file)?;
     if information.file_attributes & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
         return Err(Error::new(
@@ -2055,7 +2064,7 @@ fn open_windows_delete_node(path: &Path) -> Result<File> {
         .share_mode(0x0000_0001 | 0x0000_0002 | FILE_SHARE_DELETE)
         .custom_flags(FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT)
         .open(path)
-        .map_err(projection_error)?;
+        .map_err(|error| projection_path_error(path, error))?;
     let information = windows_file_information(&file)?;
     if information.file_attributes & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
         return Err(Error::new(
@@ -2073,7 +2082,7 @@ fn open_windows_exclusive_delete_node(path: &Path) -> Result<File> {
         .share_mode(0)
         .custom_flags(FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT)
         .open(path)
-        .map_err(projection_error)?;
+        .map_err(|error| projection_path_error(path, error))?;
     let information = windows_file_information(&file)?;
     if information.file_attributes & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
         return Err(Error::new(
@@ -2544,7 +2553,7 @@ fn write_windows_control_intent(
         .create_new(true)
         .share_mode(0x0000_0001 | 0x0000_0002 | FILE_SHARE_DELETE)
         .open(&temporary_path)
-        .map_err(projection_error)?;
+        .map_err(|error| projection_path_error(&temporary_path, error))?;
     file.write_all(content).map_err(projection_error)?;
     file.sync_all().map_err(projection_error)?;
     rename_windows_handle(&file, path, parent)?;
@@ -2936,7 +2945,7 @@ fn load_or_publish_windows_tree_deletion_manifest(
         // (os error 32) while this handle is still open.
         .share_mode(0x0000_0001 | FILE_SHARE_DELETE)
         .open(&temporary)
-        .map_err(projection_error)?;
+        .map_err(|error| projection_path_error(&temporary, error))?;
     if MUTATION_BOUNDARY_FAULT
         .compare_exchange(10, 0, Ordering::SeqCst, Ordering::SeqCst)
         .is_ok()
@@ -3305,7 +3314,7 @@ fn recover_windows_control_directory(
             let entries = match fs::read_dir(path) {
                 Ok(entries) => entries,
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
-                Err(error) => return Err(projection_error(error)),
+                Err(error) => return Err(projection_path_error(path, error)),
             };
             let mut names = Vec::new();
             for entry in entries {
@@ -3684,7 +3693,7 @@ fn windows_source_has_public_evidence(root: &Path, source: &Path) -> Result<bool
     let entries = match fs::read_dir(directory) {
         Ok(entries) => entries,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
-        Err(error) => return Err(projection_error(error)),
+        Err(error) => return Err(projection_path_error(directory, error)),
     };
     for entry in entries {
         let path = entry.map_err(projection_error)?.path();
@@ -3826,7 +3835,7 @@ fn retain_windows_public_evidence(
         match fs::create_dir(&directory) {
             Ok(()) => {}
             Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
-            Err(error) => return Err(projection_error(error)),
+            Err(error) => return Err(projection_path_error(&directory, error)),
         }
         reject_windows_reparse(&directory)?;
         open_windows_directory(&directory)?
@@ -4160,7 +4169,7 @@ fn recover_windows_native_evidence_descriptors(root: &Path, root_handle: &File) 
     }
     reject_windows_reparse(&directory)?;
     let directory_handle = open_windows_directory(&directory)?;
-    for entry in fs::read_dir(&directory).map_err(projection_error)? {
+    for entry in fs::read_dir(&directory).map_err(|error| projection_path_error(&directory, error))? {
         let entry = entry.map_err(projection_error)?;
         let name = entry.file_name().to_string_lossy().into_owned();
         let Some(prepared_name) = name.strip_prefix('.') else {
