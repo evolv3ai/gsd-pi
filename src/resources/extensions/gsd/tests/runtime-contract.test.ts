@@ -207,7 +207,7 @@ test("injects one shared runtime contract for a parent workspace", async () => {
   });
 });
 
-test("injects the parent workspace contract into a child repository subagent", async () => {
+test("injects the parent workspace contract into a child repository subagent", async (t) => {
   await withRuntimeProject(async (base, ctx) => {
     const childRepo = join(base, "frontend");
     const parentContractDir = join(base, "script", "local-runtime");
@@ -224,25 +224,24 @@ test("injects the parent workspace contract into a child repository subagent", a
     process.env.GSD_RUNTIME_CONTRACT_ROOT = base;
     _clearGsdRootCache();
     clearGSDPreferencesCache();
-
-    try {
-      const result = await buildBeforeAgentStartResult(
-        { prompt: "Inspect the frontend", systemPrompt: "base system prompt" },
-        { ...ctx, cwd: childRepo } as ExtensionContext,
-      );
-
-      assert.match(result?.systemPrompt ?? "", /# Parent workspace runtime/);
-      assert.doesNotMatch(result?.systemPrompt ?? "", /# Child-only runtime/);
-    } finally {
+    t.after(() => {
       if (previousChild === undefined) delete process.env.GSD_SUBAGENT_CHILD;
       else process.env.GSD_SUBAGENT_CHILD = previousChild;
       if (previousRoot === undefined) delete process.env.GSD_RUNTIME_CONTRACT_ROOT;
       else process.env.GSD_RUNTIME_CONTRACT_ROOT = previousRoot;
-    }
+    });
+
+    const result = await buildBeforeAgentStartResult(
+      { prompt: "Inspect the frontend", systemPrompt: "base system prompt" },
+      { ...ctx, cwd: childRepo } as ExtensionContext,
+    );
+
+    assert.match(result?.systemPrompt ?? "", /# Parent workspace runtime/);
+    assert.doesNotMatch(result?.systemPrompt ?? "", /# Child-only runtime/);
   });
 });
 
-test("keeps child context local while inheriting the parent runtime contract", async () => {
+test("keeps child context local while inheriting the parent runtime contract", async (t) => {
   await withRuntimeProject(async (base, ctx) => {
     const childRepo = join(base, "frontend");
     mkdirSync(join(childRepo, ".gsd"), { recursive: true });
@@ -265,27 +264,26 @@ test("keeps child context local while inheriting the parent runtime contract", a
     process.env.GSD_SUBAGENT_CHILD = "1";
     process.env.GSD_RUNTIME_CONTRACT_ROOT = base;
     clearGSDPreferencesCache();
-
-    try {
-      const result = await buildBeforeAgentStartResult(
-        { prompt: "Inspect the frontend", systemPrompt: "base system prompt" },
-        { ...ctx, cwd: childRepo } as ExtensionContext,
-      );
-      const systemPrompt = result?.systemPrompt ?? "";
-
-      assert.match(systemPrompt, /# Parent workspace runtime/);
-      assert.match(systemPrompt, /Language: Always respond in French/);
-      assert.doesNotMatch(systemPrompt, /Language: Always respond in Spanish/);
-    } finally {
+    t.after(() => {
       if (previousChild === undefined) delete process.env.GSD_SUBAGENT_CHILD;
       else process.env.GSD_SUBAGENT_CHILD = previousChild;
       if (previousRoot === undefined) delete process.env.GSD_RUNTIME_CONTRACT_ROOT;
       else process.env.GSD_RUNTIME_CONTRACT_ROOT = previousRoot;
-    }
+    });
+
+    const result = await buildBeforeAgentStartResult(
+      { prompt: "Inspect the frontend", systemPrompt: "base system prompt" },
+      { ...ctx, cwd: childRepo } as ExtensionContext,
+    );
+    const systemPrompt = result?.systemPrompt ?? "";
+
+    assert.match(systemPrompt, /# Parent workspace runtime/);
+    assert.match(systemPrompt, /Language: Always respond in French/);
+    assert.doesNotMatch(systemPrompt, /Language: Always respond in Spanish/);
   });
 });
 
-test("keeps child context local when the parent has no runtime contract", async () => {
+test("keeps child context local when the parent has no runtime contract", async (t) => {
   await withRuntimeProject(async (base, ctx) => {
     const childRepo = join(base, "frontend");
     mkdirSync(join(childRepo, ".gsd"), { recursive: true });
@@ -305,29 +303,31 @@ test("keeps child context local when the parent has no runtime contract", async 
     process.env.GSD_SUBAGENT_CHILD = "1";
     process.env.GSD_RUNTIME_CONTRACT_ROOT = base;
     clearGSDPreferencesCache();
-
-    try {
-      const result = await buildBeforeAgentStartResult(
-        { prompt: "Inspect the frontend", systemPrompt: "base system prompt" },
-        { ...ctx, cwd: childRepo } as ExtensionContext,
-      );
-      const systemPrompt = result?.systemPrompt ?? "";
-
-      assert.doesNotMatch(systemPrompt, /Project-local runtime contract/);
-      assert.match(systemPrompt, /Language: Always respond in French/);
-      assert.doesNotMatch(systemPrompt, /Language: Always respond in Spanish/);
-    } finally {
+    t.after(() => {
       if (previousChild === undefined) delete process.env.GSD_SUBAGENT_CHILD;
       else process.env.GSD_SUBAGENT_CHILD = previousChild;
       if (previousRoot === undefined) delete process.env.GSD_RUNTIME_CONTRACT_ROOT;
       else process.env.GSD_RUNTIME_CONTRACT_ROOT = previousRoot;
-    }
+    });
+
+    const result = await buildBeforeAgentStartResult(
+      { prompt: "Inspect the frontend", systemPrompt: "base system prompt" },
+      { ...ctx, cwd: childRepo } as ExtensionContext,
+    );
+    const systemPrompt = result?.systemPrompt ?? "";
+
+    assert.doesNotMatch(systemPrompt, /Project-local runtime contract/);
+    assert.match(systemPrompt, /Language: Always respond in French/);
+    assert.doesNotMatch(systemPrompt, /Language: Always respond in Spanish/);
   });
 });
 
-test("injects the owning contract into an explicitly isolated subagent", async () => {
+test("injects the owning contract into an explicitly isolated subagent", async (t) => {
   await withRuntimeProject(async (base, ctx) => {
     const isolatedRepo = realpathSync(mkdtempSync(join(tmpdir(), "gsd-runtime-detached-")));
+    t.after(() => {
+      rmSync(isolatedRepo, { recursive: true, force: true });
+    });
     const contractDir = join(base, "script", "local-runtime");
     mkdirSync(contractDir, { recursive: true });
     writeFileSync(join(contractDir, "AGENT.md"), "# Owning project runtime\n", "utf-8");
@@ -338,25 +338,23 @@ test("injects the owning contract into an explicitly isolated subagent", async (
     process.env.GSD_RUNTIME_CONTRACT_ROOT = base;
     _clearGsdRootCache();
     clearGSDPreferencesCache();
-
-    try {
-      const result = await buildBeforeAgentStartResult(
-        { prompt: "Inspect the isolated checkout", systemPrompt: "base system prompt" },
-        { ...ctx, cwd: isolatedRepo } as ExtensionContext,
-      );
-
-      assert.match(result?.systemPrompt ?? "", /# Owning project runtime/);
-    } finally {
+    t.after(() => {
       if (previousChild === undefined) delete process.env.GSD_SUBAGENT_CHILD;
       else process.env.GSD_SUBAGENT_CHILD = previousChild;
       if (previousRoot === undefined) delete process.env.GSD_RUNTIME_CONTRACT_ROOT;
       else process.env.GSD_RUNTIME_CONTRACT_ROOT = previousRoot;
-      rmSync(isolatedRepo, { recursive: true, force: true });
-    }
+    });
+
+    const result = await buildBeforeAgentStartResult(
+      { prompt: "Inspect the isolated checkout", systemPrompt: "base system prompt" },
+      { ...ctx, cwd: isolatedRepo } as ExtensionContext,
+    );
+
+    assert.match(result?.systemPrompt ?? "", /# Owning project runtime/);
   });
 });
 
-test("ignores propagated project authority when its filesystem identity is unavailable", async () => {
+test("ignores propagated project authority when its filesystem identity is unavailable", async (t) => {
   await withRuntimeProject(async (base, ctx) => {
     const contractDir = join(base, "script", "local-runtime");
     mkdirSync(contractDir, { recursive: true });
@@ -365,20 +363,19 @@ test("ignores propagated project authority when its filesystem identity is unava
     const previousRoot = process.env.GSD_RUNTIME_CONTRACT_ROOT;
     process.env.GSD_SUBAGENT_CHILD = "1";
     process.env.GSD_RUNTIME_CONTRACT_ROOT = join(base, "missing-project");
-
-    try {
-      const result = await buildBeforeAgentStartResult(
-        { prompt: "Inspect the repository", systemPrompt: "base system prompt" },
-        ctx,
-      );
-
-      assert.match(result?.systemPrompt ?? "", /# Current repository runtime/);
-    } finally {
+    t.after(() => {
       if (previousChild === undefined) delete process.env.GSD_SUBAGENT_CHILD;
       else process.env.GSD_SUBAGENT_CHILD = previousChild;
       if (previousRoot === undefined) delete process.env.GSD_RUNTIME_CONTRACT_ROOT;
       else process.env.GSD_RUNTIME_CONTRACT_ROOT = previousRoot;
-    }
+    });
+
+    const result = await buildBeforeAgentStartResult(
+      { prompt: "Inspect the repository", systemPrompt: "base system prompt" },
+      ctx,
+    );
+
+    assert.match(result?.systemPrompt ?? "", /# Current repository runtime/);
   });
 });
 
@@ -543,78 +540,76 @@ test("clears the canonical forensics marker from a nested cwd", async () => {
   });
 });
 
-test("uses ctx.cwd when the host cwd has no .gsd directory", async () => {
+test("uses ctx.cwd when the host cwd has no .gsd directory", async (t) => {
   await withRuntimeProject(async (base, ctx) => {
     const activeRepo = realpathSync(mkdtempSync(join(tmpdir(), "gsd-runtime-active-")));
-    try {
-      rmSync(join(base, ".gsd"), { recursive: true, force: true });
-      mkdirSync(join(activeRepo, ".gsd"), { recursive: true });
-      execFileSync("git", ["init", "-q"], { cwd: activeRepo, stdio: "ignore" });
-      writeFileSync(
-        join(activeRepo, ".gsd", "PREFERENCES.md"),
-        ["---", "runtime:", "  contract:", "    path: ops/runtime", "---", ""].join("\n"),
-        "utf-8",
-      );
-      const contractDir = join(activeRepo, "ops", "runtime");
-      mkdirSync(contractDir, { recursive: true });
-      writeFileSync(join(contractDir, "AGENT.md"), "# Active repository rules\n", "utf-8");
-      clearGSDPreferencesCache();
-
-      const activeCtx = { ...ctx, cwd: activeRepo } as ExtensionContext;
-      const result = await buildBeforeAgentStartResult(
-        { prompt: "Start the active application", systemPrompt: "base system prompt" },
-        activeCtx,
-      );
-      const systemPrompt = result?.systemPrompt ?? "";
-
-      assert.ok(result);
-      assert.match(systemPrompt, /# Active repository rules/);
-      assertContainsPath(systemPrompt, join(contractDir, "AGENT.md"));
-    } finally {
+    t.after(() => {
       rmSync(activeRepo, { recursive: true, force: true });
-    }
+    });
+    rmSync(join(base, ".gsd"), { recursive: true, force: true });
+    mkdirSync(join(activeRepo, ".gsd"), { recursive: true });
+    execFileSync("git", ["init", "-q"], { cwd: activeRepo, stdio: "ignore" });
+    writeFileSync(
+      join(activeRepo, ".gsd", "PREFERENCES.md"),
+      ["---", "runtime:", "  contract:", "    path: ops/runtime", "---", ""].join("\n"),
+      "utf-8",
+    );
+    const contractDir = join(activeRepo, "ops", "runtime");
+    mkdirSync(contractDir, { recursive: true });
+    writeFileSync(join(contractDir, "AGENT.md"), "# Active repository rules\n", "utf-8");
+    clearGSDPreferencesCache();
+
+    const activeCtx = { ...ctx, cwd: activeRepo } as ExtensionContext;
+    const result = await buildBeforeAgentStartResult(
+      { prompt: "Start the active application", systemPrompt: "base system prompt" },
+      activeCtx,
+    );
+    const systemPrompt = result?.systemPrompt ?? "";
+
+    assert.ok(result);
+    assert.match(systemPrompt, /# Active repository rules/);
+    assertContainsPath(systemPrompt, join(contractDir, "AGENT.md"));
   });
 });
 
-test("isolates all context assembly from a different host cwd", async () => {
+test("isolates all context assembly from a different host cwd", async (t) => {
   await withRuntimeProject(async (hostRepo, ctx) => {
     const activeRepo = realpathSync(mkdtempSync(join(tmpdir(), "gsd-runtime-isolated-")));
-    try {
-      mkdirSync(join(activeRepo, ".gsd"), { recursive: true });
-      execFileSync("git", ["init", "-q"], { cwd: activeRepo, stdio: "ignore" });
-      writeFileSync(join(hostRepo, ".gsd", "KNOWLEDGE.md"), "## Rules\n\n- HOST_ONLY_RULE\n", "utf-8");
-      writeFileSync(join(activeRepo, ".gsd", "KNOWLEDGE.md"), "## Rules\n\n- ACTIVE_ONLY_RULE\n", "utf-8");
-      writeFileSync(
-        join(hostRepo, ".gsd", "PREFERENCES.md"),
-        ["---", "models:", "  subagent: host-only-model", "---", ""].join("\n"),
-        "utf-8",
-      );
-      writeFileSync(
-        join(activeRepo, ".gsd", "PREFERENCES.md"),
-        ["---", "models:", "  subagent: active-only-model", "---", ""].join("\n"),
-        "utf-8",
-      );
-      writeForensicsMarker(hostRepo, "host-report.md", "HOST_ONLY_FORENSICS");
-      writeForensicsMarker(activeRepo, "active-report.md", "ACTIVE_ONLY_FORENSICS");
-      clearGSDPreferencesCache();
-
-      const activeCtx = { ...ctx, cwd: activeRepo } as ExtensionContext;
-      const result = await buildBeforeAgentStartResult(
-        { prompt: "continue", systemPrompt: "base system prompt" },
-        activeCtx,
-      );
-      const combinedContext = `${result?.systemPrompt ?? ""}\n${result?.message?.content ?? ""}`;
-
-      assert.match(combinedContext, /ACTIVE_ONLY_RULE/);
-      assert.match(combinedContext, /ACTIVE_ONLY_FORENSICS/);
-      assert.match(combinedContext, /active-only-model/);
-      assert.doesNotMatch(combinedContext, /HOST_ONLY_RULE/);
-      assert.doesNotMatch(combinedContext, /HOST_ONLY_FORENSICS/);
-      assert.doesNotMatch(combinedContext, /host-only-model/);
-    } finally {
+    t.after(async () => {
       await _flushDeferredContextMaintenanceForTest(activeRepo);
       rmSync(activeRepo, { recursive: true, force: true });
-    }
+    });
+    mkdirSync(join(activeRepo, ".gsd"), { recursive: true });
+    execFileSync("git", ["init", "-q"], { cwd: activeRepo, stdio: "ignore" });
+    writeFileSync(join(hostRepo, ".gsd", "KNOWLEDGE.md"), "## Rules\n\n- HOST_ONLY_RULE\n", "utf-8");
+    writeFileSync(join(activeRepo, ".gsd", "KNOWLEDGE.md"), "## Rules\n\n- ACTIVE_ONLY_RULE\n", "utf-8");
+    writeFileSync(
+      join(hostRepo, ".gsd", "PREFERENCES.md"),
+      ["---", "models:", "  subagent: host-only-model", "---", ""].join("\n"),
+      "utf-8",
+    );
+    writeFileSync(
+      join(activeRepo, ".gsd", "PREFERENCES.md"),
+      ["---", "models:", "  subagent: active-only-model", "---", ""].join("\n"),
+      "utf-8",
+    );
+    writeForensicsMarker(hostRepo, "host-report.md", "HOST_ONLY_FORENSICS");
+    writeForensicsMarker(activeRepo, "active-report.md", "ACTIVE_ONLY_FORENSICS");
+    clearGSDPreferencesCache();
+
+    const activeCtx = { ...ctx, cwd: activeRepo } as ExtensionContext;
+    const result = await buildBeforeAgentStartResult(
+      { prompt: "continue", systemPrompt: "base system prompt" },
+      activeCtx,
+    );
+    const combinedContext = `${result?.systemPrompt ?? ""}\n${result?.message?.content ?? ""}`;
+
+    assert.match(combinedContext, /ACTIVE_ONLY_RULE/);
+    assert.match(combinedContext, /ACTIVE_ONLY_FORENSICS/);
+    assert.match(combinedContext, /active-only-model/);
+    assert.doesNotMatch(combinedContext, /HOST_ONLY_RULE/);
+    assert.doesNotMatch(combinedContext, /HOST_ONLY_FORENSICS/);
+    assert.doesNotMatch(combinedContext, /host-only-model/);
   });
 });
 
@@ -781,41 +776,39 @@ for (const [target, replaceAfter] of [
   });
 }
 
-test("keeps an opened contract snapshot authoritative after directory replacement", async () => {
+test("keeps an opened contract snapshot authoritative after directory replacement", async (t) => {
   await withRuntimeProject(async (base) => {
     const contractDir = join(base, "script", "local-runtime");
     const movedContractDir = join(base, "script", "original-runtime");
     const outsideDir = realpathSync(mkdtempSync(join(tmpdir(), "gsd-runtime-outside-")));
-    try {
-      mkdirSync(contractDir, { recursive: true });
-      writeFileSync(join(contractDir, "AGENT.md"), "# Trusted runtime rules\n", "utf-8");
-      writeFileSync(join(outsideDir, "AGENT.md"), "# Replaced outside rules\n", "utf-8");
-
-      const contract = resolveRuntimeContract(base);
-      renameSync(contractDir, movedContractDir);
-      symlinkSync(outsideDir, contractDir, "dir");
-
-      assert.equal(contract?.agentInstructions?.content, "# Trusted runtime rules\n");
-      assert.notEqual(contract?.agentInstructions?.content, "# Replaced outside rules\n");
-    } finally {
+    t.after(() => {
       rmSync(outsideDir, { recursive: true, force: true });
-    }
+    });
+    mkdirSync(contractDir, { recursive: true });
+    writeFileSync(join(contractDir, "AGENT.md"), "# Trusted runtime rules\n", "utf-8");
+    writeFileSync(join(outsideDir, "AGENT.md"), "# Replaced outside rules\n", "utf-8");
+
+    const contract = resolveRuntimeContract(base);
+    renameSync(contractDir, movedContractDir);
+    symlinkSync(outsideDir, contractDir, "dir");
+
+    assert.equal(contract?.agentInstructions?.content, "# Trusted runtime rules\n");
+    assert.notEqual(contract?.agentInstructions?.content, "# Replaced outside rules\n");
   });
 });
 
-test("rejects contract document symlinks that escape the contract directory", async () => {
+test("rejects contract document symlinks that escape the contract directory", async (t) => {
   await withRuntimeProject(async (base) => {
     const contractDir = join(base, "script", "local-runtime");
     const outsideDir = realpathSync(mkdtempSync(join(tmpdir(), "gsd-runtime-outside-")));
-    try {
-      mkdirSync(contractDir, { recursive: true });
-      writeFileSync(join(outsideDir, "AGENT.md"), "# Outside rules\n", "utf-8");
-      symlinkSync(join(outsideDir, "AGENT.md"), join(contractDir, "AGENT.md"));
-
-      assert.equal(resolveRuntimeContract(base), null);
-    } finally {
+    t.after(() => {
       rmSync(outsideDir, { recursive: true, force: true });
-    }
+    });
+    mkdirSync(contractDir, { recursive: true });
+    writeFileSync(join(outsideDir, "AGENT.md"), "# Outside rules\n", "utf-8");
+    symlinkSync(join(outsideDir, "AGENT.md"), join(contractDir, "AGENT.md"));
+
+    assert.equal(resolveRuntimeContract(base), null);
   });
 });
 
@@ -1013,13 +1006,22 @@ test("accepts an entry larger than the authoritative document limit", async () =
   });
 });
 
-test("cmux auto-enable preserves malformed runtime contract blocking", async () => {
+test("cmux auto-enable preserves malformed runtime contract blocking", async (t) => {
   await withRuntimeProject(async (base, ctx) => {
     const preferencesPath = join(base, ".gsd", "PREFERENCES.md");
     const socketPath = join(base, "cmux.sock");
     const originalWorkspaceId = process.env.CMUX_WORKSPACE_ID;
     const originalSurfaceId = process.env.CMUX_SURFACE_ID;
     const originalSocketPath = process.env.CMUX_SOCKET_PATH;
+    t.after(() => {
+      resetCmuxPromptState();
+      if (originalWorkspaceId === undefined) delete process.env.CMUX_WORKSPACE_ID;
+      else process.env.CMUX_WORKSPACE_ID = originalWorkspaceId;
+      if (originalSurfaceId === undefined) delete process.env.CMUX_SURFACE_ID;
+      else process.env.CMUX_SURFACE_ID = originalSurfaceId;
+      if (originalSocketPath === undefined) delete process.env.CMUX_SOCKET_PATH;
+      else process.env.CMUX_SOCKET_PATH = originalSocketPath;
+    });
     const malformedPreferences = [
       "---",
       "runtime:",
@@ -1037,23 +1039,13 @@ test("cmux auto-enable preserves malformed runtime contract blocking", async () 
     resetCmuxPromptState();
     clearGSDPreferencesCache();
 
-    try {
-      const result = await buildBeforeAgentStartResult(
-        { prompt: "Inspect the application", systemPrompt: "base system prompt" },
-        ctx,
-      );
+    const result = await buildBeforeAgentStartResult(
+      { prompt: "Inspect the application", systemPrompt: "base system prompt" },
+      ctx,
+    );
 
-      assert.match(result?.systemPrompt ?? "", /Invalid project-local runtime contract/);
-      assert.equal(readFileSync(preferencesPath, "utf-8"), malformedPreferences);
-    } finally {
-      resetCmuxPromptState();
-      if (originalWorkspaceId === undefined) delete process.env.CMUX_WORKSPACE_ID;
-      else process.env.CMUX_WORKSPACE_ID = originalWorkspaceId;
-      if (originalSurfaceId === undefined) delete process.env.CMUX_SURFACE_ID;
-      else process.env.CMUX_SURFACE_ID = originalSurfaceId;
-      if (originalSocketPath === undefined) delete process.env.CMUX_SOCKET_PATH;
-      else process.env.CMUX_SOCKET_PATH = originalSocketPath;
-    }
+    assert.match(result?.systemPrompt ?? "", /Invalid project-local runtime contract/);
+    assert.equal(readFileSync(preferencesPath, "utf-8"), malformedPreferences);
   });
 });
 

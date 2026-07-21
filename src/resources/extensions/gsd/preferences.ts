@@ -773,6 +773,22 @@ function normalizeParsedPreferences(preferences: GSDPreferences): GSDPreferences
 }
 
 /**
+ * Detect whether a heading+list section whose YAML failed to parse was trying
+ * to configure a runtime contract, so discovery fails closed instead of
+ * silently proceeding. A runtime contract can appear either as a top-level
+ * `contract` under a `## Runtime` heading, or nested as `runtime: { contract }`
+ * under any other supported heading (e.g. `## Settings`) — the successful parse
+ * path re-homes that nested form onto the `runtime` key, so a malformed variant
+ * must be treated the same. `parseDocument` never throws, so `hasIn` still sees
+ * the keys captured before the syntax error.
+ */
+function brokenSectionReferencesRuntimeContract(section: string, yamlBlock: string): boolean {
+  const doc = parseDocument(yamlBlock);
+  if (section === "runtime" && doc.hasIn(["contract"])) return true;
+  return doc.hasIn(["runtime", "contract"]);
+}
+
+/**
  * Parse heading+list format into a nested object, then cast to GSDPreferences.
  * Handles markdown like:
  *   ## Git
@@ -829,7 +845,7 @@ function parseHeadingListFormat(content: string): PreferenceParseResult {
 
       typed[targetSection] = value;
     } catch (e) {
-      if (section === "runtime" && parseDocument(yamlBlock).hasIn(["contract"])) {
+      if (brokenSectionReferencesRuntimeContract(section, yamlBlock)) {
         runtimeContractParseFailed = true;
         diagnostics.push({
           severity: "error",

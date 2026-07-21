@@ -387,17 +387,25 @@ export async function buildBeforeAgentStartResult(
 
   let codebaseBlock = "";
   const codebaseBasePath = resolveRepositoryProjectRoot(basePath);
-  try {
-    const codebaseOptions = loadedPreferences?.preferences?.codebase
-      ? {
-          excludePatterns: loadedPreferences.preferences.codebase.exclude_patterns,
-          maxFiles: loadedPreferences.preferences.codebase.max_files,
-          collapseThreshold: loadedPreferences.preferences.codebase.collapse_threshold,
-        }
-      : undefined;
-    ensureCodebaseMapFresh(codebaseBasePath, codebaseOptions);
-  } catch (e) {
-    logWarning("bootstrap", `CODEBASE refresh failed: ${(e as Error).message}`);
+  // Behaviour-neutral when no local contract exists: only refresh (and thereby
+  // create) the codebase map when this workspace already owns a `.gsd`.
+  // `buildBeforeAgentStartResult` may now proceed solely because a propagated
+  // runtime-contract root has a `.gsd`; in that case a nested/isolated child
+  // without its own `.gsd` must not be mutated with a fresh `.gsd/CODEBASE.md`,
+  // since `ensureCodebaseMapFresh` mkdirs the target `.gsd` root.
+  if (existsSync(gsdRoot(basePath))) {
+    try {
+      const codebaseOptions = loadedPreferences?.preferences?.codebase
+        ? {
+            excludePatterns: loadedPreferences.preferences.codebase.exclude_patterns,
+            maxFiles: loadedPreferences.preferences.codebase.max_files,
+            collapseThreshold: loadedPreferences.preferences.codebase.collapse_threshold,
+          }
+        : undefined;
+      ensureCodebaseMapFresh(codebaseBasePath, codebaseOptions);
+    } catch (e) {
+      logWarning("bootstrap", `CODEBASE refresh failed: ${(e as Error).message}`);
+    }
   }
 
   const codebasePath = resolveGsdRootFile(codebaseBasePath, "CODEBASE");

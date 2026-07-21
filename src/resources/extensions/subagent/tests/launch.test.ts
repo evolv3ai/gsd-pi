@@ -74,31 +74,31 @@ describe("subagent launch module", () => {
 		assert.deepEqual(plan.args.slice(plan.args.indexOf("--tools"), plan.args.indexOf("--tools") + 2), ["--tools", "read,write"]);
 	});
 
-	it("propagates the parent authority to a nested repository child", () => {
+	it("propagates the parent authority to a nested repository child", (t) => {
 		dir = realpathSync(mkdtempSync(join(tmpdir(), "gsd-subagent-parent-")));
 		const child = join(dir, "frontend");
 		mkdirSync(child);
 		const previousProjectRoot = process.env.GSD_PROJECT_ROOT;
 		delete process.env.GSD_PROJECT_ROOT;
-		try {
-			const plan = createSubagentLaunchPlan({
-				agent: makeAgent(),
-				task: "inspect the frontend",
-				tmpPromptPath: null,
-				defaultCwd: dir,
-				cwd: child,
-			});
-
-			assert.equal(plan.env.GSD_PROJECT_ROOT, undefined);
-			assert.equal(plan.env[SUBAGENT_RUNTIME_CONTRACT_ROOT_ENV_VAR], dir);
-			assert.deepEqual(buildShellEnvAssignments(plan.env), [
-				`${SUBAGENT_CHILD_ENV_VAR}='${SUBAGENT_CHILD_ENV_VALUE}'`,
-				`${SUBAGENT_RUNTIME_CONTRACT_ROOT_ENV_VAR}='${dir}'`,
-			]);
-		} finally {
+		t.after(() => {
 			if (previousProjectRoot === undefined) delete process.env.GSD_PROJECT_ROOT;
 			else process.env.GSD_PROJECT_ROOT = previousProjectRoot;
-		}
+		});
+
+		const plan = createSubagentLaunchPlan({
+			agent: makeAgent(),
+			task: "inspect the frontend",
+			tmpPromptPath: null,
+			defaultCwd: dir,
+			cwd: child,
+		});
+
+		assert.equal(plan.env.GSD_PROJECT_ROOT, undefined);
+		assert.equal(plan.env[SUBAGENT_RUNTIME_CONTRACT_ROOT_ENV_VAR], dir);
+		assert.deepEqual(buildShellEnvAssignments(plan.env), [
+			`${SUBAGENT_CHILD_ENV_VAR}='${SUBAGENT_CHILD_ENV_VALUE}'`,
+			`${SUBAGENT_RUNTIME_CONTRACT_ROOT_ENV_VAR}='${dir}'`,
+		]);
 	});
 
 	it("does not propagate parent authority through a symlinked child path", () => {
@@ -200,23 +200,23 @@ describe("subagent launch module", () => {
 		assert.equal(plan.env[SUBAGENT_RUNTIME_CONTRACT_ROOT_ENV_VAR], workspace);
 	});
 
-	it("removes stale runtime contract authority for an unrelated child cwd", () => {
+	it("removes stale runtime contract authority for an unrelated child cwd", (t) => {
 		const previous = process.env[SUBAGENT_RUNTIME_CONTRACT_ROOT_ENV_VAR];
 		process.env[SUBAGENT_RUNTIME_CONTRACT_ROOT_ENV_VAR] = "/stale-project";
-		try {
-			const plan = createSubagentLaunchPlan({
-				agent: makeAgent(),
-				task: "inspect another project",
-				tmpPromptPath: null,
-				defaultCwd: "/workspace",
-				cwd: "/other-project",
-			});
-
-			assert.equal(plan.env[SUBAGENT_RUNTIME_CONTRACT_ROOT_ENV_VAR], undefined);
-		} finally {
+		t.after(() => {
 			if (previous === undefined) delete process.env[SUBAGENT_RUNTIME_CONTRACT_ROOT_ENV_VAR];
 			else process.env[SUBAGENT_RUNTIME_CONTRACT_ROOT_ENV_VAR] = previous;
-		}
+		});
+
+		const plan = createSubagentLaunchPlan({
+			agent: makeAgent(),
+			task: "inspect another project",
+			tmpPromptPath: null,
+			defaultCwd: "/workspace",
+			cwd: "/other-project",
+		});
+
+		assert.equal(plan.env[SUBAGENT_RUNTIME_CONTRACT_ROOT_ENV_VAR], undefined);
 	});
 
 	it("creates a real branched session for forked context", () => {
