@@ -1,4 +1,4 @@
-import { closeSync, constants as fsConstants, existsSync, fsyncSync, lstatSync, openSync, readdirSync, readFileSync, realpathSync, writeFileSync, renameSync, unlinkSync, mkdirSync, promises as fs } from "node:fs";
+import { closeSync, constants as fsConstants, existsSync, fstatSync, fsyncSync, lstatSync, openSync, readdirSync, readFileSync, realpathSync, writeFileSync, renameSync, unlinkSync, mkdirSync, promises as fs } from "node:fs";
 import { basename, dirname, join, relative, resolve } from "node:path";
 import { createHash, randomBytes } from "node:crypto";
 import { acquireProjectionRootIdentityLock, isProjectionRootIdentityLockAvailable, type ProjectionRootIdentityLock } from "@gsd/native/file-identity";
@@ -420,24 +420,41 @@ function readStableProjectionSource(handle: ProjectionRootIdentityLock, logicalP
 // Plain-fs source proof used when the native identity lock is unavailable
 // (pinned engine binary predates ProjectionRootIdentityLock, or the addon
 // failed to load). Mirrors readStableProjectionSource: double-read with a
-// content hash plus a dev:ino identity comparison.
+// content hash plus a dev:ino identity comparison. Each read opens with
+// O_NOFOLLOW (where the platform defines it) and both proves identity (via
+// fstat on the resulting fd) and reads through that same fd, so a regular
+// file to symlink swap racing the proof fails the open with ELOOP instead of
+// following the link out of the source root, the plain-fs analogue of the
+// native lock's AT_SYMLINK_NOFOLLOW reads.
 function readStableProjectionSourceFallback(sourcePath: string): Buffer {
   const statIdentity = (stat: { dev: bigint; ino: bigint }) => `${stat.dev}:${stat.ino}`;
-  const before = lstatSync(sourcePath, { bigint: true });
-  const first = readFileSync(sourcePath);
+  const readNoFollow = (): { identity: string; content: Buffer } => {
+    const fd = openSync(sourcePath, fsConstants.O_RDONLY | (fsConstants.O_NOFOLLOW ?? 0));
+    try {
+      return { identity: statIdentity(fstatSync(fd, { bigint: true })), content: readFileSync(fd) };
+    } finally {
+      closeSync(fd);
+    }
+  };
+  const first = readNoFollow();
   projectionCopyBoundaryForTest?.();
-  const second = readFileSync(sourcePath);
-  if (statIdentity(before) !== statIdentity(lstatSync(sourcePath, { bigint: true }))
-    || createHash("sha256").update(first).digest("hex") !== createHash("sha256").update(second).digest("hex")) {
+  const second = readNoFollow();
+  if (first.identity !== second.identity
+    || createHash("sha256").update(first.content).digest("hex") !== createHash("sha256").update(second.content).digest("hex")) {
     throw new Error("projection copy source changed during identity proof");
   }
-  return first;
+  return first.content;
 }
 
 // Plain-fs tree transfer used when the native identity lock is unavailable.
 // Preserves transferProjectionTreeSync semantics: existing non-directory
-// targets are kept unless overwrite, and symlink entries are skipped so the
-// copy cannot escape the source root.
+// targets are kept unless overwrite. Entry types are resolved with lstat (no
+// symlink follow) so the decision is accurate even on filesystems whose
+// readdir returns DT_UNKNOWN, and symlinks / other non-regular nodes are
+// rejected rather than skipped, matching the native lock's pathKind, which
+// throws on them. Failing loud avoids producing a silent partial projection
+// that leaves worktree state subtly inconsistent, and a rejected symlink
+// still cannot escape the source root.
 function transferProjectionTreeFallbackSync(
   sourcePath: string,
   directoryPath: string,
@@ -447,13 +464,15 @@ function transferProjectionTreeFallbackSync(
   function transferDirectory(sourceDir: string, target: string): void {
     if (!overwrite && existsSync(target) && !lstatSync(target).isDirectory()) return;
     createProjectionDirectorySync(target);
-    for (const entry of readdirSync(sourceDir, { withFileTypes: true })) {
-      const sourceEntry = join(sourceDir, entry.name);
+    for (const name of readdirSync(sourceDir)) {
+      const sourceEntry = join(sourceDir, name);
       if (!include(sourceEntry)) continue;
-      const targetEntry = join(target, entry.name);
-      if (entry.isDirectory()) transferDirectory(sourceEntry, targetEntry);
-      else if (entry.isSymbolicLink()) continue;
-      else if (overwrite || !existsSync(targetEntry)) {
+      const targetEntry = join(target, name);
+      const entryStat = lstatSync(sourceEntry);
+      if (entryStat.isDirectory()) transferDirectory(sourceEntry, targetEntry);
+      else if (!entryStat.isFile()) {
+        throw new Error("projection copy source entry is neither a regular file nor a directory");
+      } else if (overwrite || !existsSync(targetEntry)) {
         atomicWriteBufferSync(targetEntry, readStableProjectionSourceFallback(sourceEntry));
       }
     }
