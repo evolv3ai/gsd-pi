@@ -1135,15 +1135,27 @@ impl ProjectionRootIdentityLock {
         {
             let (path, mut guards) = self.safe_windows_path(&relative_path, false)?;
             reject_windows_reparse(&path)?;
-            guards.push(open_windows_directory(&path)?);
-            let mut entries = fs::read_dir(&path)
-                .map_err(projection_error)?
-                .map(|entry| {
-                    entry
-                        .map(|value| value.file_name().to_string_lossy().into_owned())
-                        .map_err(projection_error)
-                })
-                .collect::<Result<Vec<_>>>()?;
+            // Listing the projection root itself must not re-open it by path:
+            // the exclusive share_mode(0) hold rejects that open
+            // (ERROR_SHARING_VIOLATION / os error 32). Enumerating through the
+            // already-held root handle covers that case and behaves the same
+            // for every other directory.
+            if path != self.root {
+                guards.push(open_windows_directory(&path)?);
+            }
+            let list_children = |guards: &[File]| -> Result<Vec<String>> {
+                let directory = guards.last().or(self.file.as_ref()).ok_or_else(|| {
+                    Error::new(
+                        Status::GenericFailure,
+                        "projection root is closed".to_owned(),
+                    )
+                })?;
+                Ok(enumerate_windows_children(directory)?
+                    .into_iter()
+                    .map(|(name, _, _)| name)
+                    .collect())
+            };
+            let mut entries = list_children(&guards)?;
             let intents = entries
                 .iter()
                 .filter_map(|name| {
@@ -1167,14 +1179,7 @@ impl ProjectionRootIdentityLock {
                 )?;
             }
             if !intents.is_empty() {
-                entries = fs::read_dir(&path)
-                    .map_err(projection_error)?
-                    .map(|entry| {
-                        entry
-                            .map(|value| value.file_name().to_string_lossy().into_owned())
-                            .map_err(projection_error)
-                    })
-                    .collect::<Result<Vec<_>>>()?;
+                entries = list_children(&guards)?;
             }
             entries.sort();
             return Ok(entries);
@@ -1631,7 +1636,22 @@ impl ProjectionRootIdentityLock {
             }
             guards.push(open_windows_directory(&path)?);
         }
-        recover_windows_control_directory(&path, &guards, self.file.as_ref(), Some(&self.root))
+        // A root-level target leaves `path` equal to the projection root;
+        // opening the root by path (fs::read_dir) collides with the exclusive
+        // share_mode(0) hold (ERROR_SHARING_VIOLATION / os error 32), so the
+        // scan must enumerate through the already-held root handle.
+        let directory = if path == self.root {
+            self.file.as_ref()
+        } else {
+            None
+        };
+        recover_windows_control_directory(
+            &path,
+            directory,
+            &guards,
+            self.file.as_ref(),
+            Some(&self.root),
+        )
     }
 
     #[cfg(windows)]
@@ -3269,22 +3289,37 @@ fn retain_windows_control_participant(
 #[cfg(windows)]
 fn recover_windows_control_directory(
     path: &Path,
+    directory: Option<&File>,
     guards: &[File],
     root: Option<&File>,
     root_path: Option<&Path>,
 ) -> Result<()> {
-    let entries = match fs::read_dir(path) {
-        Ok(entries) => entries,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
-        Err(error) => return Err(projection_error(error)),
+    let mut names: Vec<String> = match directory {
+        Some(handle) => enumerate_windows_children(handle)?
+            .into_iter()
+            .map(|(name, _, _)| name)
+            .collect(),
+        None => {
+            let entries = match fs::read_dir(path) {
+                Ok(entries) => entries,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+                Err(error) => return Err(projection_error(error)),
+            };
+            let mut names = Vec::new();
+            for entry in entries {
+                names.push(
+                    entry
+                        .map_err(projection_error)?
+                        .file_name()
+                        .to_string_lossy()
+                        .into_owned(),
+                );
+            }
+            names
+        }
     };
     let mut targets = std::collections::BTreeSet::new();
-    for entry in entries {
-        let name = entry
-            .map_err(projection_error)?
-            .file_name()
-            .to_string_lossy()
-            .into_owned();
+    for name in names.drain(..) {
         let Some(control) = name.strip_prefix(".gsd-control-") else {
             continue;
         };
