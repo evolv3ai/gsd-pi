@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -254,6 +254,50 @@ test("mergeProjectionTreeSync falls back when the pinned native engine lacks ide
     readFileSync(join(targetTree, "22-CONTEXT.md"), "utf8"),
     "worktree-local-content",
   );
+});
+
+test("projection tree fallback rejects symlink entries instead of silently skipping them", (t) => {
+  const base = mkdtempSync(join(tmpdir(), "gsd-merge-symlink-reject-"));
+  t.after(() => rmSync(base, { recursive: true, force: true }));
+  const gsd = join(base, ".gsd");
+  mkdirSync(gsd);
+  writeFileSync(join(gsd, "gsd.db"), "database-present");
+  const sourceTree = join(gsd, "phases", "22-m022");
+  const targetTree = join(base, "worktree", ".gsd", "phases", "22-m022");
+  const outsideSecret = join(base, "outside-secret.md");
+  const moduleUrl = new URL("../atomic-write.ts", import.meta.url).href;
+  const loaderPath = new URL("./resolve-ts.mjs", import.meta.url).pathname;
+  const script = `
+    const { mergeProjectionTreeSync } = await import(${JSON.stringify(moduleUrl)});
+    const { mkdirSync, writeFileSync, symlinkSync } = await import("node:fs");
+    const { join } = await import("node:path");
+    mkdirSync(process.argv[1], { recursive: true });
+    writeFileSync(join(process.argv[1], "22-CONTEXT.md"), "context-content");
+    // A symlink pointing outside the source root: the native identity lock's
+    // pathKind rejects it, so the plain-fs fallback must throw too rather than
+    // skip it and leave a partial projection.
+    writeFileSync(process.argv[3], "secret-outside-root");
+    symlinkSync(process.argv[3], join(process.argv[1], "escape.md"));
+    mergeProjectionTreeSync(process.argv[1], process.argv[2], false);
+  `;
+
+  const result = spawnSync(process.execPath, [
+    "--import", loaderPath,
+    "--experimental-strip-types",
+    "--input-type=module",
+    "--eval", script,
+    sourceTree,
+    targetTree,
+    outsideSecret,
+  ], {
+    encoding: "utf8",
+    env: { ...process.env, GSD_NATIVE_DISABLE: "1" },
+  });
+
+  assert.notEqual(result.status, 0, "expected the symlink entry to be rejected");
+  assert.match(result.stderr, /neither a regular file nor a directory/);
+  // The symlink target's content must never reach the projection target.
+  assert.equal(existsSync(join(targetTree, "escape.md")), false);
 });
 
 // ─── Durability: fsync ordering in the fallback WithOps paths ────────────────
