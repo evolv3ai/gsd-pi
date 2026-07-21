@@ -56,6 +56,7 @@ import {
   validateLegacyImportSourceRoots,
   type LegacyImportSourceRoot,
 } from "./legacy-import-preview-source.js";
+import { processStartIdentity } from "./process-start-identity.js";
 import {
   openSqliteReadOnly,
   SqliteReadOnlyConfigurationCloseError,
@@ -70,7 +71,7 @@ const CHECKPOINT_ATTEMPT_LIMIT = 3;
 const CHECKPOINT_RETRY_DELAY_MS = 25;
 const SNAPSHOT_FILE_NAME = "snapshot.sqlite";
 const SNAPSHOT_READ_BUFFER_SIZE = 64 * 1024;
-const STALE_STAGING_UUID_PATTERN = /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/u;
+const STAGING_OWNER_PATTERN = /^(?<pid>[1-9][0-9]*)-(?<identity>[0-9a-f]{64})-(?<nonce>[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12})$/u;
 
 // Block the thread briefly between retries without spinning the CPU, matching
 // the synchronous retry pattern used by the file lock.
@@ -1395,9 +1396,17 @@ function createPrivateStaging(
   preflight: LegacyImportBackupPreflight,
   ops: LegacyImportBackupSnapshotOps,
 ): LegacyImportBackupPrivateStaging {
+  const identity = processStartIdentity(process.pid);
+  if (identity === null || !SHA256_PATTERN.test(identity)) {
+    preflightFail(
+      "snapshot",
+      "LEGACY_IMPORT_BACKUP_SNAPSHOT_FAILED",
+      "legacy import backup staging owner identity could not be proven",
+    );
+  }
   const directory = join(
     preflight.destination_directory,
-    `.${preflight.label}.staging-${createRandomUUID()}`,
+    `.${preflight.label}.staging-${process.pid}-${identity.slice("sha256:".length)}-${createRandomUUID()}`,
   );
   try {
     mkdirSync(directory, { mode: 0o700 });
@@ -3136,8 +3145,24 @@ function sweepStaleStagingDirectories(
   }
   const prefix = `.${preflight.label}.staging-`;
   for (const entry of entries) {
-    if (!entry.startsWith(prefix) || !STALE_STAGING_UUID_PATTERN.test(entry.slice(prefix.length))) {
-      continue;
+    if (!entry.startsWith(prefix)) continue;
+    const ownerMatch = STAGING_OWNER_PATTERN.exec(entry.slice(prefix.length));
+    if (ownerMatch?.groups === undefined) continue;
+    const ownerPid = Number(ownerMatch.groups["pid"]);
+    if (!Number.isSafeInteger(ownerPid) || ownerPid <= 0) continue;
+    let ownerProcessExists = true;
+    try {
+      process.kill(ownerPid, 0);
+    } catch (error) {
+      if (systemErrorCode(error) !== "ESRCH") continue;
+      ownerProcessExists = false;
+    }
+    if (ownerProcessExists) {
+      const ownerIdentity = processStartIdentity(ownerPid);
+      if (
+        ownerIdentity === null
+        || ownerIdentity === `sha256:${ownerMatch.groups["identity"]}`
+      ) continue;
     }
     const stalePath = join(preflight.destination_directory, entry);
     let stat: BigIntStats;

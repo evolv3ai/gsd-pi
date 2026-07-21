@@ -1,7 +1,7 @@
 # M004/S05 Authority Epoch and Forward Repair Research
 
-Status: accepted implementation boundary for M004/S05
-Scope: restore policy, cutover ownership, and Forward Repair contract; runtime implementation begins in T02
+Status: completed implementation boundary for M004/S05
+Scope: restore policy, cutover ownership, and Forward Repair contract; runtime implementation completed through T08
 
 ## Decision
 
@@ -397,9 +397,14 @@ legacy-corpus V45/V46 boundaries are executable tests.
 4. T05 implements one crash-safe eligible live restore and records erased
    lineage in the restored database. (Completed.)
 5. T06 proves fault, SIGKILL, restart, stale-validator, and contention
-   convergence.
+   convergence. (Completed.)
 6. T07 builds three-way import Forward Repair against current canonical state.
+   (Completed.)
 7. T08 seals public routes and the complete corpus across journal modes.
+   (Completed.)
+
+M004/S05 is complete through T08; no implementation task remains planned in
+this slice.
 
 ### T05 reconciled implementation research
 
@@ -451,7 +456,7 @@ replacement boundary:
   pre-publication reopen, the rename/intent crash window, post-publication
   convergence, installed-byte tampering, intent inode replacement, unsafe
   intent paths, sidecar links, and unsupported directory durability. T06
-  retains the exhaustive boundary-fault, real SIGKILL, startup,
+  completes the exhaustive boundary-fault, real SIGKILL, startup,
   stale-validator, and multi-process contention matrices.
 
 ### T06 reconciled fault and contention research
@@ -538,7 +543,7 @@ the SQLite transaction leaves zero restore lineage and retry commits it once.
 For deaths after receipt commit, a fresh process returns the complete stored
 result as `replayed` and only finishes durable cleanup.
 
-#### Faults the implementation must close before the matrix can pass
+#### Faults closed by the implementation
 
 - Claim publication must be atomic and fully fsynced. Writing `active.json`
   directly permits a process death to leave malformed JSON that fails closed
@@ -578,7 +583,7 @@ eligible Application rollback, and no silent success before durable receipt.
 #### Adversarial review addendum
 
 The first implementation pass exposed four additional authority gaps that the
-final proof must include:
+final proof includes:
 
 - Runtime memory CRUD, source, embedding, relation, maintenance, and backfill
   mutations are canonical database writes. They must use the same post-lock

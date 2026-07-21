@@ -67,6 +67,7 @@ import {
   validateLegacyImportSourceRoots,
   type LegacyImportSourceRoot,
 } from "../legacy-import-preview-source.ts";
+import { processStartIdentity } from "../process-start-identity.ts";
 import { openSqliteReadOnly, SqliteReadOnlyConfigurationError } from "../sqlite-readonly.ts";
 
 const EMPTY_HASH = hashLegacyImportValue([]);
@@ -2507,11 +2508,25 @@ describe("legacy import backup preparation", () => {
     assert.deepEqual(readdirSync(fixture.destinationDirectory), []);
   });
 
+  test("preserves private staging owned by an active preparation process", (t) => {
+    const fixture = preparationFixture(t);
+    const preflight = prepareLegacyImportBackupPreflight(fixture.input);
+    const activeSnapshot = createLegacyImportBackupSnapshot(preflight);
+
+    const result = prepareBackupApi()(fixture.input);
+
+    assert.equal(existsSync(activeSnapshot.staging_directory), true);
+    assert.deepEqual(visibleBackupPaths(fixture.destinationDirectory), [result.backup_ref]);
+    assertIndependentlyValidFinal(result.backup_ref);
+  });
+
   test("sweeps stale private staging directories from a terminated run before publication", (t) => {
     const fixture = preparationFixture(t);
+    const currentIdentity = processStartIdentity(process.pid);
+    assert.ok(currentIdentity);
     const stale = join(
       fixture.destinationDirectory,
-      `.${fixture.input.label}.staging-${randomUUID()}`,
+      `.${fixture.input.label}.staging-${process.pid}-${"0".repeat(64)}-${randomUUID()}`,
     );
     mkdirSync(stale);
     writeFileSync(join(stale, "snapshot.sqlite"), "stale bytes");

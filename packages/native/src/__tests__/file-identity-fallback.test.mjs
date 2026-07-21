@@ -87,23 +87,32 @@ test("loaded addon exposes the file-identity and directory-sync N-API exports", 
   assert.equal(output.syncDirectoryEntry, "function", "addon is stale: syncDirectoryEntry export missing");
 });
 
-test("projection root lock permits root writes while excluding a second owner", () => {
+test("projection root lock permits root writes while excluding a second owner", (t) => {
   const root = mkdtempSync(join(tmpdir(), "gsd-native-projection-root-"));
+  const previousNativePreference = process.env.GSD_NATIVE_PREFER_LOCAL;
+  let lock;
+  t.after(() => {
+    try {
+      lock?.close();
+    } finally {
+      if (previousNativePreference === undefined) {
+        delete process.env.GSD_NATIVE_PREFER_LOCAL;
+      } else {
+        process.env.GSD_NATIVE_PREFER_LOCAL = previousNativePreference;
+      }
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
   const stat = lstatSync(root, { bigint: true });
   process.env.GSD_NATIVE_PREFER_LOCAL = "1";
   const { acquireProjectionRootIdentityLock } = require("../../dist/file-identity");
-  const lock = acquireProjectionRootIdentityLock(root, stat.dev.toString(), stat.ino.toString());
+  lock = acquireProjectionRootIdentityLock(root, stat.dev.toString(), stat.ino.toString());
 
-  try {
-    assert.throws(
-      () => acquireProjectionRootIdentityLock(root, stat.dev.toString(), stat.ino.toString()),
-      /locking failed/,
-    );
-    lock.writeFile("PROJECT.md", Buffer.from("# Project\n"));
-    assert.equal(lock.readFile("PROJECT.md").toString(), "# Project\n");
-    assert.ok(lock.listDirectory("").includes("PROJECT.md"));
-  } finally {
-    lock.close();
-    rmSync(root, { recursive: true, force: true });
-  }
+  assert.throws(
+    () => acquireProjectionRootIdentityLock(root, stat.dev.toString(), stat.ino.toString()),
+    /locking failed/,
+  );
+  lock.writeFile("PROJECT.md", Buffer.from("# Project\n"));
+  assert.equal(lock.readFile("PROJECT.md").toString(), "# Project\n");
+  assert.ok(lock.listDirectory("").includes("PROJECT.md"));
 });
