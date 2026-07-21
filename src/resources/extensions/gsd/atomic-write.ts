@@ -471,7 +471,7 @@ function transferProjectionTreeFallbackSync(
       const entryStat = lstatSync(sourceEntry);
       if (entryStat.isDirectory()) transferDirectory(sourceEntry, targetEntry);
       else if (!entryStat.isFile()) {
-        throw new Error("projection copy source entry is neither a regular file nor a directory");
+        throw new Error(`projection copy source entry is neither a regular file nor a directory: ${sourceEntry}`);
       } else if (overwrite || !existsSync(targetEntry)) {
         atomicWriteBufferSync(targetEntry, readStableProjectionSourceFallback(sourceEntry));
       }
