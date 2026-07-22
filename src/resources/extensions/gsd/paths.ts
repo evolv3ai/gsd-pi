@@ -859,6 +859,33 @@ export function resolveMilestonePath(basePath: string, milestoneId: string): str
 }
 
 /**
+ * Returns true iff a milestone directory physically exists on disk, regardless
+ * of whether it is content-bearing.
+ *
+ * Distinct from resolveMilestonePath, which intentionally returns null for a
+ * legacy `milestones/<MID>/` directory that holds only scaffolding (e.g. an
+ * empty `slices/` created by discuss/queue flows before any CONTEXT/ROADMAP is
+ * written). That content-bearing gate is right for artifact resolution but
+ * wrong as a "directory is missing from disk" proxy: the workflow prompts
+ * create the milestone directory early, so a queued milestone in normal
+ * in-flight planning would otherwise look like an orphan. Use this to decide
+ * whether a milestone directory is truly absent (no directory at all) vs merely
+ * empty. See doctor-runtime-checks.ts orphan_milestone_db (#1524).
+ */
+export function milestoneDirExists(basePath: string, milestoneId: string): boolean {
+  // Flat-phase dirs (and content-bearing legacy dirs) resolve directly.
+  if (resolveMilestonePath(basePath, milestoneId)) return true;
+  // Legacy layout: a scaffold-only milestones/<MID>/ directory exists on disk
+  // but is not content-bearing, so resolveMilestonePath returns null. Treat the
+  // bare directory as present.
+  const oldMilestonesDir = join(gsdProjectionRoot(basePath), "milestones");
+  if (existsSync(oldMilestonesDir) && resolveDir(oldMilestonesDir, milestoneId)) {
+    return true;
+  }
+  return false;
+}
+
+/**
  * Resolve the full path to a milestone file (e.g. ROADMAP, CONTEXT, RESEARCH).
  */
 export function resolveMilestoneFile(
