@@ -214,12 +214,18 @@ async function buildRegistryAndFindActive(
     }
   }
 
-  if (!activeMilestoneFound && firstDeferredQueuedShell) {
+  // Only promote a deferred queued-shell to active when it has draft context
+  // (i.e. discuss-milestone was started). A phantom shell with no content and
+  // no draft is a ghost row left by gsd_milestone_generate_id that was never
+  // planned — promoting it strands the user on an empty milestone with no
+  // actionable options (#1524). Leave it as 'pending' so state falls through
+  // to handleNoActiveMilestone and the doctor can flag it as an orphan.
+  if (!activeMilestoneFound && firstDeferredQueuedShell && firstDeferredQueuedShell.hasDraftContext) {
     const shell = firstDeferredQueuedShell;
     activeMilestone = { id: shell.id, title: shell.title };
     activeMilestoneSlices = [];
     activeMilestoneFound = true;
-    if (shell.hasDraftContext) activeMilestoneHasDraft = true;
+    activeMilestoneHasDraft = true;
     const entry = registry.find(e => e.id === shell.id);
     if (entry) entry.status = 'active';
   }

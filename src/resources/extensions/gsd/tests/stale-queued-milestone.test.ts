@@ -200,6 +200,25 @@ describe("stale queued milestone selection (#3470)", () => {
     assert.equal(m068Entry!.status, "pending", "M068 with stale draft should be pending, not active");
   });
 
+  test("phantom queued shell (no content, no draft, no slices) is not promoted to active (#1524)", async () => {
+    base = createFixtureBase();
+    openDatabase(":memory:");
+
+    // M015: phantom row left by gsd_milestone_generate_id — never planned,
+    // no CONTEXT/ROADMAP/SUMMARY, no draft, no slices. It is the only
+    // milestone, so the old fallback would have promoted it to active.
+    insertMilestone({ id: "M015", title: "Phantom", status: "queued" });
+
+    invalidateStateCache();
+    const state = await deriveStateFromDb(base);
+
+    assert.equal(state.activeMilestone, null, "Phantom queued shell must not be promoted to active");
+
+    const m015Entry = state.registry.find((e: any) => e.id === "M015");
+    assert.ok(m015Entry, "M015 should still appear in registry");
+    assert.equal(m015Entry!.status, "pending", "Phantom queued shell should stay pending, not active");
+  });
+
   test("queued milestone with CONTEXT-DRAFT becomes active with needs-discussion phase when nothing else is active", async () => {
     base = createFixtureBase();
     openDatabase(":memory:");

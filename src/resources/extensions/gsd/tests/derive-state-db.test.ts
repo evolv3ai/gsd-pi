@@ -1375,7 +1375,9 @@ describe('derive-state-db', async () => {
       invalidateStateCache();
       const dbState = await deriveStateFromDb(base);
 
-      assert.equal(dbState.activeMilestone?.id, 'M001', 'single-resolve: queued milestone becomes active');
+      // A content-less queued shell (no CONTEXT, no CONTEXT-DRAFT, no slices)
+      // is a phantom and must NOT be promoted to active (#1524).
+      assert.equal(dbState.activeMilestone, null, 'single-resolve: content-less queued shell is not promoted');
       assert.equal(
         phaseDirExistsChecks,
         3,
