@@ -1,4 +1,4 @@
-import { closeSync, constants as fsConstants, existsSync, fstatSync, fsyncSync, lstatSync, openSync, readdirSync, readFileSync, realpathSync, writeFileSync, renameSync, unlinkSync, mkdirSync, promises as fs } from "node:fs";
+import { closeSync, constants as fsConstants, existsSync, fstatSync, fsyncSync, lstatSync, openSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync, renameSync, unlinkSync, mkdirSync, promises as fs } from "node:fs";
 import { basename, dirname, join, relative, resolve } from "node:path";
 import { createHash, randomBytes } from "node:crypto";
 import { acquireProjectionRootIdentityLock, isProjectionRootIdentityLockAvailable, type ProjectionRootIdentityLock } from "@gsd/native/file-identity";
@@ -371,6 +371,26 @@ function removeProjectionTreeWithoutDatabaseSync(directoryPath: string): void {
   const parentStat = lstatSync(parentPath, { bigint: true });
   if (!parentStat.isDirectory() || parentStat.isSymbolicLink()) {
     throw new Error("projection removal parent is not an identity-stable directory");
+  }
+  if (!isProjectionRootIdentityLockAvailable()) {
+    // Plain-fs fallback: mirror the native path's contract — a missing target
+    // is a no-op, non-directory or symlink targets are rejected, removal is
+    // recursive for directory trees.
+    let targetStat;
+    try {
+      targetStat = lstatSync(absolutePath, { bigint: true });
+    } catch (error) {
+      // Only a genuinely missing target is a no-op, matching the native path
+      // (which returns early on `!handle.pathExists(name)`). Real errors like
+      // EACCES/EPERM/ENOTDIR must surface rather than be masked.
+      if (normalizeErrnoCode(error) === "ENOENT") return;
+      throw error;
+    }
+    if (!targetStat.isDirectory() || targetStat.isSymbolicLink()) {
+      throw new Error("projection removal target is not a directory");
+    }
+    rmSync(absolutePath, { recursive: true, force: true });
+    return;
   }
   const handle = acquireProjectionRootIdentityLock(
     realpathSync(parentPath),
