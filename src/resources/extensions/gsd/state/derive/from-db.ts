@@ -261,11 +261,27 @@ function handleNoActiveMilestone(
     const blockerDetails = pendingEntries
       .filter(e => e.dependsOn && e.dependsOn.length > 0)
       .map(e => `${e.id} is waiting on unmet deps: ${e.dependsOn!.join(', ')}`);
-    return buildDerivedState(context, 'blocked', 'Resolve milestone dependencies before proceeding.', {
-      blockers: blockerDetails.length > 0
-        ? blockerDetails
-        : ['All remaining milestones are dep-blocked but no deps listed — check CONTEXT.md files'],
-    });
+
+    // Genuine dependency block: at least one pending milestone is waiting on an
+    // unmet dependency, so directing the user at those deps is accurate.
+    if (blockerDetails.length > 0) {
+      return buildDerivedState(context, 'blocked', 'Resolve milestone dependencies before proceeding.', {
+        blockers: blockerDetails,
+      });
+    }
+
+    // No pending milestone has unmet deps, yet none could be promoted to
+    // active. These are content-less queued shells — phantom rows left by
+    // gsd_milestone_generate_id with no CONTEXT/CONTEXT-DRAFT/slices — so the
+    // old "resolve dependencies" blocker was misleading and offered no recovery
+    // path (#1524). Point the user at the doctor (which now flags these as
+    // orphan milestone rows) or at planning a real milestone.
+    const phantomIds = pendingEntries.map(e => e.id).join(', ');
+    return buildDerivedState(
+      context,
+      'pre-planning',
+      `Found queued milestone(s) with no planning content and no dependencies (${phantomIds}) — likely orphaned rows. Run /gsd doctor fix to repair them, or /gsd to plan a milestone.`,
+    );
   }
 
   if (parkedEntries.length > 0) {

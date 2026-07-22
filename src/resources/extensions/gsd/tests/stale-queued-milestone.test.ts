@@ -219,6 +219,30 @@ describe("stale queued milestone selection (#3470)", () => {
     assert.equal(m015Entry!.status, "pending", "Phantom queued shell should stay pending, not active");
   });
 
+  test("phantom-only repo surfaces a doctor recovery path, not a misleading dep-block message (#1524)", async () => {
+    base = createFixtureBase();
+    openDatabase(":memory:");
+
+    // Two phantom shells, neither with content, draft, slices, or deps. With no
+    // promotable milestone, deriveStateFromDb falls into handleNoActiveMilestone.
+    insertMilestone({ id: "M015", title: "Phantom One", status: "queued" });
+    insertMilestone({ id: "M016", title: "Phantom Two", status: "queued" });
+
+    invalidateStateCache();
+    const state = await deriveStateFromDb(base);
+
+    assert.equal(state.activeMilestone, null, "Phantom-only repo has no active milestone");
+    // Must NOT claim the milestones are dependency-blocked — they have no deps.
+    assert.notEqual(state.phase, "blocked", "Phantom-only repo must not report a dependency block");
+    assert.deepStrictEqual(state.blockers, [], "No dependency blockers should be surfaced for phantom-only repo");
+    // Must direct the user toward a recovery path (doctor / planning).
+    assert.match(
+      state.nextAction,
+      /doctor/,
+      "nextAction should direct the user to the doctor for orphaned phantom rows",
+    );
+  });
+
   test("queued milestone with CONTEXT-DRAFT becomes active with needs-discussion phase when nothing else is active", async () => {
     base = createFixtureBase();
     openDatabase(":memory:");
