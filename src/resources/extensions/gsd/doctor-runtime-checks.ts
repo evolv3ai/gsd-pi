@@ -3,7 +3,7 @@ import { basename, dirname, join } from "node:path";
 
 import type { DoctorIssue, DoctorIssueCode } from "./doctor-types.js";
 import { cleanNumberedGsdVariants } from "./repo-identity.js";
-import { milestonesDir, gsdRoot, resolveGsdRootFile, resolveMilestonePath, resolveMilestoneFile } from "./paths.js";
+import { milestonesDir, gsdRoot, resolveGsdRootFile, resolveMilestonePath } from "./paths.js";
 import { deriveState, isGhostMilestone, isReusableGhostMilestone } from "./state.js";
 import { saveFile } from "./files.js";
 import { nativeIsRepo, nativeForEachRef, nativeUpdateRef } from "./native-git-bridge.js";
@@ -778,17 +778,12 @@ export async function checkRuntimeHealth(
   try {
     if (isDbAvailable()) {
       for (const milestone of getAllMilestones()) {
-        // Only skip `queued` milestones that have content files on disk
-        // (legitimate in-flight planning). A `queued` row with no CONTEXT,
-        // ROADMAP, or SUMMARY is a phantom left by gsd_milestone_generate_id
-        // that was never planned — fall through so the missing-directory check
-        // below reports it as an orphan the user can clean up (#1524).
-        if (milestone.status === "queued") {
-          const hasContent = resolveMilestoneFile(basePath, milestone.id, "CONTEXT")
-            || resolveMilestoneFile(basePath, milestone.id, "ROADMAP")
-            || resolveMilestoneFile(basePath, milestone.id, "SUMMARY");
-          if (hasContent) continue;
-        }
+        // Every milestone status, including `queued`, is subject to the
+        // missing-directory orphan check below. A legitimate in-flight queued
+        // milestone has a resolvable directory on disk, so resolveMilestonePath
+        // succeeds and it is not flagged. A `queued` phantom left by
+        // gsd_milestone_generate_id (no directory, no content) has no resolvable
+        // path and is correctly reported as an orphan to clean up (#1524).
         if (!resolveMilestonePath(basePath, milestone.id)) {
           issues.push({
             severity: "warning",
