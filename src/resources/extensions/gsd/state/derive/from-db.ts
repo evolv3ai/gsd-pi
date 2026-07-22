@@ -3,13 +3,15 @@
 
 import type { ActiveRef, GSDState, MilestoneRegistryEntry, Phase } from '../../types.js';
 import { join } from 'node:path';
-import { existsSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { isClosedStatus, isDeferredStatus } from '../../status-guards.js';
 import {
   buildMilestoneFileName,
   resolveFile,
+  resolveGsdRootFile,
   resolveMilestonePath,
 } from '../../paths.js';
+import { parseProject } from '../../schemas/parsers.js';
 import {
   getAllMilestones,
   getPendingGateCountForTurn,
@@ -129,6 +131,26 @@ function milestoneArtifactExistsInResolvedDir(
   return existsSync(flatPath) || resolveFile(milestoneDir, milestoneId, suffix) !== null;
 }
 
+// The IDs the user actually committed to as their roadmap, read from the
+// PROJECT.md "Milestone Sequence". A content-less queued milestone that appears
+// here is a real, not-yet-planned roadmap stage (e.g. the first milestone right
+// after deep-project setup) and is safe to promote to active. A content-less
+// queued row that is NOT listed here is a phantom left by
+// gsd_milestone_generate_id that was never made part of the roadmap (#1524) and
+// must not be promoted. Returns an empty set when PROJECT.md is absent or
+// unparsable, which keeps phantom-only repos out of the promotion path.
+function loadProjectSequenceIds(basePath: string): Set<string> {
+  const projectPath = resolveGsdRootFile(basePath, 'PROJECT');
+  if (!existsSync(projectPath)) return new Set();
+  try {
+    const parsed = parseProject(readFileSync(projectPath, 'utf-8'));
+    return new Set(parsed.milestones.map((m) => m.id));
+  } catch (e) {
+    logWarning('state', `failed to parse PROJECT.md milestone sequence: ${(e as Error).message}`);
+    return new Set();
+  }
+}
+
 async function buildRegistryAndFindActive(
   basePath: string,
   milestones: MilestoneRow[],
@@ -140,7 +162,9 @@ async function buildRegistryAndFindActive(
   let activeMilestoneSlices: SliceRow[] = [];
   let activeMilestoneFound = false;
   let activeMilestoneHasDraft = false;
-  let firstDeferredQueuedShell: { id: string; title: string; deps: string[]; hasDraftContext: boolean } | null = null;
+  let firstPromotableQueuedShell: { id: string; title: string; deps: string[]; hasDraftContext: boolean } | null = null;
+
+  const projectSequenceIds = loadProjectSequenceIds(basePath);
 
   const activeMilestoneIds = milestones
     .filter((m) => !parkedMilestoneIds.has(m.id))
@@ -187,17 +211,17 @@ async function buildRegistryAndFindActive(
       }
 
       if (readiness.kind === 'queued-shell') {
-        // Track the deferred queued-shell used for the promotion guard below.
-        // Store the first shell seen, then upgrade to the first shell that
-        // carries draft context. Only draft-bearing shells are eligible for
-        // promotion (see the guard below), so this upgrade ensures an earlier
-        // phantom (no draft) can't mask a later resumable draft milestone
-        // (#1524). A stored phantom is never promoted — it stays 'pending'.
-        if (
-          !firstDeferredQueuedShell ||
-          (!firstDeferredQueuedShell.hasDraftContext && readiness.hasDraftContext)
-        ) {
-          firstDeferredQueuedShell = { id: m.id, title, deps, hasDraftContext: readiness.hasDraftContext };
+        // Only a *promotable* queued-shell may become active in the fallback
+        // below: one that carries draft context (discuss-milestone was started)
+        // or is listed in the PROJECT.md roadmap sequence (a real, not-yet-
+        // planned stage). A content-less shell that is neither is a phantom left
+        // by gsd_milestone_generate_id that was never planned; promoting it
+        // strands the user on an empty milestone (#1524), so we record it only
+        // as 'pending' and never promote it. Storing just the first promotable
+        // shell also means an earlier phantom can't mask a later resumable one.
+        const promotable = readiness.hasDraftContext || projectSequenceIds.has(m.id);
+        if (promotable && !firstPromotableQueuedShell) {
+          firstPromotableQueuedShell = { id: m.id, title, deps, hasDraftContext: readiness.hasDraftContext };
         }
         registry.push({ id: m.id, title, status: 'pending', ...(deps.length > 0 ? { dependsOn: deps } : {}) });
         continue;
@@ -223,18 +247,20 @@ async function buildRegistryAndFindActive(
     }
   }
 
-  // Only promote a deferred queued-shell to active when it has draft context
-  // (i.e. discuss-milestone was started). A phantom shell with no content and
-  // no draft is a ghost row left by gsd_milestone_generate_id that was never
-  // planned — promoting it strands the user on an empty milestone with no
-  // actionable options (#1524). Leave it as 'pending' so state falls through
-  // to handleNoActiveMilestone and the doctor can flag it as an orphan.
-  if (!activeMilestoneFound && firstDeferredQueuedShell && firstDeferredQueuedShell.hasDraftContext) {
-    const shell = firstDeferredQueuedShell;
+  // Promote the first promotable queued-shell as a fallback when no other
+  // milestone became active. "Promotable" (tracked above) means it either
+  // carries draft context or is part of the PROJECT.md roadmap sequence.
+  // Content-less phantom rows never reach here, so state falls through to
+  // handleNoActiveMilestone and the doctor can flag them as orphans (#1524).
+  // A draft-bearing shell resumes discussion (needs-discussion); an in-sequence
+  // shell with no draft goes to pre-planning, so only carry the draft flag
+  // when the shell actually has draft context.
+  if (!activeMilestoneFound && firstPromotableQueuedShell) {
+    const shell = firstPromotableQueuedShell;
     activeMilestone = { id: shell.id, title: shell.title };
     activeMilestoneSlices = [];
     activeMilestoneFound = true;
-    activeMilestoneHasDraft = true;
+    if (shell.hasDraftContext) activeMilestoneHasDraft = true;
     const entry = registry.find(e => e.id === shell.id);
     if (entry) entry.status = 'active';
   }

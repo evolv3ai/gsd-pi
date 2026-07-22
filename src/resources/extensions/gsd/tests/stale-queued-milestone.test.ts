@@ -219,6 +219,71 @@ describe("stale queued milestone selection (#3470)", () => {
     assert.equal(m015Entry!.status, "pending", "Phantom queued shell should stay pending, not active");
   });
 
+  test("content-less queued shell listed in the PROJECT.md sequence is promoted to pre-planning (#1524)", async () => {
+    base = createFixtureBase();
+    openDatabase(":memory:");
+
+    // M001/M002 are the roadmap the user committed to during deep-project setup:
+    // both are still content-less queued shells, but they appear in PROJECT.md's
+    // Milestone Sequence, so the first one is a real not-yet-planned stage (not a
+    // phantom) and must be promoted to active so the user can plan it.
+    insertMilestone({ id: "M001", title: "Foundation", status: "queued" });
+    insertMilestone({ id: "M002", title: "Polish", status: "queued" });
+    writeFile(
+      base,
+      "PROJECT.md",
+      [
+        "# Project",
+        "",
+        "## Milestone Sequence",
+        "",
+        "- [ ] M001: Foundation - Establish the first runnable slice.",
+        "- [ ] M002: Polish - Follow-up experience work.",
+        "",
+      ].join("\n"),
+    );
+
+    invalidateStateCache();
+    const state = await deriveStateFromDb(base);
+
+    assert.equal(state.activeMilestone?.id, "M001", "First in-sequence roadmap shell should be promoted to active");
+    assert.equal(state.phase, "pre-planning", "A content-less in-sequence shell should go to pre-planning, not needs-discussion");
+
+    const m001Entry = state.registry.find((e: any) => e.id === "M001");
+    assert.equal(m001Entry!.status, "active", "M001 should be active in the registry");
+    const m002Entry = state.registry.find((e: any) => e.id === "M002");
+    assert.equal(m002Entry!.status, "pending", "M002 should stay pending behind the active M001");
+  });
+
+  test("content-less queued shell NOT in the PROJECT.md sequence stays a phantom (#1524)", async () => {
+    base = createFixtureBase();
+    openDatabase(":memory:");
+
+    // PROJECT.md only commits to M001. M099 is a stray row left by
+    // gsd_milestone_generate_id that never entered the roadmap, so even though a
+    // PROJECT.md exists it must not be promoted.
+    insertMilestone({ id: "M099", title: "Stray Phantom", status: "queued" });
+    writeFile(
+      base,
+      "PROJECT.md",
+      [
+        "# Project",
+        "",
+        "## Milestone Sequence",
+        "",
+        "- [ ] M001: Foundation - Establish the first runnable slice.",
+        "",
+      ].join("\n"),
+    );
+
+    invalidateStateCache();
+    const state = await deriveStateFromDb(base);
+
+    assert.equal(state.activeMilestone, null, "A queued shell absent from the PROJECT.md sequence must not be promoted");
+    const m099Entry = state.registry.find((e: any) => e.id === "M099");
+    assert.equal(m099Entry!.status, "pending", "Stray phantom should stay pending");
+  });
+
   test("phantom-only repo surfaces a doctor recovery path, not a misleading dep-block message (#1524)", async () => {
     base = createFixtureBase();
     openDatabase(":memory:");
