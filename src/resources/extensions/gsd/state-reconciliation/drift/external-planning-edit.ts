@@ -3,9 +3,8 @@
 // Parallel to external-markdown-edit.ts. Detects sha drift between the compat
 // marker's planning.projections/passthrough and current .planning/ files.
 //
-// Modeled files (projections): re-imported via parsePlanningDirectory → DB,
-// with markdown status authority scoped to their marker entity milestone ids.
-// Passthrough files (un-modeled docs): sha refreshed, content untouched.
+// Modeled files are terminal authority conflicts. Passthrough files have no DB
+// model, so their checksum may be refreshed without changing source content.
 
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
@@ -55,6 +54,7 @@ function detectUnseededPlanningFiles(
   ctx: DriftContext,
   projections: Record<string, { sha: string; entities: string[] }>,
   passthrough: Record<string, { sha: string; entities: string[] }>,
+  includePassthrough = true,
 ): ExternalPlanningEditDrift[] {
   const planningDir = join(ctx.basePath, ".planning");
   if (!existsSync(planningDir)) return [];
@@ -62,6 +62,7 @@ function detectUnseededPlanningFiles(
   const records: ExternalPlanningEditDrift[] = [];
   for (const relPath of walkPlanningRelPaths(planningDir)) {
     const isPassthrough = isPlanningPassthroughRelPath(relPath);
+    if (isPassthrough && !includePassthrough) continue;
     const map = isPassthrough ? passthrough : projections;
     if (map[relPath]) continue;
     const abs = join(planningDir, relPath);
@@ -87,13 +88,9 @@ async function detectExternalPlanningEdit(
     quarantineInvalid: !ctx.dryRun,
   });
   if (!marker.planning?.active) {
-    // Not yet activated. Activation (layout parse + DB import) is owned by
-    // capturePlanningCompatIfNeeded, called from reconcileBeforeDispatch when
-    // !dryRun. detect() must never write the marker — it is called in both
-    // dry-run and non-dry-run contexts. In dry-run, preview unseeded files
-    // without persisting activation.
-    if (!ctx.dryRun) return [];
-
+    // An inactive but recognizable legacy tree requires an explicit migration.
+    // Detect only modeled files here: passthrough baselines are refreshed only
+    // after compatibility is active, so first contact remains fully read-only.
     const planningDir = join(ctx.basePath, ".planning");
     if (!existsSync(planningDir)) return [];
     try {
@@ -102,7 +99,7 @@ async function detectExternalPlanningEdit(
       const parsed = await parsePlanningDirectory(planningDir);
       const layout = detectPlanningLayout(parsed);
       if (!layout) return [];
-      return detectUnseededPlanningFiles(ctx, {}, {});
+      return detectUnseededPlanningFiles(ctx, {}, {}, false);
     } catch (e) {
       logWarning(
         "reconcile",
@@ -124,10 +121,20 @@ async function detectExternalPlanningEdit(
   ];
 }
 
-async function repairExternalPlanningEdit(
+function externalPlanningEditBlocker(record: ExternalPlanningEditDrift): string | null {
+  if (record.passthrough) return null;
+  return [
+    `External modeled edit detected in \`.planning/${record.projectionPath}\`.`,
+    "The database is authoritative, so GSD paused before transforming or importing this projection.",
+    "Recommended: run `/gsd rebuild markdown` to restore database-backed projections.",
+    "If `.planning` should become the source, use `/gsd migrate` to review and confirm its explicit Preview/Application.",
+  ].join(" ");
+}
+
+function repairExternalPlanningEdit(
   record: ExternalPlanningEditDrift,
   ctx: DriftContext,
-): Promise<void> {
+): void {
   // Passthrough: never re-import (no DB model). Just refresh the sha.
   if (record.passthrough) {
     const marker = readCompatMarker(ctx.basePath);
@@ -140,57 +147,14 @@ async function repairExternalPlanningEdit(
     return;
   }
 
-  // Modeled: re-import via the migrate read path. Dynamic imports break the
-  // module-init cycle (this handler ← registry ← state.ts ← guided-flow.ts
-  // ← md-importer.ts). parsePlanningDirectory reads .planning/; always
-  // transform + writeGSDDirectory so .gsd/ reflects the edited .planning/ file
-  // before migrateHierarchyToDb ingests it. In coexistence, .planning/ is the
-  // gsd-core native format and takes precedence: writing .gsd/ here propagates
-  // the edit that must survive future projections. external-markdown-edit (index
-  // 0) runs before this handler, so .gsd/-only drift is already imported first.
-  try {
-    const { parsePlanningDirectory } = await import("../../migrate/parser.js");
-    const { transformToGSD } = await import("../../migrate/transformer.js");
-    const { writeGSDDirectory } = await import("../../migrate/writer.js");
-    const { migrateHierarchyToDb, milestoneIdsFromEntities } = await import("../../md-importer.js");
-    const { invalidateStateCache } = await import("../../state.js");
-
-    const parsed = await parsePlanningDirectory(join(ctx.basePath, ".planning"));
-    const gsdProject = transformToGSD(parsed);
-    await writeGSDDirectory(gsdProject, ctx.basePath);
-    // #027: scope status authority to the milestone(s) this drifted .planning/
-    // file projects (first `/`-segment of its DB entity ids), so a stale
-    // checkbox in an unrelated projection can't revert a reopened slice/milestone
-    // in the DB. Unseeded files carry no entities → empty set → preserve DB
-    // status everywhere (fail toward the DB, log the breadcrumb).
-    const statusAuthoritativeMilestones = milestoneIdsFromEntities(record.entities);
-    if (statusAuthoritativeMilestones.size === 0) {
-      logWarning(
-        "reconcile",
-        `external-planning-edit: no milestone scope resolved for ${record.projectionPath}; preserving DB status for all milestones`,
-      );
-    }
-    migrateHierarchyToDb(ctx.basePath, { statusAuthoritativeMilestones });
-    invalidateStateCache();
-  } catch (err) {
-    logWarning(
-      "reconcile",
-      `external-planning-edit repair failed for ${record.projectionPath}: ${(err as Error).message}`,
-    );
-    throw err;
-  }
-
-  const marker = readCompatMarker(ctx.basePath);
-  marker.planning!.projections[record.projectionPath] = {
-    sha: record.actualSha,
-    entities: record.entities,
-  };
-  marker.lastProjectedAt = new Date().toISOString();
-  writeCompatMarker(ctx.basePath, marker);
+  throw new Error(
+    `Invariant violation: modeled projection repair must remain blocked for .planning/${record.projectionPath}`,
+  );
 }
 
 export const externalPlanningEditHandler: DriftHandler<ExternalPlanningEditDrift> = {
   kind: "external-planning-edit",
   detect: detectExternalPlanningEdit,
+  blocker: externalPlanningEditBlocker,
   repair: repairExternalPlanningEdit,
 };

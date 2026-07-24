@@ -2,8 +2,14 @@
 // File Purpose: Response-neutral runtime context propagation for milestone-status observations.
 
 import { randomUUID } from "node:crypto";
+import { realpathSync } from "node:fs";
 
-import { openIsolatedDatabase } from "./db/engine.js";
+import {
+  closeDatabase,
+  getDbPath,
+  openDatabase,
+  openIsolatedDatabase,
+} from "./db/engine.js";
 import {
   deleteMilestoneStatusObservationTurn,
   updateMilestoneStatusObservationTurn,
@@ -24,6 +30,10 @@ export const MILESTONE_STATUS_OBSERVATION_PENDING_SOURCE_REVISION = "pending_cap
 
 const TURN_CONTEXT_KEY_PREFIX = "milestone-status-observation-turn:";
 const DEFAULT_TTL_MS = 60 * 60 * 1_000;
+const CONTEXT_RETRY_ATTEMPTS = 100;
+const CONTEXT_RETRY_MS = 10;
+const contextRetrySleep = new Int32Array(new SharedArrayBuffer(4));
+let _beforeObservationWriteForTest: (() => void) | null = null;
 const RUNTIME_MODES = new Set<MilestoneStatusRuntimeMode>([
   "auto",
   "interactive",
@@ -68,6 +78,12 @@ type StoredTurnResult =
 
 export type MilestoneStatusObservationTokenState = "active" | "inactive" | "unavailable";
 
+export function _setBeforeMilestoneStatusObservationWriteForTest(
+  hook: (() => void) | null,
+): void {
+  _beforeObservationWriteForTest = hook;
+}
+
 export function classifyMilestoneStatusRuntimeMode(
   signals: MilestoneStatusRuntimeSignals,
 ): MilestoneStatusRuntimeMode {
@@ -101,6 +117,41 @@ function withContextDatabase<T>(
       // Observation soft state must never break the calling workflow.
     }
   }
+}
+
+function withContextWrite<T>(
+  databasePath: string,
+  fn: () => T,
+): { available: true; value: T } | { available: false } {
+  let activePath = getDbPath();
+  let openedHere = false;
+  try {
+    if (!activePath) {
+      if (!openDatabase(databasePath)) return { available: false };
+      activePath = getDbPath();
+      openedHere = true;
+    }
+    if (!activePath || activePath === ":memory:") return { available: false };
+    if (realpathSync(activePath) !== realpathSync(databasePath)) return { available: false };
+    return { available: true, value: fn() };
+  } catch {
+    return { available: false };
+  } finally {
+    if (openedHere) closeDatabase();
+  }
+}
+
+function retryContextOperation<T>(
+  operation: () => { available: true; value: T } | { available: false },
+): { available: true; value: T } | { available: false } {
+  for (let attempt = 0; attempt < CONTEXT_RETRY_ATTEMPTS; attempt++) {
+    const result = operation();
+    if (result.available) return result;
+    if (attempt + 1 < CONTEXT_RETRY_ATTEMPTS) {
+      Atomics.wait(contextRetrySleep, 0, 0, CONTEXT_RETRY_MS);
+    }
+  }
+  return { available: false };
 }
 
 function isOptionalNonblankString(value: unknown): value is string | undefined {
@@ -152,15 +203,19 @@ function scavengeStoredTurns(database: ContextDatabase, databasePath: string, no
     }
     if (!remove) continue;
 
-    deleteMilestoneStatusObservationTurn(database, key, raw);
+    deleteStoredTurnByKey(databasePath, key, raw);
   }
 }
 
-function deleteStoredTurn(databasePath: string, token: string, raw?: string): boolean {
-  const result = withContextDatabase(databasePath, (database) =>
-    deleteMilestoneStatusObservationTurn(database, turnKey(token), raw)
+function deleteStoredTurnByKey(databasePath: string, key: string, raw?: string): boolean {
+  const result = withContextWrite(databasePath, () =>
+    deleteMilestoneStatusObservationTurn(key, raw)
   );
   return result.available && result.value;
+}
+
+function deleteStoredTurn(databasePath: string, token: string, raw?: string): boolean {
+  return deleteStoredTurnByKey(databasePath, turnKey(token), raw);
 }
 
 function readStoredTurn(basePath: string, token: string, now: number): StoredTurnResult {
@@ -221,16 +276,19 @@ export function beginMilestoneStatusObservationTurn(
     startedAt: new Date(now).toISOString(),
     expiresAt: new Date(now + (options.ttlMs ?? DEFAULT_TTL_MS)).toISOString(),
   };
-  const stored = withContextDatabase(databasePath, (database) => {
-    scavengeStoredTurns(database, databasePath, now);
-    writeMilestoneStatusObservationTurn(database, {
+  const scanned = retryContextOperation(() =>
+    withContextDatabase(databasePath, (database) => scavengeStoredTurns(database, databasePath, now))
+  );
+  if (!scanned.available) return null;
+  _beforeObservationWriteForTest?.();
+  const stored = retryContextOperation(() => withContextWrite(databasePath, () => {
+    writeMilestoneStatusObservationTurn({
       key: turnKey(token),
       valueJson: JSON.stringify(turn),
       updatedAt: turn.startedAt,
     });
-    return true;
-  });
-  return stored.available && stored.value ? token : null;
+  }));
+  return stored.available ? token : null;
 }
 
 export function readMilestoneStatusObservationTurn(
@@ -285,8 +343,8 @@ function materializeSourceRevision(
     ...(contextError ? { contextError } : {}),
   };
   const updatedAt = new Date().toISOString();
-  const stored = withContextDatabase(turn.databasePath, (database) =>
-    updateMilestoneStatusObservationTurn(database, {
+  const stored = withContextWrite(turn.databasePath, () =>
+    updateMilestoneStatusObservationTurn({
       key: turnKey(turn.token),
       expectedValueJson: JSON.stringify(turn),
       valueJson: JSON.stringify(updated),

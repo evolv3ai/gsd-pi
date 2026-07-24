@@ -248,6 +248,18 @@ export async function formatCompatHealthLine(basePath: string): Promise<string> 
 }
 
 export async function handleDoctor(args: string, ctx: ExtensionCommandContext, pi: ExtensionAPI): Promise<void> {
+  const resolution = /^resolve-evidence\s+(evidence:sha256:[0-9a-f]{64})\s+--action=(discard|preserve|restore)\s+--consent=(\2:sha256:[0-9a-f]{64})$/u.exec(args.trim());
+  if (resolution) {
+    const { resolveUnboundProjectionEvidence } = await import("./managed-projection-history.js");
+    resolveUnboundProjectionEvidence(
+      projectRoot(),
+      resolution[1]!,
+      resolution[2]! as "discard" | "preserve" | "restore",
+      resolution[3]!,
+    );
+    ctx.ui.notify(`Resolved retained projection evidence ${resolution[1]} with ${resolution[2]}.`, "success");
+    return;
+  }
   const { jsonMode, dryRun, fixFlag, includeBuild, includeTests, mode, requestedScope } = parseDoctorArgs(args);
   const scope = await selectDoctorScope(projectRoot(), requestedScope);
   const effectiveScope = mode === "audit" ? requestedScope : scope;

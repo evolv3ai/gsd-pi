@@ -17,6 +17,7 @@ Simplified Chinese translation: [`zh-CN/`](./zh-CN/).
 | [Cloud MCP Gateway](./user-docs/cloud-mcp-gateway.md) | Run a gateway, pair a local runtime, and connect remote MCP clients |
 | [GSD Cloud Monitor](../apps/gsd-cloud-monitor/README.md) | macOS menu bar app for monitoring and controlling the standalone `gsd-cloud` agent |
 | [Configuration](./user-docs/configuration.md) | Preferences, model selection, git settings, and token profiles |
+| [Project-local Runtime Contract](./user-docs/local-runtime-contract.md) | Authoritative startup, health, seed, and teardown guidance for agents and subagents |
 | [Provider Setup](./user-docs/providers.md) | Step-by-step setup for OpenRouter, Ollama, LM Studio, vLLM, and all supported providers |
 | [Claude Code Subscription Setup](./user-docs/claude-code-subscription.md) | Install Claude Code, sign in with `/login`, and use a Claude subscription with GSD |
 | [Custom Models](./user-docs/custom-models.md) | Advanced model configuration — models.json schema, compat flags, overrides |

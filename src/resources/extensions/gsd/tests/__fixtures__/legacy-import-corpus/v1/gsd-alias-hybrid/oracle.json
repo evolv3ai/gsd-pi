@@ -1,0 +1,438 @@
+{
+  "preview_schema_version": 1,
+  "preview_id": "gsd-alias-hybrid",
+  "import_kind": "legacy-corpus",
+  "importer_version": "v1-test",
+  "base_project_revision": 0,
+  "base_authority_epoch": 0,
+  "base_database_schema_version": 45,
+  "source_set_hash": "sha256:10bee9c02b783264ae4b644647258a6e1d414d72f755fb85f9b0c1708bbd0273",
+  "change_set_hash": "sha256:5506509e1ca6a0277d1fd58a471ccdf6c2eea92cd31fd182cdf43ac8471f96df",
+  "counts": {
+    "create": 6,
+    "update": 0,
+    "delete": 0,
+    "preserve": 0,
+    "unparsed": 9,
+    "unresolved": 6
+  },
+  "sources": [
+    {
+      "source_id": "hybrid-nested-m002",
+      "path": ".gsd/milestones/M002-delivery/M002-ROADMAP.md",
+      "kind": "markdown",
+      "byte_size": 50,
+      "sha256": "sha256:dc60a95d89ad1c0e0ec94846a7b04d2da4c67b59fbcac85c62a2f29427d7c707",
+      "parser_id": "gsd-hybrid-hierarchy",
+      "parser_version": "1",
+      "encoding": "utf-8",
+      "outcome": "mapped"
+    },
+    {
+      "source_id": "hybrid-nested-m003",
+      "path": ".gsd/milestones/M003-platform/M003-ROADMAP.md",
+      "kind": "markdown",
+      "byte_size": 24,
+      "sha256": "sha256:a2a1083ed62aa5ab3d608b43f9798fd493000769d7b7af3839912a05c0332e6b",
+      "parser_id": "gsd-hybrid-hierarchy",
+      "parser_version": "1",
+      "encoding": "utf-8",
+      "outcome": "unparsed"
+    },
+    {
+      "source_id": "hybrid-nested-m004",
+      "path": ".gsd/milestones/M004-payments/M004-ROADMAP.md",
+      "kind": "markdown",
+      "byte_size": 41,
+      "sha256": "sha256:d98b5a4191b1d43d0e2c91e1b23f4e62e0a152db5076245c7d8c7a1ddebd6567",
+      "parser_id": "gsd-hybrid-hierarchy",
+      "parser_version": "1",
+      "encoding": "utf-8",
+      "outcome": "unparsed"
+    },
+    {
+      "source_id": "hybrid-nested-m007-abc123",
+      "path": ".gsd/milestones/M007-abc123/M007-abc123-ROADMAP.md",
+      "kind": "markdown",
+      "parser_id": "gsd-hybrid-hierarchy",
+      "parser_version": "1",
+      "encoding": "utf-8",
+      "outcome": "unparsed",
+      "byte_size": 37,
+      "sha256": "sha256:b76e9f5ff4006738bd52d4e425f976e63709031bfbaea47f3eb0cd1d4603208a"
+    },
+    {
+      "source_id": "hybrid-nested-m015",
+      "path": ".gsd/milestones/M015-telemetry/M015-ROADMAP.md",
+      "kind": "markdown",
+      "byte_size": 25,
+      "sha256": "sha256:52cf333d43fcffe7d5bbb77b5acddfdaa539c2f5a09abeacdcdeec9354a359bc",
+      "parser_id": "gsd-hybrid-hierarchy",
+      "parser_version": "1",
+      "encoding": "utf-8",
+      "outcome": "unparsed"
+    },
+    {
+      "source_id": "hybrid-flat-m001",
+      "path": ".gsd/phases/01-foundation/01-ROADMAP.md",
+      "kind": "markdown",
+      "byte_size": 46,
+      "sha256": "sha256:92347bce7eb2ff95b36b0867146b8d36c2566523c111d78d814107f4c6fd4295",
+      "parser_id": "gsd-hybrid-hierarchy",
+      "parser_version": "1",
+      "encoding": "utf-8",
+      "outcome": "mapped"
+    },
+    {
+      "source_id": "hybrid-flat-m003-platform",
+      "path": ".gsd/phases/03-platform/03-ROADMAP.md",
+      "kind": "markdown",
+      "byte_size": 22,
+      "sha256": "sha256:0d02c718a34ad5c88d5c31ec10f009823ba0978ef65c155c620908442826c928",
+      "parser_id": "gsd-hybrid-hierarchy",
+      "parser_version": "1",
+      "encoding": "utf-8",
+      "outcome": "unparsed"
+    },
+    {
+      "source_id": "hybrid-flat-m003-services",
+      "path": ".gsd/phases/03-services/03-ROADMAP.md",
+      "kind": "markdown",
+      "byte_size": 32,
+      "sha256": "sha256:9326d84bd4deaca0c1c1b1878c487ba103a6b64e6e12d0f8b0bedd6cb8c1dc23",
+      "parser_id": "gsd-hybrid-hierarchy",
+      "parser_version": "1",
+      "encoding": "utf-8",
+      "outcome": "unparsed"
+    },
+    {
+      "source_id": "hybrid-flat-m004",
+      "path": ".gsd/phases/04-billing/04-ROADMAP.md",
+      "kind": "markdown",
+      "byte_size": 39,
+      "sha256": "sha256:606d0c7e654f597f519fb8e04452a2fce779a0c66dc7c078e8894e5064756c93",
+      "parser_id": "gsd-hybrid-hierarchy",
+      "parser_version": "1",
+      "encoding": "utf-8",
+      "outcome": "unparsed"
+    },
+    {
+      "source_id": "hybrid-flat-m005-def456",
+      "path": ".gsd/phases/05-def456-team-search/05-ROADMAP.md",
+      "kind": "markdown",
+      "parser_id": "gsd-hybrid-hierarchy",
+      "parser_version": "1",
+      "encoding": "utf-8",
+      "outcome": "mapped",
+      "byte_size": 52,
+      "sha256": "sha256:8aa1ede4cdf6030cae2735de93a5f4710f8e142ebf426b362c1f1dbd433425d6"
+    },
+    {
+      "source_id": "hybrid-flat-m007-abc123",
+      "path": ".gsd/phases/07-abc123-alpha-team/07-ROADMAP.md",
+      "kind": "markdown",
+      "parser_id": "gsd-hybrid-hierarchy",
+      "parser_version": "1",
+      "encoding": "utf-8",
+      "outcome": "unparsed",
+      "byte_size": 34,
+      "sha256": "sha256:3dcd1af177183a638cce70ae03fdd9795ca9e18bea1f6303d4343fa8b09ad57a"
+    },
+    {
+      "source_id": "hybrid-flat-m015",
+      "path": ".gsd/phases/15-observability/15-ROADMAP.md",
+      "kind": "markdown",
+      "byte_size": 27,
+      "sha256": "sha256:5a650eec4d8bc27ee04637132ab8054dbc22f11003c9c320de3ff0249b7ccf2a",
+      "parser_id": "gsd-hybrid-hierarchy",
+      "parser_version": "1",
+      "encoding": "utf-8",
+      "outcome": "unparsed"
+    }
+  ],
+  "changes": [
+    {
+      "change_id": "change-hybrid-m001",
+      "action": "create",
+      "target": {
+        "kind": "milestone",
+        "key": "M001"
+      },
+      "raw": {
+        "source_id": "hybrid-flat-m001",
+        "locator": {
+          "start_byte": 0,
+          "end_byte": 23,
+          "line": 1
+        },
+        "value": "# M001: Flat foundation",
+        "sha256": "sha256:197e6549ce79ea52e4bba22e4769cdce193ffd50758761bdb49d03f17260c70f"
+      },
+      "normalized": {
+        "id": "M001",
+        "layout": "flat",
+        "title": "Flat foundation"
+      },
+      "provenance": {
+        "source_id": "hybrid-flat-m001",
+        "parser_id": "gsd-hybrid-hierarchy",
+        "parser_version": "1"
+      },
+      "reason_code": "hybrid-non-overlap"
+    },
+    {
+      "change_id": "change-hybrid-m001-s01",
+      "action": "create",
+      "target": {
+        "kind": "slice",
+        "key": "M001/S01"
+      },
+      "raw": {
+        "source_id": "hybrid-flat-m001",
+        "locator": {
+          "start_byte": 25,
+          "end_byte": 45,
+          "line": 3
+        },
+        "value": "- [ ] S01 Core setup",
+        "sha256": "sha256:8cfe21cebb14bd13a8981a3c0f55e44868ca6ddc3e36dc75f0a5b5dc64962fca"
+      },
+      "normalized": {
+        "id": "S01",
+        "milestone_id": "M001",
+        "status": "pending",
+        "title": "Core setup"
+      },
+      "provenance": {
+        "source_id": "hybrid-flat-m001",
+        "parser_id": "gsd-hybrid-hierarchy",
+        "parser_version": "1"
+      },
+      "reason_code": "hybrid-non-overlap"
+    },
+    {
+      "change_id": "change-hybrid-m002",
+      "action": "create",
+      "target": {
+        "kind": "milestone",
+        "key": "M002"
+      },
+      "raw": {
+        "source_id": "hybrid-nested-m002",
+        "locator": {
+          "start_byte": 0,
+          "end_byte": 23,
+          "line": 1
+        },
+        "value": "# M002: Nested delivery",
+        "sha256": "sha256:1fb2585f60b08558b1cbf8422b7a0c21b32080f2ffdc9bbeb0636cf60545c441"
+      },
+      "normalized": {
+        "id": "M002",
+        "layout": "nested",
+        "title": "Nested delivery"
+      },
+      "provenance": {
+        "source_id": "hybrid-nested-m002",
+        "parser_id": "gsd-hybrid-hierarchy",
+        "parser_version": "1"
+      },
+      "reason_code": "hybrid-non-overlap"
+    },
+    {
+      "change_id": "change-hybrid-m002-s01",
+      "action": "create",
+      "target": {
+        "kind": "slice",
+        "key": "M002/S01"
+      },
+      "raw": {
+        "source_id": "hybrid-nested-m002",
+        "locator": {
+          "start_byte": 25,
+          "end_byte": 49,
+          "line": 3
+        },
+        "value": "- [ ] S01 Ship candidate",
+        "sha256": "sha256:37c1a0324eeea2649d1bd997708c044f5e1c60ae25dfa55435feda3eb794a655"
+      },
+      "normalized": {
+        "id": "S01",
+        "milestone_id": "M002",
+        "status": "pending",
+        "title": "Ship candidate"
+      },
+      "provenance": {
+        "source_id": "hybrid-nested-m002",
+        "parser_id": "gsd-hybrid-hierarchy",
+        "parser_version": "1"
+      },
+      "reason_code": "hybrid-non-overlap"
+    },
+    {
+      "change_id": "change-hybrid-m005-def456",
+      "action": "create",
+      "target": {
+        "kind": "milestone",
+        "key": "M005-def456"
+      },
+      "raw": {
+        "source_id": "hybrid-flat-m005-def456",
+        "locator": {
+          "start_byte": 0,
+          "end_byte": 26,
+          "line": 1
+        },
+        "value": "# M005-def456: Team search",
+        "sha256": "sha256:5a0b0f19bdac0b2bcf320df1f2d02c966c2232494b3fd9adae97e57ae57355f6"
+      },
+      "normalized": {
+        "id": "M005-def456",
+        "layout": "flat",
+        "title": "Team search"
+      },
+      "provenance": {
+        "source_id": "hybrid-flat-m005-def456",
+        "parser_id": "gsd-hybrid-hierarchy",
+        "parser_version": "1"
+      },
+      "reason_code": "hybrid-non-overlap-team-id"
+    },
+    {
+      "change_id": "change-hybrid-m005-def456-s01",
+      "action": "create",
+      "target": {
+        "kind": "slice",
+        "key": "M005-def456/S01"
+      },
+      "raw": {
+        "source_id": "hybrid-flat-m005-def456",
+        "locator": {
+          "start_byte": 28,
+          "end_byte": 51,
+          "line": 3
+        },
+        "value": "- [ ] S01 Index records",
+        "sha256": "sha256:ba66924d84dd85152c926e17fa5d7d8bf07dd2505ba6607b52448dd4d8f19ed5"
+      },
+      "normalized": {
+        "id": "S01",
+        "milestone_id": "M005-def456",
+        "status": "pending",
+        "title": "Index records"
+      },
+      "provenance": {
+        "source_id": "hybrid-flat-m005-def456",
+        "parser_id": "gsd-hybrid-hierarchy",
+        "parser_version": "1"
+      },
+      "reason_code": "hybrid-non-overlap-team-id"
+    }
+  ],
+  "diagnoses": [
+    {
+      "diagnosis_id": "diagnosis-hybrid-ambiguous-m003-path",
+      "code": "ambiguous-path",
+      "severity": "blocker",
+      "source_id": "hybrid-flat-m003-services",
+      "locator": {
+        "start_byte": 0,
+        "end_byte": 31,
+        "line": 1
+      },
+      "raw_value": "# M003: Flat services duplicate",
+      "message": "Two flat directories identify milestone M003, so neither path can become canonical."
+    },
+    {
+      "diagnosis_id": "diagnosis-hybrid-ambiguous-team-m007",
+      "code": "ambiguous-team-milestone-alias",
+      "severity": "blocker",
+      "source_id": "hybrid-nested-m007-abc123",
+      "locator": {
+        "start_byte": 0,
+        "end_byte": 36,
+        "line": 1
+      },
+      "raw_value": "# M007-abc123: Nested alpha delivery",
+      "message": "Nested and flat team projections both claim M007-abc123 with conflicting content."
+    },
+    {
+      "diagnosis_id": "diagnosis-hybrid-content-m004",
+      "code": "hybrid-conflicting-content",
+      "severity": "blocker",
+      "source_id": "hybrid-nested-m004",
+      "locator": {
+        "start_byte": 0,
+        "end_byte": 23,
+        "line": 1
+      },
+      "raw_value": "# M004: Nested payments",
+      "message": "Flat and nested milestone M004 titles disagree."
+    },
+    {
+      "diagnosis_id": "diagnosis-hybrid-duplicate-m003",
+      "code": "duplicate-logical-milestone",
+      "severity": "blocker",
+      "source_id": "hybrid-nested-m003",
+      "locator": {
+        "start_byte": 0,
+        "end_byte": 23,
+        "line": 1
+      },
+      "raw_value": "# M003: Nested platform",
+      "message": "Flat and nested layouts both contain logical milestone M003."
+    },
+    {
+      "diagnosis_id": "diagnosis-hybrid-duplicate-m015",
+      "code": "duplicate-logical-milestone",
+      "severity": "blocker",
+      "source_id": "hybrid-nested-m015",
+      "locator": {
+        "start_byte": 0,
+        "end_byte": 24,
+        "line": 1
+      },
+      "raw_value": "# M015: Nested telemetry",
+      "message": "Bare numeric flat milestone 15 collides with nested milestone M015."
+    },
+    {
+      "diagnosis_id": "diagnosis-hybrid-status-m004",
+      "code": "hybrid-conflicting-status",
+      "severity": "blocker",
+      "source_id": "hybrid-nested-m004",
+      "locator": {
+        "start_byte": 25,
+        "end_byte": 40,
+        "line": 3
+      },
+      "raw_value": "Status: pending",
+      "message": "Flat and nested milestone M004 status evidence disagrees."
+    }
+  ],
+  "resolutions": [
+    {
+      "diagnosis_id": "diagnosis-hybrid-ambiguous-m003-path",
+      "disposition": "requires-user"
+    },
+    {
+      "diagnosis_id": "diagnosis-hybrid-ambiguous-team-m007",
+      "disposition": "requires-user"
+    },
+    {
+      "diagnosis_id": "diagnosis-hybrid-content-m004",
+      "disposition": "requires-user"
+    },
+    {
+      "diagnosis_id": "diagnosis-hybrid-duplicate-m003",
+      "disposition": "requires-user"
+    },
+    {
+      "diagnosis_id": "diagnosis-hybrid-duplicate-m015",
+      "disposition": "requires-user"
+    },
+    {
+      "diagnosis_id": "diagnosis-hybrid-status-m004",
+      "disposition": "requires-user"
+    }
+  ]
+}

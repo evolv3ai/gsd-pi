@@ -804,6 +804,7 @@ test("overlapping turns resolve only the exact private capability token", async 
 test("a token from another project is loss-accounted instead of misattributed", () => {
   const firstBasePath = makeBase("gsd-shadow-matrix-token-project-first-");
   const secondBasePath = makeBase("gsd-shadow-matrix-token-project-second-");
+  assert.equal(openDatabase(join(firstBasePath, ".gsd", "gsd.db")), true);
   const token = beginMilestoneStatusObservationTurn(firstBasePath, {
     mode: "custom",
     sourceRevision: "revision:other",

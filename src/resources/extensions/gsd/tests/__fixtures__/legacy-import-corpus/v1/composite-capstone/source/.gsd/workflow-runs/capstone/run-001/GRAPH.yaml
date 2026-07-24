@@ -1,0 +1,14 @@
+steps:
+  - id: classify
+    title: Classify evidence
+    status: complete
+    prompt: Produce a deterministic preview.
+  - id: review
+    title: Review ambiguity
+    status: pending
+    prompt: Stop only for the unresolved M007 route.
+    depends_on:
+      - classify
+metadata:
+  name: capstone
+  created_at: 2026-01-01T00:00:00.000Z

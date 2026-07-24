@@ -241,9 +241,15 @@ Migration is additive and never runs two authorities.
 6. Roll out through development corpus, opt-in canary, and stable release gates
    with restart, fault, import, restore, parity, projection, and performance
    evidence.
-7. Prefer Forward Repair after canonical writes. Restore a pre-import backup
-   only before new canonical writes, or with explicit consent and a post-event
-   difference review. Never roll back to disk authority.
+7. Restore the exact verified pre-import backup only while its Import
+   Application remains the canonical operation head, project revision and
+   Authority Epoch still equal the Application result, no later canonical
+   Domain Operation or cutover has committed, and explicit destructive consent
+   is current. Any later Domain Operation or cutover permanently closes that
+   restore window, even when later state equals the Application result. A
+   difference review informs consent while the window is open and scopes
+   Forward Repair after closure; it never reopens restore eligibility. After
+   closure, Forward Repair is mandatory. Never roll back to disk authority.
 8. Delete legacy paths only after their replacements, fault and restore gates,
    production routing closure, structural no-authority-read tests, telemetry
    thresholds, and performance baselines pass.

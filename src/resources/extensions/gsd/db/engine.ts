@@ -9,9 +9,35 @@
 // allowlisted in tests/single-writer-invariant.test.ts alongside the explicit
 // writer layer.
 import { createRequire } from "node:module";
-import { existsSync, copyFileSync, mkdirSync, realpathSync } from "node:fs";
-import { dirname, join, resolve } from "node:path";
+import { createHash, randomUUID } from "node:crypto";
+import {
+  closeSync,
+  constants,
+  copyFileSync,
+  existsSync,
+  fstatSync,
+  fsyncSync,
+  linkSync,
+  lstatSync,
+  openSync,
+  readFileSync,
+  realpathSync,
+  renameSync,
+  unlinkSync,
+  writeFileSync,
+} from "node:fs";
+import { dirname, resolve } from "node:path";
+
+import { syncDirectoryEntry } from "@gsd/native/directory-sync";
+
 import { GSDError, GSD_STALE_STATE } from "../errors.js";
+import { getDatabaseReplacementPaths } from "../database-replacement-paths.js";
+import {
+  assertDatabaseMaintenanceFenceAllowsWrite,
+  claimProjectionMaintenance,
+  databaseMaintenanceIntentPath,
+  withDatabaseMaintenanceOwner,
+} from "../database-maintenance-fence.js";
 import type { GsdWorkspace, MilestoneScope } from "../workspace.js";
 import { logError, logWarning } from "../workflow-logger.js";
 import { createDbAdapter, type DbAdapter } from "../db-adapter.js";
@@ -61,32 +87,48 @@ import {
   applyMigrationV42MilestoneValidation,
   applyMigrationV43MilestoneCompletion,
   applyMigrationV44MilestoneReopen,
+  applyMigrationV45AuthorityRecovery,
 } from "../db-migration-steps.js";
 import {
   createCanonicalFoundationSchemaV31,
   ensureCanonicalOutboxInvariantsV31,
+  hasCanonicalOutboxInvariantsV31,
 } from "../db-canonical-foundation-schema.js";
 import { createConversationFoundationSchemaV33 } from "../db-conversation-foundation-schema.js";
 import { createLifecycleFoundationSchemaV32 } from "../db-lifecycle-foundation-schema.js";
 import { createProjectionImportKernelCloseoutFoundationSchemaV35 } from "../db-projection-import-kernel-closeout-foundation-schema.js";
 import { createRecoveryEvidenceFoundationSchemaV34 } from "../db-recovery-evidence-foundation-schema.js";
 import {
+  invalidateMemoriesFtsRebuildMarker,
+  inspectMemoriesFtsStartupState,
   isMemoriesFtsAvailableSchema,
   rebuildMemoriesFtsSchemaOnce,
   tryCreateMemoriesFtsSchema,
 } from "../db-memory-fts-schema.js";
 import { createDbOpenState, type DbOpenPhase } from "../db-open-state.js";
-import { createRuntimeKvTableV25 } from "../db-runtime-kv-schema.js";
+import { createRuntimeKvTableV25, hasRuntimeKvSchemaV25 } from "../db-runtime-kv-schema.js";
 import { getCurrentSchemaVersion, recordSchemaVersion } from "../db-schema-metadata.js";
 import { createDbTransactionRunner } from "../db-transaction.js";
-import { ensureVerificationEvidenceDedupIndex } from "../db-verification-evidence-schema.js";
 import {
-  BETTER_SQLITE3_PACKAGE,
+  ensureVerificationEvidenceDedupIndex,
+  hasVerificationEvidenceDedupIndex,
+} from "../db-verification-evidence-schema.js";
+import {
+  captureSqliteOpenIdentity,
+  correlateSqliteOpenIdentity,
+  openSqliteReadOnly,
+  releaseSqliteOpenIdentityCapture,
+  type SqliteFileIdentity,
+} from "../sqlite-readonly.js";
+import { processStartIdentity } from "../process-start-identity.js";
+import {
   createSqliteProviderLoader,
   suppressSqliteWarning,
   type DbProviderName,
-  type SqliteFallbackOpen,
 } from "../db-provider.js";
+
+export { getDatabaseReplacementPaths };
+export type { DatabaseReplacementPaths } from "../database-replacement-paths.js";
 
 let _gsdRequire: ReturnType<typeof createRequire> | null | undefined;
 
@@ -110,33 +152,190 @@ const providerLoader = createSqliteProviderLoader({
     if (!req) throw new Error("unavailable");
     return req("node:sqlite");
   },
-  tryRequireBetterSqlite3: () => {
-    const req = getGsdRequire();
-    if (!req) throw new Error("unavailable");
-    return req(BETTER_SQLITE3_PACKAGE);
-  },
   suppressSqliteWarning,
   nodeVersion: process.versions.node,
   writeStderr: (message: string) => process.stderr.write(message),
 });
-export const SCHEMA_VERSION = 44;
-function initSchema(db: DbAdapter, fileBacked: boolean, dbPath: string | null): void {
+export const SCHEMA_VERSION = 45;
+
+interface StartupRepairAssessment {
+  readonly required: boolean;
+  readonly forceMemoriesFtsRebuild: boolean;
+}
+
+function assessStartupRepair(db: DbAdapter): StartupRepairAssessment {
+  _startupSchemaDetectionForTest?.();
+  const schemaMetadata = db.prepare(`
+    SELECT 1 AS present
+    FROM sqlite_master
+    WHERE type = 'table' AND name = 'schema_version'
+  `).get();
+  const fts = inspectMemoriesFtsStartupState(db);
+  const required = schemaMetadata === undefined
+    || getCurrentSchemaVersion(db) !== SCHEMA_VERSION
+    || !hasCanonicalOutboxInvariantsV31(db)
+    || !hasVerificationEvidenceDedupIndex(db)
+    || !hasRuntimeKvSchemaV25(db)
+    || (fts.supported && (!fts.schemaComplete || !fts.rebuildMarked));
+  return {
+    required,
+    forceMemoriesFtsRebuild: fts.supported && (!fts.schemaComplete || !fts.rebuildMarked),
+  };
+}
+
+interface DatabaseMaintenanceCleanupState {
+  claim: DatabaseMaintenanceClaim | undefined;
+  projectionRelease: (() => void) | undefined;
+}
+
+function acquireStartupMaintenance(
+  db: DbAdapter,
+  databasePath: string,
+): DatabaseMaintenanceCleanupState {
+  db.exec("PRAGMA busy_timeout = 5000");
+  db.prepare("PRAGMA locking_mode=EXCLUSIVE").get();
+  let transactionOpen = false;
+  let exclusiveOwnershipAcquired = false;
+  const maintenance: DatabaseMaintenanceCleanupState = {
+    claim: undefined,
+    projectionRelease: undefined,
+  };
+  try {
+    db.exec("BEGIN EXCLUSIVE");
+    transactionOpen = true;
+    exclusiveOwnershipAcquired = true;
+    assertDatabaseReplacementFenceAllowsPath(databasePath);
+    assertDatabaseMaintenanceFenceAllowsWrite(databasePath);
+    claimDatabaseMaintenance(databasePath, maintenance);
+    db.exec("COMMIT");
+    transactionOpen = false;
+    return maintenance;
+  } catch (error) {
+    if (transactionOpen) {
+      try { db.exec("ROLLBACK"); } catch { /* retain lock/fence failure */ }
+    }
+    const cleanup: StartupCleanupState = {
+      adapter: db,
+      claim: maintenance.claim,
+      projectionRelease: maintenance.projectionRelease,
+      exclusiveOwnershipHeld: exclusiveOwnershipAcquired,
+      adapterClosed: false,
+    };
+    try {
+      cleanupStartupOwnership(cleanup);
+    } catch (cleanupError) {
+      quarantineStartupCleanup(cleanup);
+      logWarning("db", `startup claim cleanup failed: ${(cleanupError as Error).message}`);
+    }
+    throw error;
+  }
+}
+
+function releaseStartupExclusiveOwnership(db: DbAdapter): void {
+  _startupExclusiveReleaseForTest?.();
+  const journalMode = db.prepare("PRAGMA journal_mode=DELETE").get()?.["journal_mode"];
+  if (journalMode !== "delete") {
+    throw new GSDError(GSD_STALE_STATE, `gsd-db: Failed to leave startup journal mode: ${String(journalMode)}`);
+  }
+  const lockingMode = db.prepare("PRAGMA locking_mode=NORMAL").get()?.["locking_mode"];
+  if (lockingMode !== "normal") {
+    throw new GSDError(GSD_STALE_STATE, `gsd-db: Failed to release startup locking mode: ${String(lockingMode)}`);
+  }
+  db.prepare("SELECT 1 AS release_startup_lock").get();
+}
+
+function configureSchemaConnection(db: DbAdapter, fileBacked: boolean, dbPath: string | null): void {
   const conservativeFilePragmas = fileBacked && _isLikelyWslDrvFsPathForTest(dbPath);
   if (fileBacked) db.exec("PRAGMA busy_timeout = 5000");
   if (fileBacked) db.exec(conservativeFilePragmas ? "PRAGMA journal_mode=DELETE" : "PRAGMA journal_mode=WAL");
   if (fileBacked) db.exec(conservativeFilePragmas ? "PRAGMA synchronous = FULL" : "PRAGMA synchronous = NORMAL");
   if (fileBacked) db.exec("PRAGMA auto_vacuum = INCREMENTAL");
-  if (fileBacked) db.exec("PRAGMA cache_size = -8000");   // 8 MB page cache
-  if (fileBacked && !conservativeFilePragmas && process.platform !== "darwin") db.exec("PRAGMA mmap_size = 67108864");  // 64 MB mmap
+  if (fileBacked) db.exec("PRAGMA cache_size = -8000");
+  if (fileBacked && !conservativeFilePragmas && process.platform !== "darwin") db.exec("PRAGMA mmap_size = 67108864");
   db.exec("PRAGMA temp_store = MEMORY");
   db.exec("PRAGMA foreign_keys = ON");
+}
 
-  db.exec("BEGIN");
+function databaseHasLegacyData(db: DbAdapter): boolean {
+  return ["milestones", "decisions", "memories"].some((table) => {
+    const tableExists = db.prepare(`
+      SELECT 1 AS present FROM sqlite_master WHERE type = 'table' AND name = ?
+    `).get(table)?.["present"];
+    if (!tableExists) return false;
+    return Number(db.prepare(`SELECT COUNT(*) AS count FROM ${table}`).get()?.["count"] ?? 0) > 0;
+  });
+}
+
+function prepareStartupMigrationBackup(db: DbAdapter, dbPath: string): void {
+  const metadata = db.prepare(`
+    SELECT 1 AS present FROM sqlite_master
+    WHERE type = 'table' AND name = 'schema_version'
+  `).get();
+  if (metadata?.["present"]) {
+    const currentVersion = getCurrentSchemaVersion(db);
+    if (currentVersion > 0 && currentVersion < SCHEMA_VERSION) {
+      backupDatabaseBeforeMigration(db, dbPath, currentVersion, { existsSync, copyFileSync, logWarning });
+    } else if (currentVersion === 0 && databaseHasLegacyData(db)) {
+      backupDatabaseBeforeMigration(db, dbPath, 1, {
+        existsSync,
+        copyFileSync,
+        logWarning,
+        allowMissingSchemaVersion: true,
+      });
+    }
+    return;
+  }
+
+  if (databaseHasLegacyData(db)) {
+    backupDatabaseBeforeMigration(db, dbPath, 1, {
+      existsSync,
+      copyFileSync,
+      logWarning,
+      allowMissingSchemaVersion: true,
+    });
+  }
+}
+
+function configureOpenConnection(db: DbAdapter, path: string): void {
+  const conservativeFilePragmas = _isLikelyWslDrvFsPathForTest(path);
+  db.exec("PRAGMA busy_timeout = 5000");
+  db.exec(conservativeFilePragmas ? "PRAGMA synchronous = FULL" : "PRAGMA synchronous = NORMAL");
+  db.exec("PRAGMA cache_size = -8000");
+  if (!conservativeFilePragmas && process.platform !== "darwin") db.exec("PRAGMA mmap_size = 67108864");
+  db.exec("PRAGMA temp_store = MEMORY");
+  db.exec("PRAGMA foreign_keys = ON");
+}
+
+function restoreRuntimeJournalMode(db: DbAdapter, path: string): void {
+  if (_isLikelyWslDrvFsPathForTest(path)) return;
+  const journalMode = db.prepare("PRAGMA journal_mode=WAL").get()?.["journal_mode"];
+  if (journalMode !== "wal") {
+    throw new GSDError(GSD_STALE_STATE, `gsd-db: Failed to restore WAL journal mode: ${String(journalMode)}`);
+  }
+}
+
+function configureMutationFreeConnection(db: DbAdapter): void {
+  db.exec("PRAGMA busy_timeout = 5000");
+  db.exec("PRAGMA foreign_keys = ON");
+}
+
+function initSchema(
+  db: DbAdapter,
+  fileBacked: boolean,
+  dbPath: string | null,
+  startupTransactionOpen = false,
+  migrationBackupPrepared = false,
+  forceMemoriesFtsRebuild = false,
+): void {
+  if (!startupTransactionOpen) configureSchemaConnection(db, fileBacked, dbPath);
+
+  db.exec(startupTransactionOpen ? "SAVEPOINT schema_initialization" : "BEGIN");
   try {
     createBaseSchemaObjects(db, {
       tryCreateMemoriesFts,
       ensureVerificationEvidenceDedupIndex,
     });
+    if (forceMemoriesFtsRebuild) invalidateMemoriesFtsRebuildMarker(db);
 
     const existing = db.prepare("SELECT count(*) as cnt FROM schema_version").get();
     if (existing && (existing["cnt"] as number) === 0) {
@@ -144,12 +343,7 @@ function initSchema(db: DbAdapter, fileBacked: boolean, dbPath: string | null): 
       // also be a legacy/truncated DB that already holds user data. Stamping
       // that DB SCHEMA_VERSION without running migrations would mis-mark it as
       // fully migrated and break at first query. Probe before stamping.
-      const hasData = ["milestones", "decisions", "memories"].some((t) => {
-        try {
-          const r = db.prepare(`SELECT count(*) as cnt FROM ${t}`).get();
-          return ((r?.["cnt"] as number) ?? 0) > 0;
-        } catch { /* table absent on a truly fresh DB — treat as no data */ return false; }
-      });
+      const hasData = databaseHasLegacyData(db);
       if (hasData) {
         // Legacy DB with data but no version row: record the baseline so
         // migrateSchema runs the full chain instead of stamping the current version.
@@ -171,6 +365,7 @@ function initSchema(db: DbAdapter, fileBacked: boolean, dbPath: string | null): 
         applyMigrationV42MilestoneValidation(db);
         applyMigrationV43MilestoneCompletion(db);
         applyMigrationV44MilestoneReopen(db);
+        applyMigrationV45AuthorityRecovery(db);
 
         // Fresh install — all tables are created above with the full current schema,
         // so it is safe to create all migration-specific indexes here.  For existing
@@ -189,16 +384,20 @@ function initSchema(db: DbAdapter, fileBacked: boolean, dbPath: string | null): 
       }
     }
 
-    db.exec("COMMIT");
+    db.exec(startupTransactionOpen ? "RELEASE SAVEPOINT schema_initialization" : "COMMIT");
   } catch (err) {
-    db.exec("ROLLBACK");
+    db.exec(startupTransactionOpen
+      ? "ROLLBACK TO SAVEPOINT schema_initialization; RELEASE SAVEPOINT schema_initialization"
+      : "ROLLBACK");
     throw err;
   }
 
-  migrateSchema(db, dbPath);
+  migrateSchema(db, dbPath, startupTransactionOpen, migrationBackupPrepared);
   ensureCanonicalOutboxInvariantsV31(db);
   rebuildMemoriesFtsSchemaOnce(db, {
+    force: forceMemoriesFtsRebuild,
     onRebuildFailed: (message) => logWarning("db", message),
+    transactionOpen: startupTransactionOpen,
   });
 }
 
@@ -246,7 +445,12 @@ let _migrationFaultForTest = false;
 /** Test-only: force migrateSchema to throw after applying its steps but before COMMIT. */
 export function _setMigrationFaultForTest(v: boolean): void { _migrationFaultForTest = v; }
 
-function migrateSchema(db: DbAdapter, dbPath: string | null): void {
+function migrateSchema(
+  db: DbAdapter,
+  dbPath: string | null,
+  startupTransactionOpen = false,
+  migrationBackupPrepared = false,
+): void {
   const currentVersion = getCurrentSchemaVersion(db);
   if (currentVersion > SCHEMA_VERSION) {
     throw new Error(
@@ -256,13 +460,15 @@ function migrateSchema(db: DbAdapter, dbPath: string | null): void {
   }
   if (currentVersion === SCHEMA_VERSION) return;
 
-  backupDatabaseBeforeMigration(db, dbPath, currentVersion, {
-    existsSync,
-    copyFileSync,
-    logWarning,
-  });
+  if (!migrationBackupPrepared) {
+    backupDatabaseBeforeMigration(db, dbPath, currentVersion, {
+      existsSync,
+      copyFileSync,
+      logWarning,
+    });
+  }
 
-  db.exec("BEGIN");
+  db.exec(startupTransactionOpen ? "SAVEPOINT schema_migration" : "BEGIN");
   try {
     if (currentVersion < 2) {
       applyMigrationV2Artifacts(db);
@@ -499,19 +705,159 @@ function migrateSchema(db: DbAdapter, dbPath: string | null): void {
       recordSchemaVersion(db, 44);
     }
 
+    if (currentVersion < 45) {
+      applyMigrationV45AuthorityRecovery(db);
+      recordSchemaVersion(db, 45);
+    }
+
     if (_migrationFaultForTest) throw new Error("migration fault injected for test");
 
-    db.exec("COMMIT");
+    db.exec(startupTransactionOpen ? "RELEASE SAVEPOINT schema_migration" : "COMMIT");
   } catch (err) {
-    db.exec("ROLLBACK");
+    db.exec(startupTransactionOpen
+      ? "ROLLBACK TO SAVEPOINT schema_migration; RELEASE SAVEPOINT schema_migration"
+      : "ROLLBACK");
     throw err;
   }
 }
 let currentDb: DbAdapter | null = null;
 let currentPath: string | null = null;
 let currentPid: number = 0;
+interface StartupCleanupState extends DatabaseMaintenanceCleanupState {
+  readonly adapter: DbAdapter;
+  exclusiveOwnershipHeld: boolean;
+  adapterClosed: boolean;
+}
+let pendingStartupCleanup: StartupCleanupState | undefined;
+let pendingDatabaseMaintenanceCleanup: DatabaseMaintenanceCleanupState | undefined;
 let _exitHandlerRegistered = false;
 const _dbOpenState = createDbOpenState();
+let _databaseOpenAfterIntentCheckForTest: ((path: string) => void) | null = null;
+let _startupInitializationBoundaryForTest: ((path: string) => void) | null = null;
+type StartupRepairBoundaryPoint = "before-journal" | "after-journal" | "after-backup" | "before-vacuum";
+let _startupRepairBoundaryForTest: ((point: StartupRepairBoundaryPoint, path: string) => void) | null = null;
+let _startupReopenCloseForTest: ((adapter: DbAdapter) => void) | null = null;
+let _startupExclusiveReleaseForTest: (() => void) | null = null;
+let _startupSchemaDetectionForTest: (() => void) | null = null;
+let _databaseOpenBeforeRawForTest: ((path: string) => void) | null = null;
+let _databaseOpenAfterRawForTest: ((path: string) => void) | null = null;
+let _probeAfterIntentCheckForTest: (() => void) | null = null;
+let _maintenanceBeforeLockForTest: (() => void) | null = null;
+let _maintenanceAfterClaimForTest: (() => void) | null = null;
+let _maintenanceClaimBoundaryForTest: DatabaseMaintenanceClaimBoundary | null = null;
+
+function ensureExitHandlerRegistered(): void {
+  if (_exitHandlerRegistered) return;
+  _exitHandlerRegistered = true;
+  process.on("exit", () => {
+    try { closeDatabase(); } catch (error) { logWarning("db", `exit handler close failed: ${(error as Error).message}`); }
+  });
+}
+
+function quarantineStartupCleanup(cleanup: StartupCleanupState): void {
+  if (pendingStartupCleanup !== undefined && pendingStartupCleanup.adapter !== cleanup.adapter) {
+    throw new GSDError(GSD_STALE_STATE, "gsd-db: Multiple startup cleanup handles cannot be retained");
+  }
+  pendingStartupCleanup = cleanup;
+  ensureExitHandlerRegistered();
+}
+
+function cleanupStartupOwnership(cleanup: StartupCleanupState): void {
+  if (cleanup.exclusiveOwnershipHeld) {
+    releaseStartupExclusiveOwnership(cleanup.adapter);
+    cleanup.exclusiveOwnershipHeld = false;
+  }
+  if (!cleanup.adapterClosed) {
+    cleanup.adapter.close();
+    cleanup.adapterClosed = true;
+  }
+  completeDatabaseMaintenanceCleanup(cleanup);
+}
+
+function completeDatabaseMaintenanceCleanup(
+  cleanup: DatabaseMaintenanceCleanupState,
+): void {
+  if (cleanup.claim !== undefined) {
+    releaseDatabaseMaintenance(cleanup.claim);
+    cleanup.claim = undefined;
+  }
+  if (cleanup.projectionRelease !== undefined) {
+    cleanup.projectionRelease();
+    cleanup.projectionRelease = undefined;
+  }
+}
+
+function quarantineDatabaseMaintenanceCleanup(
+  cleanup: DatabaseMaintenanceCleanupState,
+): void {
+  if (
+    pendingDatabaseMaintenanceCleanup !== undefined
+    && pendingDatabaseMaintenanceCleanup !== cleanup
+  ) {
+    throw new GSDError(GSD_STALE_STATE, "gsd-db: Multiple maintenance cleanup handles cannot be retained");
+  }
+  pendingDatabaseMaintenanceCleanup = cleanup;
+  ensureExitHandlerRegistered();
+}
+
+function cleanupPendingDatabaseMaintenance(): void {
+  if (pendingDatabaseMaintenanceCleanup === undefined) return;
+  const cleanup = pendingDatabaseMaintenanceCleanup;
+  completeDatabaseMaintenanceCleanup(cleanup);
+  pendingDatabaseMaintenanceCleanup = undefined;
+}
+
+function cleanupPendingStartup(): void {
+  if (pendingStartupCleanup === undefined) return;
+  const cleanup = pendingStartupCleanup;
+  cleanupStartupOwnership(cleanup);
+  pendingStartupCleanup = undefined;
+}
+
+export function _setDatabaseOpenAfterIntentCheckForTest(
+  hook: ((path: string) => void) | null,
+): void {
+  _databaseOpenAfterIntentCheckForTest = hook;
+}
+export function _setStartupInitializationBoundaryForTest(
+  hook: ((path: string) => void) | null,
+): void {
+  _startupInitializationBoundaryForTest = hook;
+}
+export function _setStartupRepairBoundaryForTest(
+  hook: ((point: StartupRepairBoundaryPoint, path: string) => void) | null,
+): void {
+  _startupRepairBoundaryForTest = hook;
+}
+export function _setStartupReopenCloseForTest(hook: ((adapter: DbAdapter) => void) | null): void {
+  _startupReopenCloseForTest = hook;
+}
+export function _setStartupExclusiveReleaseForTest(hook: (() => void) | null): void {
+  _startupExclusiveReleaseForTest = hook;
+}
+export function _setStartupSchemaDetectionForTest(hook: (() => void) | null): void {
+  _startupSchemaDetectionForTest = hook;
+}
+export function _setDatabaseOpenAfterRawForTest(hook: ((path: string) => void) | null): void {
+  _databaseOpenAfterRawForTest = hook;
+}
+export function _setDatabaseOpenBeforeRawForTest(hook: ((path: string) => void) | null): void {
+  _databaseOpenBeforeRawForTest = hook;
+}
+
+export function _setProbeAfterIntentCheckForTest(hook: (() => void) | null): void {
+  _probeAfterIntentCheckForTest = hook;
+}
+
+export function _setMaintenanceLockHooksForTest(hooks: {
+  beforeLock?: () => void;
+  afterClaim?: () => void;
+  claimBoundary?: DatabaseMaintenanceClaimBoundary;
+} | null): void {
+  _maintenanceBeforeLockForTest = hooks?.beforeLock ?? null;
+  _maintenanceAfterClaimForTest = hooks?.afterClaim ?? null;
+  _maintenanceClaimBoundaryForTest = hooks?.claimBoundary ?? null;
+}
 /**
  * Identity key of the workspace whose connection is currently active
  * (currentDb). Set by openDatabaseByWorkspace(); null when the active
@@ -533,6 +879,1076 @@ let _currentIdentityKey: string | null = null;
  * callers switch between known workspaces via openDatabaseByWorkspace().
  */
 const _dbCache = createDbConnectionCache();
+const _isolatedDatabases = new Map<DbAdapter, string>();
+const _replacementObservationDatabases = new WeakSet<DbAdapter>();
+
+export interface DatabaseReplacementToken {
+  readonly kind: "gsd-database-replacement-token";
+}
+
+export interface DatabaseReplacementReceiptCapability {
+  readonly kind: "gsd-database-replacement-receipt-capability";
+}
+
+export interface DatabaseReplacementFileIdentity {
+  readonly device: string;
+  readonly inode: string;
+}
+
+export interface DatabaseReplacementReopenEvidence {
+  readonly expectedPublishedSha256?: string;
+  readonly persistedOriginalFileIdentity?: DatabaseReplacementFileIdentity;
+  readonly expectedPublishedFileIdentity?: DatabaseReplacementFileIdentity;
+  readonly expectedActiveIntentFileIdentity?: DatabaseReplacementFileIdentity;
+  readonly expectedActiveIntentSha256?: string;
+}
+
+export type DatabaseReplacementBoundaryPoint =
+  | "after-checkpoint"
+  | "after-journal-mode"
+  | "after-active-close"
+  | "before-reopen-open"
+  | "after-reopen-open"
+  | "after-reopen-proof";
+
+export type DatabaseReplacementBoundary = (
+  point: DatabaseReplacementBoundaryPoint,
+  evidence?: Readonly<Record<string, unknown>>,
+) => void;
+
+type FileIdentity = SqliteFileIdentity;
+
+const _databaseAdapterFileIdentities = new WeakMap<DbAdapter, FileIdentity>();
+
+function assertDatabaseAdapterMatchesPath(adapter: DbAdapter, databasePath: string): void {
+  if (databasePath === ":memory:") return;
+  const expected = _databaseAdapterFileIdentities.get(adapter);
+  if (!expected || !sameFileIdentity(strictFileIdentity(databasePath, "canonical database"), expected)) {
+    throw new GSDError(GSD_STALE_STATE, "gsd-db: Open database handle is detached from the canonical database inode");
+  }
+}
+
+function createFileBoundDatabaseAdapter(rawDb: unknown, databasePath: string, expected?: FileIdentity): DbAdapter {
+  if (databasePath === ":memory:") return createDbAdapter(rawDb);
+  const identity = expected ?? strictFileIdentity(databasePath, "canonical database");
+  let adapterClosed = false;
+  let identityReleased = false;
+  let fileBoundAdapter: DbAdapter;
+  const adapter = createDbAdapter(rawDb, () => assertDatabaseAdapterMatchesPath(fileBoundAdapter, databasePath));
+  fileBoundAdapter = {
+    ...adapter,
+    close(): void {
+      if (!adapterClosed) {
+        adapter.close();
+        adapterClosed = true;
+      }
+      if (!identityReleased) {
+        identity.release?.();
+        identityReleased = true;
+      }
+    },
+  };
+  _databaseAdapterFileIdentities.set(fileBoundAdapter, identity);
+  return fileBoundAdapter;
+}
+
+function openCorrelatedRawDatabase(path: string, open: () => unknown): { raw: unknown; identity?: FileIdentity } {
+  if (path === ":memory:") return { raw: open() };
+  const capture = captureSqliteOpenIdentity(path, true);
+  _databaseOpenBeforeRawForTest?.(path);
+  let raw: unknown;
+  try {
+    raw = open();
+  } catch (error) {
+    releaseSqliteOpenIdentityCapture(capture);
+    throw error;
+  }
+  if (raw === null || raw === undefined) {
+    // No provider handle was opened (e.g. no SQLite provider available) —
+    // release the identity capture and let the caller's `if (!rawDb)` guard
+    // degrade gracefully instead of correlating a missing handle.
+    releaseSqliteOpenIdentityCapture(capture);
+    return { raw };
+  }
+  try {
+    _databaseOpenAfterRawForTest?.(path);
+    createDbAdapter(raw).exec("PRAGMA busy_timeout = 5000");
+    const opened = correlateSqliteOpenIdentity(path, capture, raw);
+    return { raw, identity: opened };
+  } catch (error) {
+    // The capture MUST be released even when closing the broken handle throws,
+    // otherwise the Windows identity lock leaks an open file handle. The close
+    // failure is secondary — retain the correlation failure for the caller.
+    try {
+      (raw as { close(): void }).close();
+    } catch {
+      // Retain the correlation failure below; the handle is already broken.
+    } finally {
+      releaseSqliteOpenIdentityCapture(capture);
+    }
+    throw new GSDError(GSD_STALE_STATE, "gsd-db: Database path changed while its handle opened", { cause: error });
+  }
+}
+
+export const _openCorrelatedRawDatabaseForTest = openCorrelatedRawDatabase;
+
+interface DatabaseReplacementTokenState {
+  readonly databasePath: string;
+  readonly activeIntentPath: string;
+  readonly originalFileIdentity: FileIdentity;
+  readonly activeIdentityKey: string | null;
+  readonly cacheEntries: readonly {
+    readonly key: string;
+    readonly dbPath: string;
+  }[];
+}
+
+const _databaseReplacementTokenStates = new WeakMap<
+  DatabaseReplacementToken,
+  DatabaseReplacementTokenState
+>();
+interface DatabaseReplacementReceiptCapabilityState {
+  readonly databasePath: string;
+  readonly activeIntentPath: string;
+  readonly activeIntentFileIdentity: FileIdentity;
+  readonly activeIntentSha256: string;
+  readonly activeIntentHandle: number;
+  readonly database: DbAdapter;
+  readonly reopenedFileIdentity: FileIdentity;
+  readonly postOpenDatabaseSha256: string;
+}
+
+const _databaseReplacementReceiptCapabilityStates = new WeakMap<
+  DatabaseReplacementReceiptCapability,
+  DatabaseReplacementReceiptCapabilityState
+>();
+
+/**
+ * Close a descriptor without surfacing errors. Used for held intent descriptors
+ * whose only remaining purpose is to be released; the file may already be gone.
+ */
+function closeQuietly(descriptor: number): void {
+  try {
+    closeSync(descriptor);
+  } catch {
+    /* best effort: the descriptor may already be closed or invalid */
+  }
+}
+
+/**
+ * Close any intent descriptor still held by a receipt capability that was
+ * discarded without being consumed, so a leaked capability cannot leak an open
+ * descriptor. The receipt path unregisters and closes its descriptor eagerly on
+ * the success path; this only covers capabilities that are garbage collected.
+ */
+const _databaseReplacementIntentHandleRegistry = new FinalizationRegistry<number>(
+  (descriptor) => { closeQuietly(descriptor); },
+);
+let _databaseReplacementWriteBypassDepth = 0;
+const DATABASE_MAINTENANCE_SCHEMA_VERSION = 1 as const;
+let selfProcessStartIdentity: string | null | undefined;
+
+interface DatabaseMaintenanceIntent {
+  readonly schemaVersion: 1;
+  readonly ownerPid: number;
+  readonly ownerProcessStartIdentity: string;
+  readonly ownerNonce: string;
+}
+
+interface DatabaseMaintenanceClaim {
+  readonly path: string;
+  readonly identity: FileIdentity;
+  readonly sha256: string;
+  readonly intent: DatabaseMaintenanceIntent;
+  readonly releaseProjectionClaim: () => void;
+  publicationConfirmed: boolean;
+  intentRemoved: boolean;
+  intentDirectorySynced: boolean;
+  projectionReleased: boolean;
+}
+
+type DatabaseMaintenanceClaimBoundaryPoint =
+  | "after-maintenance-claim-write"
+  | "after-maintenance-claim-file-sync"
+  | "after-maintenance-claim-publish"
+  | "after-maintenance-claim-directory-sync"
+  | "after-maintenance-claim-temporary-unlink"
+  | "after-maintenance-claim-cleanup-directory-sync"
+  | "before-maintenance-claim-identity-proof"
+  | "before-maintenance-intent-unlink"
+  | "after-maintenance-intent-unlink"
+  | "after-maintenance-intent-directory-sync"
+  | "after-maintenance-projection-release";
+
+type DatabaseMaintenanceClaimBoundary = (point: DatabaseMaintenanceClaimBoundaryPoint) => void;
+
+function syncDirectory(path: string): void {
+  if (process.platform === "win32") {
+    syncDirectoryEntry(path);
+    return;
+  }
+  const descriptor = openSync(path, constants.O_RDONLY);
+  try {
+    fsyncSync(descriptor);
+  } finally {
+    closeSync(descriptor);
+  }
+}
+
+function requireSelfProcessStartIdentity(): string {
+  if (selfProcessStartIdentity === undefined) {
+    selfProcessStartIdentity = processStartIdentity(process.pid);
+  }
+  if (selfProcessStartIdentity === null) {
+    throw new GSDError(GSD_STALE_STATE, "gsd-db: Cannot prove the maintenance process identity");
+  }
+  return selfProcessStartIdentity;
+}
+
+function readDatabaseMaintenanceIntent(path: string): {
+  readonly intent: DatabaseMaintenanceIntent;
+  readonly identity: FileIdentity;
+  readonly sha256: string;
+} | null {
+  if (!pathExistsFailClosed(path)) return null;
+  const proof = strictFileProof(path, "database maintenance intent");
+  let value: unknown;
+  try {
+    value = JSON.parse(proof.content.toString("utf8"));
+  } catch (error) {
+    throw new GSDError(GSD_STALE_STATE, "gsd-db: Database maintenance intent is malformed", { cause: error });
+  }
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    throw new GSDError(GSD_STALE_STATE, "gsd-db: Database maintenance intent is invalid");
+  }
+  const record = value as Record<string, unknown>;
+  if (Object.keys(record).sort().join(",") !== [
+    "ownerNonce", "ownerPid", "ownerProcessStartIdentity", "schemaVersion",
+  ].join(",")
+    || record["schemaVersion"] !== DATABASE_MAINTENANCE_SCHEMA_VERSION
+    || !Number.isSafeInteger(record["ownerPid"])
+    || Number(record["ownerPid"]) <= 0
+    || typeof record["ownerProcessStartIdentity"] !== "string"
+    || !/^sha256:[a-f0-9]{64}$/.test(record["ownerProcessStartIdentity"])
+    || typeof record["ownerNonce"] !== "string"
+    || !/^[0-9a-f-]{36}$/.test(record["ownerNonce"])) {
+    throw new GSDError(GSD_STALE_STATE, "gsd-db: Database maintenance intent is invalid");
+  }
+  return {
+    identity: proof.identity,
+    sha256: proof.sha256,
+    intent: {
+      schemaVersion: 1,
+      ownerPid: Number(record["ownerPid"]),
+      ownerProcessStartIdentity: record["ownerProcessStartIdentity"],
+      ownerNonce: record["ownerNonce"],
+    },
+  };
+}
+
+function databaseMaintenanceOwnerIsActive(intent: DatabaseMaintenanceIntent): boolean {
+  if (intent.ownerPid === process.pid) {
+    return intent.ownerProcessStartIdentity === requireSelfProcessStartIdentity();
+  }
+  try {
+    process.kill(intent.ownerPid, 0);
+  } catch (error) {
+    if ((error as { code?: unknown }).code === "ESRCH") return false;
+  }
+  const identity = processStartIdentity(intent.ownerPid);
+  return identity === null || identity === intent.ownerProcessStartIdentity;
+}
+
+function databaseMaintenanceIntentIsActive(databasePath: string): boolean {
+  const path = databaseMaintenanceIntentPath(databasePath);
+  const existing = readDatabaseMaintenanceIntent(path);
+  if (existing === null) return false;
+  if (databaseMaintenanceOwnerIsActive(existing.intent)) return true;
+  removeExactMaintenanceIntent(path, existing.identity, existing.sha256);
+  return false;
+}
+
+function removeExactMaintenanceIntent(path: string, identity: FileIdentity, sha256: string): void {
+  // Prove the marker by identity AND content before deleting it. An unlink+rewrite
+  // that reuses the just-freed inode number would satisfy an identity-only check
+  // while substituting a foreign owner's bytes, so a content proof is required to
+  // avoid deleting another process's marker under inode-number reuse.
+  const proof = strictFileProof(path, "database maintenance intent");
+  if (!sameFileIdentity(proof.identity, identity) || proof.sha256 !== sha256) {
+    throw new GSDError(GSD_STALE_STATE, "gsd-db: Database maintenance intent changed before cleanup");
+  }
+  unlinkSync(path);
+  syncDirectory(dirname(path));
+}
+
+export function assertDatabaseMaintenanceAllowsReplacement(databasePath: string): void {
+  const path = databaseMaintenanceIntentPath(databasePath);
+  const existing = readDatabaseMaintenanceIntent(path);
+  if (existing === null) return;
+  if (databaseMaintenanceOwnerIsActive(existing.intent)) {
+    throw new GSDError(GSD_STALE_STATE, "gsd-db: Database maintenance is already active");
+  }
+  removeExactMaintenanceIntent(path, existing.identity, existing.sha256);
+}
+
+function claimDatabaseMaintenance(
+  databasePath: string,
+  maintenance: DatabaseMaintenanceCleanupState,
+): void {
+  const releaseProjectionClaim = claimProjectionMaintenance(databasePath);
+  maintenance.projectionRelease = releaseProjectionClaim;
+  const path = databaseMaintenanceIntentPath(databasePath);
+  const temporary = `${path}.tmp-${process.pid}-${randomUUID()}`;
+  const intent: DatabaseMaintenanceIntent = {
+    schemaVersion: 1,
+    ownerPid: process.pid,
+    ownerProcessStartIdentity: requireSelfProcessStartIdentity(),
+    ownerNonce: randomUUID(),
+  };
+  const serializedIntent = JSON.stringify(intent);
+  const publishedSha256 = `sha256:${createHash("sha256").update(Buffer.from(serializedIntent, "utf8")).digest("hex")}`;
+  let descriptor: number | undefined;
+  try {
+    assertDatabaseMaintenanceAllowsReplacement(databasePath);
+    descriptor = openSync(temporary, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL, 0o600);
+    writeFileSync(descriptor, serializedIntent, "utf8");
+    _maintenanceClaimBoundaryForTest?.("after-maintenance-claim-write");
+    fsyncSync(descriptor);
+    _maintenanceClaimBoundaryForTest?.("after-maintenance-claim-file-sync");
+    closeSync(descriptor);
+    descriptor = undefined;
+    const publishedIdentity = strictFileIdentity(temporary, "database maintenance intent staging file");
+    linkSync(temporary, path);
+    const claim: DatabaseMaintenanceClaim = {
+      path,
+      identity: publishedIdentity,
+      sha256: publishedSha256,
+      intent,
+      releaseProjectionClaim,
+      publicationConfirmed: false,
+      intentRemoved: false,
+      intentDirectorySynced: false,
+      projectionReleased: false,
+    };
+    maintenance.claim = claim;
+    maintenance.projectionRelease = undefined;
+    _maintenanceClaimBoundaryForTest?.("after-maintenance-claim-publish");
+    syncDirectory(dirname(path));
+    _maintenanceClaimBoundaryForTest?.("after-maintenance-claim-directory-sync");
+    unlinkSync(temporary);
+    _maintenanceClaimBoundaryForTest?.("after-maintenance-claim-temporary-unlink");
+    syncDirectory(dirname(path));
+    _maintenanceClaimBoundaryForTest?.("after-maintenance-claim-cleanup-directory-sync");
+    _maintenanceClaimBoundaryForTest?.("before-maintenance-claim-identity-proof");
+    // Prove the published intent by identity AND content: an unlink+rewrite that
+    // reuses the just-freed inode number (common on some filesystems) would pass
+    // an identity-only check while substituting foreign bytes, so a content proof
+    // is required to fail closed instead of later reading a malformed intent.
+    const publicationProof = strictFileProof(path, "database maintenance intent");
+    if (
+      !sameFileIdentity(publicationProof.identity, publishedIdentity)
+      || publicationProof.sha256 !== publishedSha256
+    ) {
+      throw new GSDError(
+        GSD_STALE_STATE,
+        "gsd-db: Database maintenance intent changed before publication completed",
+      );
+    }
+    claim.publicationConfirmed = true;
+  } catch (error) {
+    if (descriptor !== undefined) {
+      try { closeSync(descriptor); } catch { /* retain original */ }
+    }
+    try { if (existsSync(temporary)) unlinkSync(temporary); } catch { /* retain original */ }
+    try { completeDatabaseMaintenanceCleanup(maintenance); } catch {}
+    throw error;
+  }
+}
+
+function acquireDatabaseMaintenance(databasePath: string): DatabaseMaintenanceCleanupState {
+  cleanupPendingDatabaseMaintenance();
+  const maintenance: DatabaseMaintenanceCleanupState = {
+    claim: undefined,
+    projectionRelease: undefined,
+  };
+  try {
+    claimDatabaseMaintenance(databasePath, maintenance);
+    return maintenance;
+  } catch (error) {
+    try {
+      completeDatabaseMaintenanceCleanup(maintenance);
+    } catch (cleanupError) {
+      quarantineDatabaseMaintenanceCleanup(maintenance);
+      logWarning("db", `maintenance acquisition cleanup failed: ${(cleanupError as Error).message}`);
+    }
+    throw error;
+  }
+}
+
+function releaseDatabaseMaintenanceCleanup(maintenance: DatabaseMaintenanceCleanupState): void {
+  try {
+    completeDatabaseMaintenanceCleanup(maintenance);
+  } catch (error) {
+    quarantineDatabaseMaintenanceCleanup(maintenance);
+    throw error;
+  }
+}
+
+function releaseDatabaseMaintenance(claim: DatabaseMaintenanceClaim): void {
+  if (!claim.publicationConfirmed && !claim.intentRemoved) {
+    if (!pathExistsFailClosed(claim.path)) {
+      claim.intentRemoved = true;
+    } else {
+      const proof = strictFileProof(claim.path, "database maintenance intent");
+      if (!sameFileIdentity(proof.identity, claim.identity) || proof.sha256 !== claim.sha256) {
+        claim.intentRemoved = true;
+      }
+    }
+  }
+  if (!claim.intentRemoved) {
+    const current = readDatabaseMaintenanceIntent(claim.path);
+    if (current === null) {
+      throw new GSDError(GSD_STALE_STATE, "gsd-db: Database maintenance intent disappeared before release");
+    }
+    if (JSON.stringify(current.intent) !== JSON.stringify(claim.intent)) {
+      throw new GSDError(GSD_STALE_STATE, "gsd-db: Database maintenance ownership changed before release");
+    }
+    const proof = strictFileProof(claim.path, "database maintenance intent");
+    if (!sameFileIdentity(proof.identity, claim.identity) || proof.sha256 !== claim.sha256) {
+      throw new GSDError(GSD_STALE_STATE, "gsd-db: Database maintenance intent changed before cleanup");
+    }
+    _maintenanceClaimBoundaryForTest?.("before-maintenance-intent-unlink");
+    unlinkSync(claim.path);
+    claim.intentRemoved = true;
+    _maintenanceClaimBoundaryForTest?.("after-maintenance-intent-unlink");
+  }
+  if (!claim.intentDirectorySynced) {
+    syncDirectory(dirname(claim.path));
+    claim.intentDirectorySynced = true;
+    _maintenanceClaimBoundaryForTest?.("after-maintenance-intent-directory-sync");
+  }
+  if (!claim.projectionReleased) {
+    claim.releaseProjectionClaim();
+    claim.projectionReleased = true;
+    _maintenanceClaimBoundaryForTest?.("after-maintenance-projection-release");
+  }
+}
+
+function pathExistsFailClosed(path: string): boolean {
+  try {
+    lstatSync(path);
+    return true;
+  } catch (error) {
+    if ((error as { code?: unknown }).code === "ENOENT") return false;
+    throw new GSDError(
+      GSD_STALE_STATE,
+      `gsd-db: Cannot inspect database replacement fence at ${path}`,
+      { cause: error },
+    );
+  }
+}
+
+function strictFileIdentity(path: string, label: string): FileIdentity {
+  let file;
+  try {
+    file = lstatSync(path, { bigint: true });
+  } catch (error) {
+    throw new GSDError(GSD_STALE_STATE, `gsd-db: Cannot inspect ${label} at ${path}`, { cause: error });
+  }
+  if (file.isSymbolicLink() || !file.isFile()) {
+    throw new GSDError(GSD_STALE_STATE, `gsd-db: ${label} must be a real regular file`);
+  }
+  return Object.freeze({ device: file.dev, inode: file.ino });
+}
+
+function sameFileIdentity(left: FileIdentity, right: FileIdentity): boolean {
+  return left.device === right.device && left.inode === right.inode;
+}
+
+function strictFileProof(path: string, label: string): {
+  readonly identity: FileIdentity;
+  readonly sha256: string;
+  readonly content: Buffer;
+} {
+  let fileDescriptor: number | undefined;
+  try {
+    fileDescriptor = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW);
+    const before = fstatSync(fileDescriptor, { bigint: true });
+    if (!before.isFile()) {
+      throw new GSDError(GSD_STALE_STATE, `gsd-db: ${label} must be a real regular file`);
+    }
+    const content = readFileSync(fileDescriptor);
+    const after = fstatSync(fileDescriptor, { bigint: true });
+    const beforeIdentity = Object.freeze({ device: before.dev, inode: before.ino });
+    const afterIdentity = Object.freeze({ device: after.dev, inode: after.ino });
+    if (!sameFileIdentity(beforeIdentity, afterIdentity) || before.size !== after.size || before.mtimeNs !== after.mtimeNs) {
+      throw new GSDError(GSD_STALE_STATE, `gsd-db: ${label} changed while it was inspected`);
+    }
+    return Object.freeze({
+      identity: beforeIdentity,
+      sha256: `sha256:${createHash("sha256").update(content).digest("hex")}`,
+      content,
+    });
+  } catch (error) {
+    if (error instanceof GSDError) throw error;
+    throw new GSDError(GSD_STALE_STATE, `gsd-db: Cannot inspect ${label} at ${path}`, { cause: error });
+  } finally {
+    if (fileDescriptor !== undefined) closeSync(fileDescriptor);
+  }
+}
+
+function requireExactFileProof(
+  path: string,
+  label: string,
+  expectedIdentity: FileIdentity,
+  expectedSha256: string,
+): void {
+  const proof = strictFileProof(path, label);
+  if (!sameFileIdentity(proof.identity, expectedIdentity) || proof.sha256 !== expectedSha256) {
+    throw new GSDError(GSD_STALE_STATE, `gsd-db: ${label} does not match the replacement proof`);
+  }
+}
+
+/**
+ * Open and prove the replacement intent, returning a descriptor that stays open
+ * for the life of the receipt capability. Holding the descriptor lets a later
+ * unlink+rewrite be detected even when the rewrite reuses the freed inode
+ * number: the held descriptor's link count drops to zero when the original file
+ * is unlinked, which an identity-and-content re-proof cannot observe under
+ * inode-number reuse. The descriptor is closed if the proof fails.
+ */
+function openProvenReplacementIntentHandle(
+  path: string,
+  expectedIdentity: FileIdentity,
+  expectedSha256: string,
+): number {
+  const descriptor = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW);
+  try {
+    const stat = fstatSync(descriptor, { bigint: true });
+    if (!stat.isFile()) {
+      throw new GSDError(GSD_STALE_STATE, "gsd-db: database replacement intent must be a real regular file");
+    }
+    const identity = Object.freeze({ device: stat.dev, inode: stat.ino });
+    const sha256 = `sha256:${createHash("sha256").update(readFileSync(descriptor)).digest("hex")}`;
+    if (!sameFileIdentity(identity, expectedIdentity) || sha256 !== expectedSha256) {
+      throw new GSDError(GSD_STALE_STATE, "gsd-db: database replacement intent does not match the replacement proof");
+    }
+    return descriptor;
+  } catch (error) {
+    closeQuietly(descriptor);
+    throw error;
+  }
+}
+
+/**
+ * Assert that the descriptor held for the receipt capability still names the
+ * live intent file. A swap that unlinks the intent and rewrites it drops the
+ * held descriptor's link count to zero (even if the rewrite reuses the freed
+ * inode number); a replacement by a different inode changes the live identity.
+ * Both fail closed with a "replacement proof" message so callers can classify
+ * them alongside the content proof.
+ */
+function assertReplacementIntentHandleIsLive(state: DatabaseReplacementReceiptCapabilityState): void {
+  let stat;
+  try {
+    stat = fstatSync(state.activeIntentHandle, { bigint: true });
+  } catch (error) {
+    throw new GSDError(
+      GSD_STALE_STATE,
+      "gsd-db: database replacement intent does not match the replacement proof",
+      { cause: error },
+    );
+  }
+  if (stat.nlink === 0n) {
+    throw new GSDError(GSD_STALE_STATE, "gsd-db: database replacement intent does not match the replacement proof");
+  }
+  const liveIdentity = strictFileIdentity(state.activeIntentPath, "database replacement intent");
+  if (!sameFileIdentity(liveIdentity, state.activeIntentFileIdentity)) {
+    throw new GSDError(GSD_STALE_STATE, "gsd-db: database replacement intent does not match the replacement proof");
+  }
+}
+
+function parseFileIdentity(value: DatabaseReplacementFileIdentity, label: string): FileIdentity {
+  try {
+    if (!/^(?:0|[1-9][0-9]*)$/.test(value.device) || !/^(?:0|[1-9][0-9]*)$/.test(value.inode)) {
+      throw new Error("invalid identity");
+    }
+    return Object.freeze({ device: BigInt(value.device), inode: BigInt(value.inode) });
+  } catch (error) {
+    throw new GSDError(GSD_STALE_STATE, `gsd-db: Invalid ${label}`, { cause: error });
+  }
+}
+
+function requireExpectedSha256(value: string | undefined, label: string): string {
+  if (typeof value !== "string" || !/^sha256:[a-f0-9]{64}$/.test(value)) {
+    throw new GSDError(GSD_STALE_STATE, `gsd-db: Replacement reopen requires an exact ${label} SHA-256`);
+  }
+  return value;
+}
+
+function assertReopenedDatabaseHandleMatchesPath(
+  db: DbAdapter,
+  databasePath: string,
+  expectedIdentity: FileIdentity,
+  expectedSha256: string,
+): ReturnType<typeof strictFileProof> {
+  const proof = strictFileProof(databasePath, "replacement database");
+  if (!sameFileIdentity(proof.identity, expectedIdentity) || proof.sha256 !== expectedSha256) {
+    throw new GSDError(GSD_STALE_STATE, "gsd-db: Replacement database changed while it reopened");
+  }
+
+  try {
+    assertDatabaseAdapterMatchesPath(db, databasePath);
+  } catch (error) {
+    throw new GSDError(
+      GSD_STALE_STATE,
+      "gsd-db: reopened SQLite handle does not match the replacement database",
+      { cause: error },
+    );
+  }
+  requireExactFileProof(databasePath, "replacement database", proof.identity, proof.sha256);
+  return proof;
+}
+
+function assertDatabaseReplacementFenceAllowsWrite(): void {
+  if (_databaseReplacementWriteBypassDepth > 0 || !currentPath || currentPath === ":memory:") return;
+  assertDatabaseReplacementFenceAllowsPath(currentPath);
+  assertDatabaseMaintenanceFenceAllowsWrite(currentPath);
+}
+
+function assertDatabaseReplacementFenceAllowsPath(databasePath: string): void {
+  if (_databaseReplacementWriteBypassDepth > 0 || databasePath === ":memory:") return;
+  const { activeIntentPath } = getDatabaseReplacementPaths(databasePath);
+  if (pathExistsFailClosed(activeIntentPath)) {
+    throw new GSDError(
+      GSD_STALE_STATE,
+      `gsd-db: Database writes are fenced while replacement intent exists at ${activeIntentPath}`,
+    );
+  }
+}
+
+function databaseReplacementIntentExists(databasePath: string): boolean {
+  if (databasePath === ":memory:") return false;
+  return pathExistsFailClosed(getDatabaseReplacementPaths(databasePath).activeIntentPath);
+}
+
+/**
+ * Permit the live-restore owner to record its receipt while its write fence is
+ * present. The callback is deliberately synchronous so the bypass cannot leak
+ * into unrelated event-loop work.
+ */
+export function withDatabaseReplacementWriteBypass<T>(
+  capability: DatabaseReplacementReceiptCapability,
+  fn: () => T,
+): T {
+  const state = _databaseReplacementReceiptCapabilityStates.get(capability);
+  if (!state) {
+    throw new GSDError(GSD_STALE_STATE, "gsd-db: Invalid or consumed database replacement receipt capability");
+  }
+  if (_databaseReplacementWriteBypassDepth !== 0) {
+    throw new GSDError(GSD_STALE_STATE, "gsd-db: Database replacement receipt capability is already in use");
+  }
+  if (
+    currentDb !== state.database
+    || !currentPath
+    || resolve(currentPath) !== state.databasePath
+  ) {
+    throw new GSDError(GSD_STALE_STATE, "gsd-db: Database replacement receipt capability does not match the active database");
+  }
+  const currentDatabaseProof = strictFileProof(state.databasePath, "replacement database");
+  if (
+    !sameFileIdentity(currentDatabaseProof.identity, state.reopenedFileIdentity)
+    || currentDatabaseProof.sha256 !== state.postOpenDatabaseSha256
+  ) {
+    throw new GSDError(GSD_STALE_STATE, "gsd-db: Replacement database changed before its receipt transaction");
+  }
+  assertReplacementIntentHandleIsLive(state);
+  requireExactFileProof(
+    state.activeIntentPath,
+    "database replacement intent",
+    state.activeIntentFileIdentity,
+    state.activeIntentSha256,
+  );
+
+  _databaseReplacementWriteBypassDepth++;
+  try {
+    const result = fn();
+    if (result instanceof Promise) {
+      throw new GSDError(GSD_STALE_STATE, "gsd-db: Database replacement bypass callback must be synchronous");
+    }
+    assertReplacementIntentHandleIsLive(state);
+    requireExactFileProof(
+      state.activeIntentPath,
+      "database replacement intent",
+      state.activeIntentFileIdentity,
+      state.activeIntentSha256,
+    );
+    if (
+      currentDb !== state.database
+      || !currentPath
+      || resolve(currentPath) !== state.databasePath
+      || !sameFileIdentity(
+        strictFileIdentity(state.databasePath, "replacement database"),
+        state.reopenedFileIdentity,
+      )
+    ) {
+      throw new GSDError(GSD_STALE_STATE, "gsd-db: Database replacement changed while recording its receipt");
+    }
+    _databaseReplacementReceiptCapabilityStates.delete(capability);
+    _databaseReplacementIntentHandleRegistry.unregister(capability);
+    closeQuietly(state.activeIntentHandle);
+    return result;
+  } finally {
+    _databaseReplacementWriteBypassDepth--;
+  }
+}
+
+/** Revalidate the exact recovery intent from inside the receipt transaction. */
+export function assertDatabaseReplacementReceiptIntent(
+  capability: DatabaseReplacementReceiptCapability,
+): void {
+  const state = _databaseReplacementReceiptCapabilityStates.get(capability);
+  if (!state) {
+    throw new GSDError(GSD_STALE_STATE, "gsd-db: Invalid or consumed database replacement receipt capability");
+  }
+  assertReplacementIntentHandleIsLive(state);
+  requireExactFileProof(
+    state.activeIntentPath,
+    "database replacement intent",
+    state.activeIntentFileIdentity,
+    state.activeIntentSha256,
+  );
+}
+
+function strictRealDatabasePath(path: string, label: string): string {
+  if (typeof path !== "string" || path.length === 0 || path === ":memory:") {
+    throw new GSDError(GSD_STALE_STATE, `gsd-db: ${label} must be a file-backed database path`);
+  }
+  const resolvedPath = resolve(path);
+  strictFileIdentity(resolvedPath, label);
+  return realpathSync(resolvedPath);
+}
+
+function ownDataValue(row: Record<string, unknown>, key: string): unknown {
+  const descriptor = Object.getOwnPropertyDescriptor(row, key);
+  if (!descriptor || !("value" in descriptor)) {
+    throw new GSDError(GSD_STALE_STATE, `gsd-db: Invalid ${key} value from SQLite replacement preflight`);
+  }
+  return descriptor.value;
+}
+
+function assertActiveDatabaseList(db: DbAdapter, expectedRealPath: string): void {
+  const rows = db.prepare("PRAGMA database_list").all();
+  const row = rows.find((entry) => ownDataValue(entry, "name") === "main");
+  if (!row || rows.some((entry) => {
+    const name = ownDataValue(entry, "name");
+    const file = ownDataValue(entry, "file");
+    return name !== "main" && !(name === "temp" && file === "");
+  })) {
+    throw new GSDError(GSD_STALE_STATE, "gsd-db: Database replacement requires one main database and no attached files");
+  }
+  const seq = ownDataValue(row, "seq");
+  const name = ownDataValue(row, "name");
+  const file = ownDataValue(row, "file");
+  if (seq !== 0 || name !== "main" || typeof file !== "string" || realpathSync(file) !== expectedRealPath) {
+    throw new GSDError(GSD_STALE_STATE, "gsd-db: Active SQLite database does not match the replacement target");
+  }
+}
+
+function checkpointForDatabaseReplacement(db: DbAdapter): void {
+  const rows = db.prepare("PRAGMA wal_checkpoint(TRUNCATE)").all();
+  if (rows.length !== 1) {
+    throw new GSDError(GSD_STALE_STATE, "gsd-db: Database replacement checkpoint returned an invalid result");
+  }
+  const row = rows[0]!;
+  const busy = ownDataValue(row, "busy");
+  const log = ownDataValue(row, "log");
+  const checkpointed = ownDataValue(row, "checkpointed");
+  const completed = busy === 0
+    && Number.isSafeInteger(log)
+    && Number.isSafeInteger(checkpointed)
+    && ((log === -1 && checkpointed === -1) || (typeof log === "number" && log >= 0 && checkpointed === log));
+  if (!completed) {
+    throw new GSDError(
+      GSD_STALE_STATE,
+      `gsd-db: Database replacement requires a complete TRUNCATE checkpoint; observed ${String(busy)}/${String(log)}/${String(checkpointed)}`,
+    );
+  }
+}
+
+/**
+ * Strictly detach every in-process handle for the active replacement target.
+ * The returned token is accepted only by reopenDatabaseAfterReplacement().
+ */
+export function detachActiveDatabaseForReplacement(
+  expectedPath: string,
+  boundary?: DatabaseReplacementBoundary,
+): DatabaseReplacementToken {
+  if (!currentDb || !currentPath) {
+    throw new GSDError(GSD_STALE_STATE, "gsd-db: No active database to detach for replacement");
+  }
+  if (_transactionRunner.isInTransaction()) {
+    throw new GSDError(GSD_STALE_STATE, "gsd-db: Cannot detach the database during an active transaction");
+  }
+
+  const expectedResolvedPath = resolve(expectedPath);
+  const databasePath = strictRealDatabasePath(expectedResolvedPath, "replacement target");
+  if (strictRealDatabasePath(currentPath, "active database") !== databasePath) {
+    throw new GSDError(GSD_STALE_STATE, "gsd-db: Active database path does not match the replacement target");
+  }
+  const activeIntentPath = getDatabaseReplacementPaths(databasePath).activeIntentPath;
+  strictFileIdentity(activeIntentPath, "database replacement intent");
+  const originalFileIdentity = strictFileIdentity(databasePath, "replacement target");
+  assertActiveDatabaseList(currentDb, databasePath);
+
+  const targetCacheEntries: { key: string; dbPath: string; db: DbAdapter }[] = [];
+  for (const [key, entry] of _dbCache.asReadonlyMap()) {
+    let matchesTarget = entry.db === currentDb || resolve(entry.dbPath) === expectedResolvedPath;
+    if (!matchesTarget) {
+      try {
+        matchesTarget = realpathSync(entry.dbPath) === databasePath;
+      } catch {
+        matchesTarget = false;
+      }
+    }
+    if (matchesTarget) targetCacheEntries.push({ key, ...entry });
+  }
+
+  for (const [database, isolatedPath] of [..._isolatedDatabases]) {
+    if (isolatedPath === databasePath) database.close();
+  }
+  const adapters = new Set(targetCacheEntries.map((entry) => entry.db));
+  adapters.delete(currentDb);
+  for (const adapter of adapters) adapter.close();
+  for (const { key, db } of targetCacheEntries) {
+    if (db !== currentDb) _dbCache.delete(key);
+  }
+  checkpointForDatabaseReplacement(currentDb);
+  boundary?.("after-checkpoint");
+  const journalMode = currentDb.prepare("PRAGMA journal_mode=DELETE").get()?.["journal_mode"];
+  if (journalMode !== "delete") {
+    throw new GSDError(
+      GSD_STALE_STATE,
+      `gsd-db: Database replacement requires DELETE journal mode before detach; observed ${String(journalMode)}`,
+    );
+  }
+  boundary?.("after-journal-mode");
+
+  currentDb.close();
+
+  const tokenState: DatabaseReplacementTokenState = {
+    databasePath,
+    activeIntentPath,
+    originalFileIdentity,
+    activeIdentityKey: _currentIdentityKey,
+    cacheEntries: targetCacheEntries.map(({ key, dbPath }) => ({ key, dbPath })),
+  };
+  for (const { key } of targetCacheEntries) _dbCache.delete(key);
+  currentDb = null;
+  currentPath = null;
+  currentPid = 0;
+  _currentIdentityKey = null;
+  _dbOpenState.reset();
+
+  const token: DatabaseReplacementToken = Object.freeze({ kind: "gsd-database-replacement-token" });
+  _databaseReplacementTokenStates.set(token, tokenState);
+  try {
+    boundary?.("after-active-close");
+  } catch (error) {
+    try {
+      reopenDatabaseAfterReplacement(token);
+    } catch (reopenError) {
+      throw new GSDError(
+        GSD_STALE_STATE,
+        "gsd-db: Database replacement boundary failed after close and the original database could not reopen",
+        { cause: reopenError },
+      );
+    }
+    throw error;
+  }
+  return token;
+}
+
+function createDatabaseReplacementReceiptCapability(
+  state: DatabaseReplacementReceiptCapabilityState,
+): DatabaseReplacementReceiptCapability {
+  const capability: DatabaseReplacementReceiptCapability = Object.freeze({
+    kind: "gsd-database-replacement-receipt-capability",
+  });
+  _databaseReplacementReceiptCapabilityStates.set(capability, state);
+  return capability;
+}
+
+function abandonFailedReplacementReopen(error: unknown): never {
+  const database = currentDb;
+  currentDb = null;
+  currentPath = null;
+  currentPid = 0;
+  _currentIdentityKey = null;
+  _dbOpenState.reset();
+  try {
+    database?.close();
+  } catch (closeError) {
+    throw new GSDError(
+      GSD_STALE_STATE,
+      "gsd-db: Replacement database proof failed and its reopened connection could not be closed",
+      { cause: closeError },
+    );
+  }
+  throw error;
+}
+
+/**
+ * Reopen a successfully detached database and restore its workspace identity.
+ * A changed inode plus exact publication evidence returns a single-use receipt
+ * capability. A same-inode reopen normally restores the original connection;
+ * persisted evidence can additionally prove that the process detached an
+ * already-published file while converging a prior interrupted receipt.
+ */
+export function reopenDatabaseAfterReplacement(
+  token: DatabaseReplacementToken,
+  evidence: DatabaseReplacementReopenEvidence = {},
+  boundary?: DatabaseReplacementBoundary,
+): DatabaseReplacementReceiptCapability | null {
+  const tokenState = _databaseReplacementTokenStates.get(token);
+  if (!tokenState) {
+    throw new GSDError(GSD_STALE_STATE, "gsd-db: Invalid or consumed database replacement token");
+  }
+  if (currentDb) {
+    throw new GSDError(GSD_STALE_STATE, "gsd-db: Cannot reopen replacement while another database is active");
+  }
+  strictRealDatabasePath(tokenState.databasePath, "replacement database");
+  const preOpenDatabaseProof = strictFileProof(tokenState.databasePath, "replacement database");
+  const reopenedFileIdentity = preOpenDatabaseProof.identity;
+  const replacementWasPublished = !sameFileIdentity(
+    tokenState.originalFileIdentity,
+    reopenedFileIdentity,
+  );
+  let receiptAuthorized = replacementWasPublished;
+  let authorizedIntentProof: {
+    readonly identity: FileIdentity;
+    readonly sha256: string;
+  } | null = null;
+  if (replacementWasPublished) {
+    const expectedSha256 = requireExpectedSha256(evidence.expectedPublishedSha256, "published database");
+    if (preOpenDatabaseProof.sha256 !== expectedSha256) {
+      throw new GSDError(GSD_STALE_STATE, "gsd-db: Published replacement does not match its expected SHA-256");
+    }
+    if (evidence.persistedOriginalFileIdentity) {
+      const persistedOriginal = parseFileIdentity(evidence.persistedOriginalFileIdentity, "persisted original database identity");
+      if (!sameFileIdentity(persistedOriginal, tokenState.originalFileIdentity)) {
+        throw new GSDError(GSD_STALE_STATE, "gsd-db: Persisted original database identity does not match the detached database");
+      }
+    }
+    if (evidence.expectedPublishedFileIdentity) {
+      const expectedPublished = parseFileIdentity(evidence.expectedPublishedFileIdentity, "expected published database identity");
+      if (!sameFileIdentity(expectedPublished, reopenedFileIdentity)) {
+        throw new GSDError(GSD_STALE_STATE, "gsd-db: Published replacement does not match its expected file identity");
+      }
+    }
+  } else if (
+    evidence.persistedOriginalFileIdentity
+    && evidence.expectedPublishedFileIdentity
+    && evidence.expectedPublishedSha256
+  ) {
+    // Validate that all three evidence fields are present and well-formed; the
+    // persisted-original identity is parsed for its shape only. Under inode-number
+    // reuse the freed pre-restore original can be reassigned to the newly
+    // published candidate, so the persisted original may share the reopened inode
+    // even on a correct recovery. Requiring them to differ would reject that valid
+    // case, so authorization rests on the robust proof instead: the reopened file
+    // matches the expected published identity and its exact content.
+    parseFileIdentity(evidence.persistedOriginalFileIdentity, "persisted original database identity");
+    const expectedPublished = parseFileIdentity(evidence.expectedPublishedFileIdentity, "expected published database identity");
+    const expectedSha256 = requireExpectedSha256(evidence.expectedPublishedSha256, "published database");
+    receiptAuthorized = sameFileIdentity(expectedPublished, reopenedFileIdentity)
+      && preOpenDatabaseProof.sha256 === expectedSha256;
+    if (!receiptAuthorized) {
+      throw new GSDError(GSD_STALE_STATE, "gsd-db: Same-inode recovery does not match the persisted publication proof");
+    }
+  } else if (
+    evidence.expectedPublishedSha256
+    || evidence.persistedOriginalFileIdentity
+    || evidence.expectedPublishedFileIdentity
+    || evidence.expectedActiveIntentFileIdentity
+    || evidence.expectedActiveIntentSha256
+  ) {
+    throw new GSDError(GSD_STALE_STATE, "gsd-db: Same-inode recovery evidence is incomplete");
+  }
+  let authorizedIntentHandle: number | undefined;
+  if (receiptAuthorized) {
+    if (!evidence.expectedActiveIntentFileIdentity) {
+      throw new GSDError(GSD_STALE_STATE, "gsd-db: Replacement reopen requires the published intent file identity");
+    }
+    const expectedIntentIdentity = parseFileIdentity(
+      evidence.expectedActiveIntentFileIdentity,
+      "expected active intent identity",
+    );
+    const expectedIntentSha256 = requireExpectedSha256(
+      evidence.expectedActiveIntentSha256,
+      "active intent",
+    );
+    // Hold an open descriptor on the proven intent for the life of the receipt
+    // capability instead of only re-proving it later by identity and content: an
+    // unlink+rewrite that reuses the freed inode number would pass a re-proof but
+    // still drops this descriptor's link count to zero, so the receipt path fails
+    // closed. The descriptor is closed on every failure path below and on the
+    // consumption path in withDatabaseReplacementWriteBypass.
+    authorizedIntentHandle = openProvenReplacementIntentHandle(
+      tokenState.activeIntentPath,
+      expectedIntentIdentity,
+      expectedIntentSha256,
+    );
+    authorizedIntentProof = Object.freeze({ identity: expectedIntentIdentity, sha256: expectedIntentSha256 });
+  }
+  try {
+    boundary?.("before-reopen-open");
+    if (!openDatabaseInternal(tokenState.databasePath, true) || !currentDb) {
+      throw new GSDError(GSD_STALE_STATE, "gsd-db: Replacement database did not reopen");
+    }
+    let postOpenDatabaseProof;
+    try {
+      boundary?.("after-reopen-open");
+      postOpenDatabaseProof = assertReopenedDatabaseHandleMatchesPath(
+        currentDb,
+        tokenState.databasePath,
+        reopenedFileIdentity,
+        preOpenDatabaseProof.sha256,
+      );
+      boundary?.("after-reopen-proof");
+    } catch (error) {
+      abandonFailedReplacementReopen(error);
+    }
+
+    for (const entry of tokenState.cacheEntries) {
+      _dbCache.set(entry.key, { dbPath: entry.dbPath, db: currentDb });
+    }
+    _currentIdentityKey = tokenState.activeIdentityKey;
+    _databaseReplacementTokenStates.delete(token);
+    if (!receiptAuthorized) return null;
+    if (!authorizedIntentProof || authorizedIntentHandle === undefined) {
+      throw new GSDError(GSD_STALE_STATE, "gsd-db: Replacement receipt authorization proof is missing");
+    }
+    const capability = createDatabaseReplacementReceiptCapability({
+      databasePath: tokenState.databasePath,
+      activeIntentPath: tokenState.activeIntentPath,
+      activeIntentFileIdentity: authorizedIntentProof.identity,
+      activeIntentSha256: authorizedIntentProof.sha256,
+      activeIntentHandle: authorizedIntentHandle,
+      database: currentDb,
+      reopenedFileIdentity,
+      postOpenDatabaseSha256: postOpenDatabaseProof.sha256,
+    });
+    _databaseReplacementIntentHandleRegistry.register(capability, authorizedIntentHandle, capability);
+    authorizedIntentHandle = undefined;
+    return capability;
+  } catch (error) {
+    if (authorizedIntentHandle !== undefined) {
+      closeQuietly(authorizedIntentHandle);
+    }
+    throw error;
+  }
+}
 
 /** Test helper: expose the internal cache for inspection. Not for production use. */
 export function _getDbCache(): ReadonlyMap<string, DbConnectionCacheEntry> {
@@ -541,19 +1957,10 @@ export function _getDbCache(): ReadonlyMap<string, DbConnectionCacheEntry> {
 
 function closeCachedConnection(entry: DbConnectionCacheEntry, source: "all" | "workspace"): void {
   try {
-    entry.db.exec("PRAGMA wal_checkpoint(TRUNCATE)");
-  } catch (e) {
-    if (source === "workspace") logWarning("db", `WAL checkpoint (byWorkspace) failed: ${(e as Error).message}`);
-  }
-  try {
-    entry.db.exec("PRAGMA incremental_vacuum(64)");
-  } catch (e) {
-    if (source === "workspace") logWarning("db", `incremental vacuum (byWorkspace) failed: ${(e as Error).message}`);
-  }
-  try {
     entry.db.close();
   } catch (e) {
     if (source === "workspace") logWarning("db", `database close (byWorkspace) failed: ${(e as Error).message}`);
+    throw e;
   }
 }
 
@@ -566,6 +1973,7 @@ function closeCachedConnection(entry: DbConnectionCacheEntry, source: "all" | "w
  * closeDatabaseByWorkspace() instead.
  */
 export function closeAllDatabases(): void {
+  for (const database of [..._isolatedDatabases.keys()]) database.close();
   // Close all non-active cached connections first.
   _dbCache.closeNonActive(currentDb, (entry) => closeCachedConnection(entry, "all"));
   closeDatabase();
@@ -593,9 +2001,21 @@ export function openDatabaseByWorkspace(workspace: GsdWorkspace): boolean {
 
   const cached = _dbCache.get(key);
   if (cached) {
+    try {
+      assertDatabaseAdapterMatchesPath(cached.db, cached.dbPath);
+    } catch {
+      if (currentDb === cached.db) closeDatabase();
+      else {
+        closeCachedConnection(cached, "workspace");
+        _dbCache.delete(key);
+      }
+    }
+  }
+  const validCached = _dbCache.get(key);
+  if (validCached) {
     // Reactivate the cached connection as the current singleton.
-    currentDb = cached.db;
-    currentPath = cached.dbPath;
+    currentDb = validCached.db;
+    currentPath = validCached.dbPath;
     currentPid = process.pid;
     _dbOpenState.markAttempted();
     _currentIdentityKey = key;
@@ -674,7 +2094,7 @@ export function openDatabaseByScope(scope: MilestoneScope): boolean {
 /**
  * Close the database connection for the given workspace and remove it from
  * the cache. If the workspace's connection is currently active (currentDb),
- * performs a full closeDatabase() including WAL checkpoint. Otherwise only
+ * performs a full guarded closeDatabase(). Otherwise only
  * removes the cache entry (the adapter was already replaced by a later open).
  */
 export function closeDatabaseByWorkspace(workspace: GsdWorkspace): void {
@@ -682,14 +2102,13 @@ export function closeDatabaseByWorkspace(workspace: GsdWorkspace): void {
   const cached = _dbCache.get(key);
   if (!cached) return;
 
-  _dbCache.delete(key);
-
   if (currentDb === cached.db) {
     // This workspace's connection is the active one — full close.
     closeDatabase();
   } else {
     // Connection was displaced by a later open; close the adapter directly.
     closeCachedConnection(cached, "workspace");
+    _dbCache.delete(key);
   }
 }
 
@@ -730,68 +2149,189 @@ export function getDbStatus(): {
   };
 }
 
-export function openDatabase(path: string): boolean {
+function runStartupRepair(adapter: DbAdapter, path: string, forceMemoriesFtsRebuild: boolean): void {
+  withDatabaseMaintenanceOwner(path, () => {
+    _startupRepairBoundaryForTest?.("before-journal", path);
+    configureSchemaConnection(adapter, true, path);
+    _startupRepairBoundaryForTest?.("after-journal", path);
+    prepareStartupMigrationBackup(adapter, path);
+    _startupRepairBoundaryForTest?.("after-backup", path);
+
+    function initialize(): void {
+      _startupInitializationBoundaryForTest?.(path);
+      initSchema(adapter, true, path, false, true, forceMemoriesFtsRebuild);
+    }
+
+    try {
+      initialize();
+    } catch (error) {
+      if (!shouldAttemptVacuumRecovery(true, error)) throw error;
+      _startupRepairBoundaryForTest?.("before-vacuum", path);
+      adapter.exec("VACUUM");
+      initialize();
+      logWarning("db", "recovered corrupt database via VACUUM");
+    }
+  });
+}
+
+function retainOrCloseFailedOpen(
+  adapter: DbAdapter,
+  maintenance: DatabaseMaintenanceCleanupState | undefined,
+  exclusiveOwnershipHeld: boolean,
+  adapterClosed = false,
+): void {
+  const cleanup: StartupCleanupState = {
+    adapter,
+    claim: maintenance?.claim,
+    projectionRelease: maintenance?.projectionRelease,
+    exclusiveOwnershipHeld,
+    adapterClosed,
+  };
+  try {
+    cleanupStartupOwnership(cleanup);
+  } catch (closeError) {
+    quarantineStartupCleanup(cleanup);
+    logWarning("db", `close after database open failure failed: ${(closeError as Error).message}`);
+  }
+}
+
+function openDatabaseInternal(path: string, allowReplacementWrite: boolean): boolean {
   _dbOpenState.markAttempted();
+  cleanupPendingDatabaseMaintenance();
+  cleanupPendingStartup();
   if (currentDb && currentPath !== path) closeDatabase();
-  if (currentDb && currentPath === path) return true;
+  if (currentDb && currentPath === path) {
+    if (allowReplacementWrite && _replacementObservationDatabases.has(currentDb)) {
+      closeDatabase();
+    } else {
+      try {
+        assertDatabaseAdapterMatchesPath(currentDb, path);
+        return true;
+      } catch {
+        closeDatabase();
+      }
+    }
+  }
 
   // Reset error state only when a new open attempt is actually going to run.
   _dbOpenState.clearError();
 
-  let rawDb: unknown;
-  let fallbackOpen: SqliteFallbackOpen | null = null;
-  try {
-    rawDb = providerLoader.openRaw(path);
-  } catch (primaryErr) {
-    _dbOpenState.recordError("open", primaryErr);
-    // node:sqlite loaded but failed to open this file — try better-sqlite3 as fallback.
-    fallbackOpen = providerLoader.tryOpenBetterSqliteFallback(path);
-    if (fallbackOpen) {
-      rawDb = fallbackOpen.rawDb;
-      _dbOpenState.clearError();
-    }
-    if (!rawDb) throw primaryErr;
-  }
-  if (!rawDb) return false;
-
-  const adapter = createDbAdapter(rawDb);
   const fileBacked = path !== ":memory:";
-  try {
-    initSchema(adapter, fileBacked, path);
-  } catch (err) {
-    // Corrupt freelist: DDL fails with "malformed" but VACUUM can rebuild.
-    // Pre-migration backup failures are already pre-DDL and must propagate
-    // instead of being masked by VACUUM recovery (see #2519).
-    if (shouldAttemptVacuumRecovery(fileBacked, err)) {
-      try {
-        adapter.exec("VACUUM");
-        initSchema(adapter, fileBacked, path);
-        process.stderr.write("gsd-db: recovered corrupt database via VACUUM\n");
-      } catch (retryErr) {
-        _dbOpenState.recordError("vacuum-recovery", retryErr);
-        try { adapter.close(); } catch (e) { logWarning("db", `close after VACUUM failed: ${(e as Error).message}`); }
-        throw retryErr;
-      }
-    } else {
-      _dbOpenState.recordError("initSchema", err);
-      try { adapter.close(); } catch (e) { logWarning("db", `close after initSchema failed: ${(e as Error).message}`); }
-      throw err;
+  const replacementObservation = fileBacked
+    && !allowReplacementWrite
+    && databaseReplacementIntentExists(path);
+  let rawDb: unknown;
+  let openedIdentity: FileIdentity | undefined;
+  let adapter: DbAdapter;
+  if (replacementObservation) {
+    try {
+      adapter = openSqliteReadOnly(path, { immutable: true }).db;
+      _databaseAdapterFileIdentities.set(adapter, strictFileIdentity(path, "canonical database"));
+      _replacementObservationDatabases.add(adapter);
+    } catch (error) {
+      _dbOpenState.recordError("open", error);
+      throw error;
     }
+  } else {
+    try {
+      ({ raw: rawDb, identity: openedIdentity } = openCorrelatedRawDatabase(path, () => providerLoader.openRaw(path)));
+    } catch (error) {
+      _dbOpenState.recordError("open", error);
+      throw error;
+    }
+    if (!rawDb) return false;
+    adapter = createFileBoundDatabaseAdapter(rawDb, path, openedIdentity);
   }
 
-  // Commit fallback provider switch only after open + schema both succeeded.
-  if (fallbackOpen) providerLoader.commitFallback(fallbackOpen);
+  let replacementRecovery = false;
+  let maintenanceRecovery = false;
+  let startupMaintenance: DatabaseMaintenanceCleanupState | undefined;
+  let startupExclusiveOwnershipHeld = false;
+  try {
+    replacementRecovery = fileBacked && databaseReplacementIntentExists(path);
+    maintenanceRecovery = fileBacked && databaseMaintenanceIntentIsActive(path);
+    _databaseOpenAfterIntentCheckForTest?.(path);
+    if (replacementRecovery || maintenanceRecovery) {
+      configureMutationFreeConnection(adapter);
+    } else if (!fileBacked) {
+      initSchema(adapter, fileBacked, path);
+    } else {
+      const repair = assessStartupRepair(adapter);
+      if (!repair.required) {
+        configureMutationFreeConnection(adapter);
+      } else {
+        startupMaintenance = acquireStartupMaintenance(adapter, path);
+        startupExclusiveOwnershipHeld = true;
+        runStartupRepair(adapter, path, repair.forceMemoriesFtsRebuild);
+      }
+    }
+  } catch (err) {
+    _dbOpenState.recordError("initSchema", err);
+    if (pendingStartupCleanup?.adapter !== adapter) {
+      retainOrCloseFailedOpen(adapter, startupMaintenance, startupExclusiveOwnershipHeld);
+    }
+    throw err;
+  }
+
+  if (!replacementRecovery && !maintenanceRecovery && startupMaintenance !== undefined) {
+    try {
+      releaseStartupExclusiveOwnership(adapter);
+      startupExclusiveOwnershipHeld = false;
+      _startupReopenCloseForTest?.(adapter);
+      adapter.close();
+    } catch (error) {
+      _dbOpenState.recordError("open", error);
+      quarantineStartupCleanup({
+        adapter,
+        claim: startupMaintenance.claim,
+        projectionRelease: startupMaintenance.projectionRelease,
+        exclusiveOwnershipHeld: startupExclusiveOwnershipHeld,
+        adapterClosed: false,
+      });
+      throw error;
+    }
+
+    let runtimeAdapterOpened = false;
+    try {
+      ({ raw: rawDb, identity: openedIdentity } = openCorrelatedRawDatabase(path, () => providerLoader.openRaw(path)));
+      if (!rawDb) {
+        completeDatabaseMaintenanceCleanup(startupMaintenance);
+        startupMaintenance = undefined;
+        return false;
+      }
+      adapter = createFileBoundDatabaseAdapter(rawDb, path, openedIdentity);
+      runtimeAdapterOpened = true;
+      restoreRuntimeJournalMode(adapter, path);
+      configureOpenConnection(adapter, path);
+      completeDatabaseMaintenanceCleanup(startupMaintenance);
+      startupMaintenance = undefined;
+    } catch (error) {
+      _dbOpenState.recordError("open", error);
+      retainOrCloseFailedOpen(adapter, startupMaintenance, false, !runtimeAdapterOpened);
+      throw error;
+    }
+  }
 
   currentDb = adapter;
   currentPath = path;
   currentPid = process.pid;
 
-  if (!_exitHandlerRegistered) {
-    _exitHandlerRegistered = true;
-    process.on("exit", () => { try { closeDatabase(); } catch (e) { logWarning("db", `exit handler close failed: ${(e as Error).message}`); } });
-  }
+  ensureExitHandlerRegistered();
 
   return true;
+}
+
+export function openDatabase(path: string): boolean {
+  return openDatabaseInternal(path, false);
+}
+
+export function promoteDatabaseForReplacementRecovery(): void {
+  if (!currentDb || !currentPath || !_replacementObservationDatabases.has(currentDb)) return;
+  const path = currentPath;
+  closeDatabase();
+  if (!openDatabaseInternal(path, true)) {
+    throw new GSDError(GSD_STALE_STATE, "gsd-db: Replacement recovery database did not reopen for explicit restore");
+  }
 }
 
 function shouldAttemptVacuumRecovery(fileBacked: boolean, err: unknown): boolean {
@@ -801,17 +2341,15 @@ function shouldAttemptVacuumRecovery(fileBacked: boolean, err: unknown): boolean
 export const _shouldAttemptVacuumRecoveryForTest = shouldAttemptVacuumRecovery;
 
 export function closeDatabase(): void {
+  cleanupPendingDatabaseMaintenance();
+  cleanupPendingStartup();
   if (currentDb) {
     try {
-      currentDb.exec('PRAGMA wal_checkpoint(TRUNCATE)');
-    } catch (e) { logWarning("db", `WAL checkpoint failed: ${(e as Error).message}`); }
-    try {
-      // Incremental vacuum to reclaim space without blocking
-      currentDb.exec('PRAGMA incremental_vacuum(64)');
-    } catch (e) { logWarning("db", `incremental vacuum failed: ${(e as Error).message}`); }
-    try {
       currentDb.close();
-    } catch (e) { logWarning("db", `database close failed: ${(e as Error).message}`); }
+    } catch (e) {
+      logWarning("db", `database close failed: ${(e as Error).message}`);
+      throw e;
+    }
     // If this connection was workspace-tracked, evict it from the cache so
     // subsequent openDatabaseByWorkspace() calls re-open rather than reactivate
     // a closed adapter.
@@ -839,20 +2377,72 @@ export function closeDatabase(): void {
  * connection. Returns null if the connection cannot be opened.
  */
 export function openIsolatedDatabase(path: string): DbAdapter | null {
+  let adapter: DbAdapter | undefined;
   try {
-    const rawDb = providerLoader.openRaw(path);
-    if (!rawDb) return null;
-    const adapter = createDbAdapter(rawDb);
-    // Minimal pragmas for a short-lived read-only observer connection.
-    // Apply the wait policy before WAL negotiation so concurrent observers do
-    // not fail immediately while another connection is opening the same DB.
+    if (databaseReplacementIntentExists(path)) return null;
+    adapter = openSqliteReadOnly(path).db;
     adapter.exec("PRAGMA busy_timeout = 5000");
-    // WAL mode is already set file-wide by the primary connection; repeating
-    // it here is a no-op on an existing WAL file and safe to issue.
-    adapter.exec("PRAGMA journal_mode=WAL");
-    return adapter;
+    const databasePath = realpathSync(path);
+    const openedAdapter = adapter;
+    let closed = false;
+    const tracked: DbAdapter = {
+      exec: (sql) => openedAdapter.exec(sql),
+      prepare: (sql) => openedAdapter.prepare(sql),
+      close() {
+        if (closed) return;
+        openedAdapter.close();
+        closed = true;
+        _isolatedDatabases.delete(tracked);
+      },
+    };
+    _isolatedDatabases.set(tracked, databasePath);
+    if (databaseReplacementIntentExists(path)) {
+      tracked.close();
+      return null;
+    }
+    return tracked;
   } catch {
+    try { adapter?.close(); } catch { /* opening already failed */ }
     return null;
+  }
+}
+
+/** Create a standalone SQLite snapshot that includes committed WAL frames. */
+export function snapshotDatabaseFile(sourcePath: string, destinationPath: string): void {
+  const stagingPath = `${destinationPath}.snapshot-${randomUUID()}`;
+  let source: DbAdapter | undefined;
+  try {
+    const opened = openCorrelatedRawDatabase(sourcePath, () => providerLoader.openRaw(sourcePath));
+    if (!opened.raw) throw new Error("SQLite provider unavailable");
+    source = createFileBoundDatabaseAdapter(opened.raw, sourcePath, opened.identity);
+    source.prepare("VACUUM INTO ?").run(stagingPath);
+
+    const snapshot = openSqliteReadOnly(stagingPath);
+    try {
+      if (snapshot.db.prepare("PRAGMA quick_check").get()?.["quick_check"] !== "ok") {
+        throw new Error("SQLite snapshot failed quick_check");
+      }
+    } finally {
+      snapshot.db.close();
+    }
+
+    const descriptor = openSync(
+      stagingPath,
+      process.platform === "win32" ? constants.O_RDWR : constants.O_RDONLY,
+    );
+    try {
+      fsyncSync(descriptor);
+    } finally {
+      closeSync(descriptor);
+    }
+    renameSync(stagingPath, destinationPath);
+    syncDirectory(dirname(destinationPath));
+  } finally {
+    try { source?.close(); } finally {
+      try { unlinkSync(stagingPath); } catch (error) {
+        if ((error as { code?: unknown }).code !== "ENOENT") throw error;
+      }
+    }
   }
 }
 
@@ -867,6 +2457,7 @@ export function openIsolatedDatabase(path: string): DbAdapter | null {
 export function refreshOpenDatabaseFromDisk(): boolean {
   if (!currentDb || !currentPath) return false;
   if (currentPath === ":memory:") return false;
+  assertDatabaseReplacementFenceAllowsWrite();
 
   const dbPath = currentPath;
   const identityKey = _currentIdentityKey;
@@ -888,51 +2479,127 @@ export function refreshOpenDatabaseFromDisk(): boolean {
 /** Run a full VACUUM — call sparingly (e.g. after milestone completion). */
 export function vacuumDatabase(): void {
   if (!currentDb) return;
-  try {
-    currentDb.exec('VACUUM');
-  } catch (e) { logWarning("db", `VACUUM failed: ${(e as Error).message}`); }
+  runCoordinatedMaintenance((db) => {
+    try {
+      db.exec('VACUUM');
+    } catch (e) { logWarning("db", `VACUUM failed: ${(e as Error).message}`); }
+  });
 }
 
 /** Flush WAL into gsd.db so `git add .gsd/gsd.db` stages current state — safe while DB is open. */
 export function checkpointDatabase(): void {
   if (!currentDb) return;
-  try {
-    currentDb.exec('PRAGMA wal_checkpoint(TRUNCATE)');
-  } catch (e) { logWarning("db", `WAL checkpoint failed: ${(e as Error).message}`); }
+  runCoordinatedMaintenance((db) => {
+    try {
+      db.exec('PRAGMA wal_checkpoint(TRUNCATE)');
+    } catch (e) { logWarning("db", `WAL checkpoint failed: ${(e as Error).message}`); }
+  });
 }
 
-/**
- * Copy the live database file to `.gsd/backups/<label>-<timestamp>.db` so a
- * destructive operation (e.g. recover, which clears the hierarchy tables) is
- * reversible. Checkpoints the WAL first so the snapshot is complete. Returns
- * the backup path, or null if no DB is open or the copy failed.
- */
-export function backupDatabaseSnapshot(label: string): string | null {
-  if (!currentPath) return null;
+function runCoordinatedMaintenance(operation: (db: DbAdapter) => void): void {
+  if (!currentDb || !currentPath || currentPath === ":memory:") {
+    if (currentDb) operation(currentDb);
+    return;
+  }
+  const db = currentDb;
+  const path = currentPath;
+  if (_transactionRunner.isInTransaction()) {
+    // SQLite rejects BEGIN IMMEDIATE inside an open transaction, and neither
+    // wal_checkpoint nor VACUUM can run inside one. Defer with a warning
+    // instead of failing the caller with a raw nested-transaction error — the
+    // outer transaction's own commit path stays authoritative.
+    logWarning("db", "coordinated database maintenance skipped inside an open transaction");
+    return;
+  }
+  let transactionOpen = false;
+  let maintenance: DatabaseMaintenanceCleanupState | undefined;
+  db.exec("PRAGMA busy_timeout = 5000");
   try {
-    checkpointDatabase();
-    const backupsDir = join(dirname(currentPath), "backups");
-    mkdirSync(backupsDir, { recursive: true });
-    const stamp = new Date().toISOString().replace(/[:.]/g, "-");
-    const dest = join(backupsDir, `${label}-${stamp}.db`);
-    copyFileSync(currentPath, dest);
-    return dest;
-  } catch (e) {
-    logWarning("db", `database snapshot failed: ${(e as Error).message}`);
-    return null;
+    _maintenanceBeforeLockForTest?.();
+    assertDatabaseReplacementFenceAllowsPath(path);
+    db.exec("BEGIN IMMEDIATE");
+    transactionOpen = true;
+    assertDatabaseReplacementFenceAllowsPath(path);
+    maintenance = acquireDatabaseMaintenance(path);
+    db.exec("COMMIT");
+    transactionOpen = false;
+    _maintenanceAfterClaimForTest?.();
+    withDatabaseMaintenanceOwner(path, () => operation(db));
+  } finally {
+    if (transactionOpen) {
+      try { db.exec("ROLLBACK"); } catch { /* retain maintenance failure */ }
+    }
+    if (maintenance !== undefined) releaseDatabaseMaintenanceCleanup(maintenance);
+  }
+}
+
+export async function withDatabaseMaintenanceClaim<T>(operation: () => Promise<T>): Promise<T> {
+  if (!currentDb || !currentPath || currentPath === ":memory:") return operation();
+  const db = currentDb;
+  const path = currentPath;
+  let transactionOpen = false;
+  let maintenance: DatabaseMaintenanceCleanupState | undefined;
+  db.exec("PRAGMA busy_timeout = 5000");
+  try {
+    _maintenanceBeforeLockForTest?.();
+    assertDatabaseReplacementFenceAllowsPath(path);
+    db.exec("BEGIN IMMEDIATE");
+    transactionOpen = true;
+    assertDatabaseReplacementFenceAllowsPath(path);
+    maintenance = acquireDatabaseMaintenance(path);
+    db.exec("COMMIT");
+    transactionOpen = false;
+    _maintenanceAfterClaimForTest?.();
+    return await withDatabaseMaintenanceOwner(path, operation);
+  } finally {
+    if (transactionOpen) {
+      try { db.exec("ROLLBACK"); } catch {}
+    }
+    if (maintenance !== undefined) releaseDatabaseMaintenanceCleanup(maintenance);
   }
 }
 
 const _transactionRunner = createDbTransactionRunner();
 
+function beginWriteTransaction(db: DbAdapter): void {
+  db.exec("BEGIN IMMEDIATE");
+  try {
+    assertDatabaseReplacementFenceAllowsWrite();
+  } catch (error) {
+    try {
+      db.exec("ROLLBACK");
+    } catch (rollbackError) {
+      throw new GSDError(
+        GSD_STALE_STATE,
+        "gsd-db: Database replacement fence rejected a writer and rollback failed",
+        { cause: rollbackError },
+      );
+    }
+    throw error;
+  }
+}
+
 function createTransactionControls(db: DbAdapter) {
   return {
-    begin: () => db.exec("BEGIN"),
+    begin: () => beginWriteTransaction(db),
     beginRead: () => db.exec("BEGIN DEFERRED"),
-    beginImmediate: () => db.exec("BEGIN IMMEDIATE"),
+    beginImmediate: () => beginWriteTransaction(db),
     commit: () => db.exec("COMMIT"),
     rollback: () => db.exec("ROLLBACK"),
   };
+}
+
+/** Run one consistent read snapshot on a caller-owned database connection. */
+export function readIndependentDatabaseTransaction<T>(
+  db: DbAdapter,
+  fn: () => T,
+  onRollbackError: (error: Error) => void,
+): T {
+  return createDbTransactionRunner().readTransaction(
+    createTransactionControls(db),
+    fn,
+    onRollbackError,
+  );
 }
 
 /**
@@ -947,6 +2614,7 @@ export function isInTransaction(): boolean {
 
 export function transaction<T>(fn: () => T): T {
   if (!currentDb) throw new GSDError(GSD_STALE_STATE, "gsd-db: No database open");
+  if (!_transactionRunner.isInTransaction()) assertDatabaseReplacementFenceAllowsWrite();
   return _transactionRunner.transaction(createTransactionControls(currentDb), fn);
 }
 
@@ -957,6 +2625,7 @@ export function transaction<T>(fn: () => T): T {
  */
 export function immediateTransaction<T>(fn: () => T): T {
   if (!currentDb) throw new GSDError(GSD_STALE_STATE, "gsd-db: No database open");
+  if (!_transactionRunner.isInTransaction()) assertDatabaseReplacementFenceAllowsWrite();
   return _transactionRunner.immediateTransaction(createTransactionControls(currentDb), fn);
 }
 
@@ -1035,9 +2704,11 @@ export function probeDbWritable(): DbWritableProbeResult {
   const db = currentDb;
   if (!db) return { ok: false, detail: "No database is open." };
   try {
+    assertDatabaseReplacementFenceAllowsWrite();
+    _probeAfterIntentCheckForTest?.();
     const row = db.prepare("PRAGMA user_version").get() as { user_version?: number } | undefined;
     const current = typeof row?.user_version === "number" ? row.user_version : 0;
-    db.exec("BEGIN IMMEDIATE");
+    beginWriteTransaction(db);
     try {
       db.exec(`PRAGMA user_version = ${current}`);
     } finally {

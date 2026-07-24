@@ -1,0 +1,226 @@
+{
+  "preview_schema_version": 1,
+  "preview_id": "planning-multi-milestone-completed-range",
+  "import_kind": "legacy-corpus",
+  "importer_version": "v1-test",
+  "base_project_revision": 0,
+  "base_authority_epoch": 0,
+  "base_database_schema_version": 45,
+  "source_set_hash": "sha256:4fa39df056d60f28c2c21f81b69644582f515961e0bb755e5f825952cd246d8b",
+  "change_set_hash": "sha256:af9b715cfec905e7d3ca1eb1f453e25d1178e2b36464947b6e87ebfdfe612b95",
+  "counts": {
+    "create": 6,
+    "update": 0,
+    "delete": 0,
+    "preserve": 0,
+    "unparsed": 0,
+    "unresolved": 0
+  },
+  "sources": [
+    {
+      "source_id": "source-planning-roadmap",
+      "path": ".planning/ROADMAP.md",
+      "kind": "markdown",
+      "byte_size": 172,
+      "sha256": "sha256:508d995048de054cb89c876fcf68acaf46e12ff6838eb6bb7b44b68463735209",
+      "parser_id": "planning-roadmap-parser",
+      "parser_version": "1",
+      "encoding": "utf-8",
+      "outcome": "mapped"
+    }
+  ],
+  "changes": [
+    {
+      "change_id": "change-milestone-m001",
+      "action": "create",
+      "target": {
+        "kind": "milestone",
+        "key": "M001"
+      },
+      "raw": {
+        "source_id": "source-planning-roadmap",
+        "locator": {
+          "start_byte": 34,
+          "end_byte": 103,
+          "line": 5
+        },
+        "value": "- [x] **Phase 1: v1.0 Completed Foundation** — Phases 1-2 (shipped)",
+        "sha256": "sha256:57970d2e2ad90036230b59723a462dd18962e498d2386ea9b9a9352592e37b0a"
+      },
+      "normalized": {
+        "grammar": "completed-range",
+        "id": "M001",
+        "title": "v1.0 Completed Foundation",
+        "status": "complete",
+        "sequence": 1
+      },
+      "provenance": {
+        "source_id": "source-planning-roadmap",
+        "parser_id": "planning-roadmap-parser",
+        "parser_version": "1"
+      },
+      "reason_code": "completed-range-milestone"
+    },
+    {
+      "change_id": "change-milestone-m002",
+      "action": "create",
+      "target": {
+        "kind": "milestone",
+        "key": "M002"
+      },
+      "raw": {
+        "source_id": "source-planning-roadmap",
+        "locator": {
+          "start_byte": 104,
+          "end_byte": 171,
+          "line": 6
+        },
+        "value": "- [x] **Phase 3: v2.0 Completed Delivery** — Phases 3-4 (shipped)",
+        "sha256": "sha256:bc0765878545b92be24212d1db357e4fc58a70a31b44fc6e7f50e8bfafccf855"
+      },
+      "normalized": {
+        "grammar": "completed-range",
+        "id": "M002",
+        "title": "v2.0 Completed Delivery",
+        "status": "complete",
+        "sequence": 2
+      },
+      "provenance": {
+        "source_id": "source-planning-roadmap",
+        "parser_id": "planning-roadmap-parser",
+        "parser_version": "1"
+      },
+      "reason_code": "completed-range-milestone"
+    },
+    {
+      "change_id": "change-slice-m001-s01",
+      "action": "create",
+      "target": {
+        "kind": "slice",
+        "key": "M001/S01"
+      },
+      "raw": {
+        "source_id": "source-planning-roadmap",
+        "locator": {
+          "start_byte": 34,
+          "end_byte": 103,
+          "line": 5
+        },
+        "value": "- [x] **Phase 1: v1.0 Completed Foundation** — Phases 1-2 (shipped)",
+        "sha256": "sha256:57970d2e2ad90036230b59723a462dd18962e498d2386ea9b9a9352592e37b0a"
+      },
+      "normalized": {
+        "grammar": "completed-range",
+        "id": "S01",
+        "milestone_id": "M001",
+        "title": "Phase 1",
+        "status": "complete",
+        "sequence": 1
+      },
+      "provenance": {
+        "source_id": "source-planning-roadmap",
+        "parser_id": "planning-roadmap-parser",
+        "parser_version": "1"
+      },
+      "reason_code": "completed-range-slice"
+    },
+    {
+      "change_id": "change-slice-m001-s02",
+      "action": "create",
+      "target": {
+        "kind": "slice",
+        "key": "M001/S02"
+      },
+      "raw": {
+        "source_id": "source-planning-roadmap",
+        "locator": {
+          "start_byte": 34,
+          "end_byte": 103,
+          "line": 5
+        },
+        "value": "- [x] **Phase 1: v1.0 Completed Foundation** — Phases 1-2 (shipped)",
+        "sha256": "sha256:57970d2e2ad90036230b59723a462dd18962e498d2386ea9b9a9352592e37b0a"
+      },
+      "normalized": {
+        "grammar": "completed-range",
+        "id": "S02",
+        "milestone_id": "M001",
+        "title": "Phase 2",
+        "status": "complete",
+        "sequence": 2
+      },
+      "provenance": {
+        "source_id": "source-planning-roadmap",
+        "parser_id": "planning-roadmap-parser",
+        "parser_version": "1"
+      },
+      "reason_code": "completed-range-slice"
+    },
+    {
+      "change_id": "change-slice-m002-s01",
+      "action": "create",
+      "target": {
+        "kind": "slice",
+        "key": "M002/S01"
+      },
+      "raw": {
+        "source_id": "source-planning-roadmap",
+        "locator": {
+          "start_byte": 104,
+          "end_byte": 171,
+          "line": 6
+        },
+        "value": "- [x] **Phase 3: v2.0 Completed Delivery** — Phases 3-4 (shipped)",
+        "sha256": "sha256:bc0765878545b92be24212d1db357e4fc58a70a31b44fc6e7f50e8bfafccf855"
+      },
+      "normalized": {
+        "grammar": "completed-range",
+        "id": "S01",
+        "milestone_id": "M002",
+        "title": "Phase 3",
+        "status": "complete",
+        "sequence": 1
+      },
+      "provenance": {
+        "source_id": "source-planning-roadmap",
+        "parser_id": "planning-roadmap-parser",
+        "parser_version": "1"
+      },
+      "reason_code": "completed-range-slice"
+    },
+    {
+      "change_id": "change-slice-m002-s02",
+      "action": "create",
+      "target": {
+        "kind": "slice",
+        "key": "M002/S02"
+      },
+      "raw": {
+        "source_id": "source-planning-roadmap",
+        "locator": {
+          "start_byte": 104,
+          "end_byte": 171,
+          "line": 6
+        },
+        "value": "- [x] **Phase 3: v2.0 Completed Delivery** — Phases 3-4 (shipped)",
+        "sha256": "sha256:bc0765878545b92be24212d1db357e4fc58a70a31b44fc6e7f50e8bfafccf855"
+      },
+      "normalized": {
+        "grammar": "completed-range",
+        "id": "S02",
+        "milestone_id": "M002",
+        "title": "Phase 4",
+        "status": "complete",
+        "sequence": 2
+      },
+      "provenance": {
+        "source_id": "source-planning-roadmap",
+        "parser_id": "planning-roadmap-parser",
+        "parser_version": "1"
+      },
+      "reason_code": "completed-range-slice"
+    }
+  ],
+  "diagnoses": [],
+  "resolutions": []
+}

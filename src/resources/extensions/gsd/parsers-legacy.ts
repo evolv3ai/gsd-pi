@@ -3,7 +3,7 @@
 //
 // ADR-017: the DB is the single source of truth; `.gsd/*.md` files are
 // projections. These parsers may be imported ONLY for:
-//   - migration/import (md-importer, workflow-migration, migration-auto-check)
+//   - migration/import (md-importer, migration-auto-check)
 //   - drift detection that compares both sources by design
 //     (state-reconciliation/drift, markdown-renderer stale-render detection)
 //   - explicit pre-migration / DB-unavailable fallbacks (state.ts,

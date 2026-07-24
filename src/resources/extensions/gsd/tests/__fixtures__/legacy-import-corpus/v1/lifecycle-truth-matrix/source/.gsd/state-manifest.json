@@ -1,0 +1,17 @@
+{
+  "version": 1,
+  "exported_at": "2026-01-01T00:00:00.000Z",
+  "milestones": [
+    {"id":"M001","title":"Truth Matrix","status":"active","depends_on":[],"created_at":"2026-01-01T00:00:00.000Z","completed_at":null,"vision":"Import without inference.","success_criteria":[],"key_risks":[],"proof_strategy":[],"verification_contract":"","verification_integration":"","verification_operational":"","verification_uat":"","definition_of_done":[],"requirement_coverage":"","boundary_map_markdown":"","sequence":1}
+  ],
+  "slices": [
+    {"milestone_id":"M001","id":"S02","title":"Adopted lifecycle","status":"active","risk":"medium","depends":["S00"],"demo":"","created_at":"2026-01-01T00:00:00.000Z","completed_at":null,"full_summary_md":"","full_uat_md":"","goal":"","success_criteria":"","proof_level":"","integration_closure":"","observability_impact":"","target_repositories":[],"sequence":2,"replan_triggered_at":null,"is_sketch":0,"sketch_scope":""},
+    {"milestone_id":"M001","id":"S03","title":"Sketch only","status":"pending","risk":"low","depends":[],"demo":"","created_at":"2026-01-01T00:00:00.000Z","completed_at":null,"full_summary_md":"","full_uat_md":"","goal":"","success_criteria":"","proof_level":"","integration_closure":"","observability_impact":"","target_repositories":[],"sequence":3,"replan_triggered_at":null,"is_sketch":1,"sketch_scope":"Explore the import boundary before task planning."}
+  ],
+  "tasks": [
+    {"milestone_id":"M001","slice_id":"S02","id":"T01","title":"Structured task","status":"active","one_liner":"","narrative":"Canonical narrative retained from the manifest.","verification_result":"","duration":"","completed_at":null,"blocker_discovered":false,"deviations":"","known_issues":"","key_files":[],"key_decisions":[],"full_summary_md":"# Canonical summary\n\nFull Markdown retained.","description":"","estimate":"","files":[],"verify":"","inputs":[],"expected_output":[],"observability_impact":"","full_plan_md":"","target_repositories":[],"sequence":1,"blocker_source":"","escalation_pending":0,"escalation_awaiting_review":0,"escalation_artifact_path":null,"escalation_override_applied_at":null},
+    {"milestone_id":"M001","slice_id":"S02","id":"T02","title":"Skipped task","status":"skipped","one_liner":"","narrative":"Skipped legacy task.","verification_result":"","duration":"","completed_at":null,"blocker_discovered":false,"deviations":"","known_issues":"","key_files":[],"key_decisions":[],"full_summary_md":"","description":"","estimate":"","files":[],"verify":"","inputs":[],"expected_output":[],"observability_impact":"","full_plan_md":"","target_repositories":[],"sequence":2,"blocker_source":"","escalation_pending":0,"escalation_awaiting_review":0,"escalation_artifact_path":null,"escalation_override_applied_at":null}
+  ],
+  "decisions": [],
+  "verification_evidence": []
+}

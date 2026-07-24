@@ -208,7 +208,7 @@ Application refuses changed inputs, active incompatible leases, or unresolved am
 - custom graph definitions and runs become database records; and
 - narrative content becomes database-backed content before projection.
 
-Import Application and cutover are separate boundaries. Before the import transaction commits, transaction rollback is sufficient. After import but before cutover or any new canonical writes, a verified backup may be restored. Cutover closes that restore window and advances the Authority Epoch. After cutover or any new canonical writes, snapshot restoration is prohibited and Forward Repair is required. Down migrations and restoration of disk authority are prohibited.
+Import Application and cutover are separate boundaries. Before the import transaction commits, transaction rollback is sufficient. After import but before cutover or any new canonical writes, a verified backup may be restored. Cutover closes that restore window and advances the Authority Epoch. After cutover or any new canonical writes, snapshot restoration is prohibited and Forward Repair is required. Closure is causal and permanent; later row equality and Consent do not reopen it. Down migrations and restoration of disk authority are prohibited.
 
 ## Lifecycle Kernel and ownership boundaries
 

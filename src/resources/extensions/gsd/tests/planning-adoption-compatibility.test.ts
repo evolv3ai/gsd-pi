@@ -7,7 +7,6 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, test, type TestContext } from "node:test";
 
-import { capturePlanningCompatIfNeeded } from "../compat/planning-compat.ts";
 import { computeProjectionSha, readCompatMarker, writeCompatMarker } from "../compat/compat-marker.ts";
 import { teardownAutoWorktree } from "../auto-worktree-teardown.ts";
 import {
@@ -565,24 +564,6 @@ test("legacy-only restore, recover clear, and bulk import retain their existing 
   assert.equal(getAllMilestones()[0]?.title, "Legacy import");
   assert.equal(getMilestoneSlices("M002")[0]?.title, "Legacy slice");
   assert.equal(getSliceTasks("M002", "S02")[0]?.title, "Legacy task");
-});
-
-test("failed first planning capture leaves compatibility inactive", async () => {
-  const base = tempDir("gsd-planning-capture-closed-");
-  mkdirSync(join(base, ".gsd"), { recursive: true });
-  mkdirSync(join(base, ".planning"), { recursive: true });
-  writeFileSync(
-    join(base, ".planning", "ROADMAP.md"),
-    "# Roadmap\n\n## Phases\n\n- [ ] 01 — Foundation\n",
-    "utf8",
-  );
-
-  closeDatabase();
-  await capturePlanningCompatIfNeeded(base);
-
-  const marker = readCompatMarker(base);
-  assert.equal(marker.planning?.active, false);
-  assert.equal(marker.planning?.layout, null);
 });
 
 test("legacy projection renderers exclude cancelled slices and tasks", (t) => {

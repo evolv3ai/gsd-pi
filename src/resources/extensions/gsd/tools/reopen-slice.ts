@@ -32,7 +32,7 @@ import type { ExecutionInvocation } from "../execution-invocation.js";
 import { invalidateStateCache } from "../state.js";
 import { flushWorkflowProjections } from "../projection-flush.js";
 import { renderPlanCheckboxes } from "../markdown-renderer.js";
-import { writeManifest } from "../workflow-manifest.js";
+import { writeManifestAndFlush } from "../workflow-manifest.js";
 import { appendEvent } from "../workflow-events.js";
 import { logWarning } from "../workflow-logger.js";
 import { join } from "node:path";
@@ -180,7 +180,7 @@ export async function handleReopenSlice(
       await renderPlanCheckboxes(basePath, params.milestoneId, params.sliceId);
       const flushed = await flushWorkflowProjections(basePath, { milestoneId: params.milestoneId });
       projectionStale ||= flushed.stale;
-      writeManifest(basePath);
+      await writeManifestAndFlush(basePath);
     } else {
       projectionStale = true;
     }

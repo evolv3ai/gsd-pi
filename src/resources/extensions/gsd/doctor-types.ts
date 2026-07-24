@@ -93,6 +93,7 @@ export type DoctorIssueCode =
   | "db_unavailable"
   | "memories_fts_rebuild_missing"
   | "projection_drift"
+  | "unresolved_projection_evidence"
   // Milestone filesystem/DB drift (#4996)
   | "orphan_milestone_dir"
   | "orphan_milestone_db"

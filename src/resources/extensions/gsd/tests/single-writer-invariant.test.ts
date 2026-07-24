@@ -54,6 +54,7 @@ const TYPED_DB_WRITER_FILES = new Set([
 ]);
 
 const SCHEMA_DB_WRITER_FILES = new Set([
+  "db-authority-recovery-schema.ts",
   "db-canonical-foundation-schema.ts",
   "db-attempt-recovery-schema.ts",
   "db-conversation-foundation-schema.ts",
@@ -87,6 +88,7 @@ const DB_WRITER_ALLOWLIST_GUIDANCE = [
 
 function isSingleWriterFile(rel: string): boolean {
   const norm = rel.split("\\").join("/");
+  if (norm === "sqlite-readonly.ts") return true;
   if (norm === "gsd-db.ts" || norm === "unit-ownership.ts") return true;
   if (norm === "db/engine.ts") return true;
   if (norm.startsWith("db/writers/") && norm.endsWith(".ts")) return true;
@@ -257,7 +259,6 @@ test("scanner ignores multiline SELECT statements", () => {
 });
 
 const DB_WORKSPACE_MECHANICS = new Set([
-  "backupDatabaseSnapshot",
   "checkpointDatabase",
   "closeAllDatabases",
   "closeDatabase",
@@ -368,7 +369,6 @@ test("DB Workspace Interface owns database open-state and maintenance calls", as
   const workspaceDb = await import("../db-workspace.js");
 
   const expected = [
-    "backupWorkflowDatabaseSnapshot",
     "checkpointWorkflowDatabase",
     "closeAllWorkflowDatabases",
     "closeWorkflowDatabase",

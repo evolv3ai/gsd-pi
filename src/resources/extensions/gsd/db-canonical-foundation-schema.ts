@@ -3,6 +3,16 @@
 
 import type { DbAdapter } from "./db-adapter.js";
 
+export function hasCanonicalOutboxInvariantsV31(db: DbAdapter): boolean {
+  const row = db.prepare(`
+    SELECT COUNT(*) AS count
+    FROM sqlite_master
+    WHERE type = 'trigger'
+      AND name IN ('trg_workflow_outbox_safe_identity', 'trg_workflow_outbox_delete')
+  `).get();
+  return Number(row?.["count"]) === 2;
+}
+
 export function ensureCanonicalOutboxInvariantsV31(db: DbAdapter): void {
   db.exec(`
     CREATE TRIGGER IF NOT EXISTS trg_workflow_outbox_safe_identity

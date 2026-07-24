@@ -1,7 +1,6 @@
 // Project/App: gsd-pi
-// File Purpose: #027 regression — external-edit drift repair must scope status
-// authority to the drifted milestone(s) so a stale checkbox in an unrelated
-// projection can't revert a reopened slice/milestone in the DB.
+// File Purpose: Explicit import scoping tests plus the runtime boundary that
+// prevents external projections from silently becoming DB authority.
 
 import test from "node:test";
 import assert from "node:assert/strict";
@@ -227,7 +226,7 @@ test("scoped import still imports NEW out-of-scope content with its parsed statu
   assert.equal(getSlice("M002", "S01")?.status, "complete", "new out-of-scope slice imports as parsed");
 });
 
-test("external-markdown-edit repair scopes authority to the drifted milestone (end-to-end)", async (t) => {
+test("external-markdown-edit blocks instead of importing a drifted milestone", async (t) => {
   const base = makeBase();
   t.after(() => cleanup(base));
   seedTwoMilestonesWithReopenedB(base);
@@ -253,15 +252,18 @@ test("external-markdown-edit repair scopes authority to the drifted milestone (e
   assert.equal(drift.length, 1, "only M001's roadmap should be detected as drifted");
   assert.deepEqual(drift[0].entities, ["M001"]);
 
-  await externalMarkdownEditHandler.repair(drift[0], ctx);
+  const blocker = await externalMarkdownEditHandler.blocker?.(drift[0], ctx);
+  assert.match(blocker ?? "", /\/gsd recover/);
+  assert.throws(
+    () => externalMarkdownEditHandler.repair(drift[0], ctx),
+    /modeled projection repair must remain blocked/,
+  );
 
-  // B was NOT the drifted file — its reopened slice must survive the repair.
   assert.equal(
     getSlice("M002", "S01")?.status,
     "pending",
-    "repair of an unrelated file must not revert B/S01",
+    "blocked reconciliation must not revert unrelated DB state",
   );
-  // A WAS drifted — its edit is imported (title updated, status stays complete).
-  assert.equal(getSlice("M001", "S01")?.title, "Alpha Slice EDITED", "A's external edit is imported");
+  assert.equal(getSlice("M001", "S01")?.title, "Alpha Slice", "A's projection edit is not imported");
   assert.equal(getSlice("M001", "S01")?.status, "complete");
 });

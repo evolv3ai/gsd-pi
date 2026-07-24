@@ -72,6 +72,7 @@ describe("workspace-collapse integration: Test 1 — cwd-drift path agreement", 
 
   afterEach(() => {
     process.chdir(savedCwd);
+    closeAllDatabases();
     rmSync(projectDir, { recursive: true, force: true });
     rmSync(otherDir, { recursive: true, force: true });
     _clearGsdRootCache();
@@ -135,6 +136,7 @@ describe("workspace-collapse integration: Test 2 — abort teardown clears stale
 
   afterEach(() => {
     process.chdir(savedCwd);
+    closeAllDatabases();
     _resetAutoWorktreeOriginalBaseForTests();
     rmSync(repoDir, { recursive: true, force: true });
   });
@@ -184,6 +186,7 @@ describe("workspace-collapse integration: Test 3 — write-gate snapshot survive
 
   afterEach(() => {
     process.chdir(savedCwd);
+    closeAllDatabases();
     clearDiscussionFlowState(projectDir);
     try { clearDiscussionFlowState(otherDir); } catch { /* best-effort */ }
     rmSync(projectDir, { recursive: true, force: true });

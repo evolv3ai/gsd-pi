@@ -802,11 +802,11 @@ test("deep project setup: new-project --deep uses cwd when nested inside a paren
     else process.env.GSD_PROJECT_ROOT = previousProjectRoot;
 
     clearPendingDeepProjectSetup(child);
-    rmSync(parent, { recursive: true, force: true });
     try {
       const { closeDatabase } = await import("../gsd-db.ts");
       closeDatabase();
     } catch {}
+    rmSync(parent, { recursive: true, force: true });
   }
 });
 
@@ -884,13 +884,17 @@ test("deep project setup: new-project asks interview stages in foreground", asyn
     } else {
       process.env.GSD_WORKFLOW_PATH = previousWorkflowPath;
     }
+    closeDatabase();
     rmSync(base, { recursive: true, force: true });
   }
 });
 
 test("deep auto dispatch forces milestone checkpoints into plain chat", async (t) => {
   const base = makeBase();
-  t.after(() => rmSync(base, { recursive: true, force: true }));
+  t.after(() => {
+    closeDatabase();
+    rmSync(base, { recursive: true, force: true });
+  });
 
   const s = new AutoSession();
   s.basePath = base;
@@ -1000,6 +1004,7 @@ test("deep project setup: unrelated agent_end sessions do not advance pending se
     } else {
       process.env.GSD_WORKFLOW_PATH = previousWorkflowPath;
     }
+    closeDatabase();
     rmSync(base, { recursive: true, force: true });
     rmSync(otherBase, { recursive: true, force: true });
   }
@@ -1040,6 +1045,7 @@ test("deep project setup: same project advances when agent_end session id change
     } else {
       process.env.GSD_WORKFLOW_PATH = previousWorkflowPath;
     }
+    closeDatabase();
     rmSync(base, { recursive: true, force: true });
   }
 });
@@ -1099,6 +1105,7 @@ test("deep project setup: project-level units verify their real artifacts", () =
     }
     assert.equal(verifyExpectedArtifact("research-project", "PROJECT-RESEARCH", base), false);
   } finally {
+    closeDatabase();
     rmSync(base, { recursive: true, force: true });
   }
 });
@@ -1129,6 +1136,7 @@ test("deep project setup: research-project blocker placeholder is a file, not th
       "project research blocker placeholders must not satisfy the research gate",
     );
   } finally {
+    closeDatabase();
     rmSync(base, { recursive: true, force: true });
   }
 });
@@ -1174,6 +1182,7 @@ test("deep project setup: research-project partial output writes dimension block
       "should notify that partial research was finalized without another full fan-out",
     );
   } finally {
+    closeDatabase();
     rmSync(base, { recursive: true, force: true });
   }
 });
@@ -1215,6 +1224,7 @@ test("deep project setup: research-project empty output writes global blocker wi
       "should notify that project research is fail-closed",
     );
   } finally {
+    closeDatabase();
     rmSync(base, { recursive: true, force: true });
   }
 });

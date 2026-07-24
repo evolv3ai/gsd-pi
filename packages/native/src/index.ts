@@ -94,6 +94,9 @@ export type { NativeImageHandle } from "./image/index.js";
 export { xxHash32, xxHash32Fallback } from "./xxhash/index.js";
 
 export { isNativeAddonLoaded } from "./native.js";
+export { acquireProjectionRootIdentityLock, acquireSqliteFileIdentityLock } from "./file-identity/index.js";
+export { syncDirectoryEntry } from "./directory-sync/index.js";
+export type { ProjectionRootIdentityLock, SqliteFileIdentityLock } from "./file-identity/index.js";
 
 export { ttsrCompileRules, ttsrCheckBuffer, ttsrFreeRules } from "./ttsr/index.js";
 export type { TtsrHandle, TtsrRuleInput } from "./ttsr/index.js";

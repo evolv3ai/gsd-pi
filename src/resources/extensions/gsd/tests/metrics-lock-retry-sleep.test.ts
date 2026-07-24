@@ -28,7 +28,7 @@ import {
 } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { spawnSync, spawn } from "node:child_process";
+import { spawn } from "node:child_process";
 
 import {
   initMetrics,
@@ -53,7 +53,9 @@ function metricsPath(base: string): string {
 }
 
 function lockPath(base: string): string {
-  return metricsPath(base) + ".lock";
+  const runtimeDir = join(base, ".gsd", "runtime");
+  mkdirSync(runtimeDir, { recursive: true });
+  return join(runtimeDir, "metrics.lock");
 }
 
 function assistantCtx(): any {
@@ -86,8 +88,9 @@ function assistantCtx(): any {
 // Worker that acquires the lock using O_EXCL and holds it for holdMs, then releases.
 // Writes its PID to stdout once the lock is acquired so the caller can synchronize.
 const LOCK_HOLDER_WORKER = `
-const { openSync, closeSync, writeFileSync, unlinkSync } = require('node:fs');
+const { openSync, closeSync, writeFileSync, writeSync, unlinkSync } = require('node:fs');
 const lockPath = process.env.GSD_TEST_LOCK_PATH;
+const readyPath = process.env.GSD_TEST_READY_PATH;
 const holdMs = parseInt(process.env.GSD_TEST_HOLD_MS || '100', 10);
 
 const deadline = Date.now() + 3000;
@@ -95,8 +98,8 @@ let acquired = false;
 while (Date.now() < deadline) {
   try {
     const fd = openSync(lockPath, 'wx');
+    writeSync(fd, process.pid + '\\n' + new Date().toISOString() + '\\n');
     closeSync(fd);
-    writeFileSync(lockPath, process.pid + '\\n' + new Date().toISOString() + '\\n', 'utf-8');
     acquired = true;
     break;
   } catch { /* retry */ }
@@ -108,6 +111,7 @@ if (!acquired) {
 }
 
 // Signal that the lock is held.
+writeFileSync(readyPath, 'ready\\n', 'utf8');
 process.stdout.write(String(process.pid) + '\\n');
 
 // Hold the lock.
@@ -115,6 +119,7 @@ const releaseAt = Date.now() + holdMs;
 while (Date.now() < releaseAt) { /* spin for short hold */ }
 
 try { unlinkSync(lockPath); } catch {}
+try { unlinkSync(readyPath); } catch {}
 `;
 
 // ─── Tests ────────────────────────────────────────────────────────────────────
@@ -136,15 +141,16 @@ describe("metrics lock retry sleep (M3 follow-up)", () => {
 
   test("sleepy retry count is bounded under lock contention (5ms sleep, 500ms timeout)", () => {
     const lp = lockPath(tmpDir);
+    const readyPath = `${lp}.ready`;
 
-    // Spawn a child that holds the lock for 100ms.
+    // Spawn a child that holds the lock for 250ms.
     // We use spawnSync with a timeout > holdMs so it completes before our check.
     // But we need the child to hold first THEN we attempt. Since spawnSync blocks,
     // we pre-create the lock file instead to simulate contention for 100ms.
 
-    // Simulate: lock is held for 100ms from now, then released.
+    // Simulate: lock is held for 250ms from now, then released.
     // We create the lock file manually (as if another process holds it) and
-    // schedule its removal after 100ms using a child process that holds then deletes.
+    // schedule its removal after 250ms using a child process that holds then deletes.
     //
     // Strategy: use a background worker via spawnSync with hold=100ms,
     // but we can't overlap with spawnSync. Instead, we directly test with
@@ -165,24 +171,25 @@ describe("metrics lock retry sleep (M3 follow-up)", () => {
       env: {
         ...process.env,
         GSD_TEST_LOCK_PATH: lp,
-        GSD_TEST_HOLD_MS: "100",
+        GSD_TEST_READY_PATH: readyPath,
+        GSD_TEST_HOLD_MS: "250",
       },
     });
 
     // Wait until the child has acquired the lock (it writes PID to stdout).
-    // Poll until the lock file exists (the child acquired it).
+    // Poll until the child confirms that the lock contains a valid owner record.
     const waitStart = Date.now();
-    while (!existsSync(lp) && Date.now() - waitStart < 2000) {
+    while (!existsSync(readyPath) && Date.now() - waitStart < 2000) {
       // Busy-wait for child to acquire the lock — this is test setup, not
       // production code. Short window (child acquires almost immediately).
       const arr = new Int32Array(new SharedArrayBuffer(4));
       Atomics.wait(arr, 0, 0, 5);
     }
 
-    assert.ok(existsSync(lp), "child must have acquired the lock before we attempt");
+    assert.ok(existsSync(readyPath), "child must have populated the lock before we attempt");
 
     // Now call snapshotUnitMetrics synchronously. It will call saveLedger →
-    // acquireLock, which retries with 5ms sleep until the child releases (~100ms).
+    // acquireLock, which retries with 5ms sleep until the child releases (~250ms).
     initMetrics(tmpDir);
     const ctx = assistantCtx();
     const start = Date.now();
@@ -198,7 +205,7 @@ describe("metrics lock retry sleep (M3 follow-up)", () => {
 
     const retries = getLockSleepyRetries();
 
-    // With 5ms sleep and ~100ms contention, expect roughly 20 sleepy retries.
+    // With 5ms sleep and ~250ms contention, expect roughly 50 sleepy retries.
     // Upper bound: 500ms timeout / 5ms = 100. With 2s default timeout, upper
     // bound is 2000ms / 5ms = 400. But we want far fewer than the ~20,000
     // that would occur without any sleep.

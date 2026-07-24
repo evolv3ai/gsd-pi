@@ -1,0 +1,21 @@
+{
+  "version": 1,
+  "exported_at": "2026-01-01T00:00:00.000Z",
+  "milestones": [
+    {"id":"M001","title":"Conflicting assessments","status":"active","depends_on":[],"created_at":"2026-01-01T00:00:00.000Z","completed_at":null,"vision":"Exercise assessment conflicts.","success_criteria":[],"key_risks":[],"proof_strategy":[],"verification_contract":"","verification_integration":"","verification_operational":"","verification_uat":"","definition_of_done":[],"requirement_coverage":"","boundary_map_markdown":"","sequence":1},
+    {"id":"M010","title":"Clean assessments","status":"active","depends_on":[],"created_at":"2026-01-01T00:00:00.000Z","completed_at":null,"vision":"Exercise unambiguous assessment imports.","success_criteria":[],"key_risks":[],"proof_strategy":[],"verification_contract":"","verification_integration":"","verification_operational":"","verification_uat":"","definition_of_done":[],"requirement_coverage":"","boundary_map_markdown":"","sequence":10}
+  ],
+  "slices": [],
+  "tasks": [],
+  "decisions": [],
+  "assessments": [
+    {"path":"milestones/M001/slices/S01/S01-ASSESSMENT.md","milestone_id":"M001","slice_id":"S01","task_id":null,"status":"pass","scope":"run-uat","full_content":"**Verdict:** PASS\n\nStructured UAT passed.","created_at":"2026-01-01T00:00:00.000Z"},
+    {"path":"milestones/M001/slices/S02/S02-ASSESSMENT.md","milestone_id":"M001","slice_id":"S02","task_id":null,"status":"passed","scope":"run-uat","full_content":"**Verdict:** PASSED\n\nLegacy passed alias.","created_at":"2026-01-01T00:00:00.000Z"},
+    {"path":"milestones/M001/slices/S03/S03-ASSESSMENT.md","milestone_id":"M001","slice_id":"S03","task_id":null,"status":"fail","scope":"run-uat","full_content":"**Verdict:** FAIL\n\nStructured UAT failed.","created_at":"2026-01-01T00:00:00.000Z"},
+    {"path":"milestones/M001/slices/S04/S04-ASSESSMENT.md","milestone_id":"M001","slice_id":"S04","task_id":null,"status":"partial","scope":"run-uat","full_content":"**Verdict:** PARTIAL\n\nOne check passed and one failed.","created_at":"2026-01-01T00:00:00.000Z"},
+    {"path":"milestones/M001/M001-VALIDATION.md","milestone_id":"M001","slice_id":null,"task_id":null,"status":"needs-attention","scope":"milestone-validation","full_content":"**Verdict:** NEEDS ATTENTION\n\nStructured milestone validation requires attention.","created_at":"2026-01-01T00:00:00.000Z"},
+    {"path":"milestones/M010/slices/S01/S01-ASSESSMENT.md","milestone_id":"M010","slice_id":"S01","task_id":null,"status":"pass","scope":"run-uat","full_content":"**Verdict:** PASS\n\nClean structured UAT passed.","created_at":"2026-01-01T00:00:00.000Z"},
+    {"path":"milestones/M010/M010-VALIDATION.md","milestone_id":"M010","slice_id":null,"task_id":null,"status":"pass","scope":"milestone-validation","full_content":"**Verdict:** PASS\n\nClean structured milestone validation passed.","created_at":"2026-01-01T00:00:00.000Z"}
+  ],
+  "verification_evidence": []
+}

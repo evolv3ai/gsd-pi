@@ -1,0 +1,12 @@
+version: 1
+name: capstone
+description: Classify the composite corpus without applying it.
+steps:
+  - id: classify
+    name: Classify evidence
+    prompt: Produce a deterministic preview.
+  - id: review
+    name: Review ambiguity
+    depends_on:
+      - classify
+    prompt: Stop only for the unresolved M007 route.

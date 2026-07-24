@@ -36,6 +36,7 @@ import {
   handleValidateMilestone,
   type ValidateMilestoneParams,
 } from "../tools/validate-milestone.ts";
+import { discardProjectionEvidence } from "./projection-evidence-helpers.ts";
 
 function db() {
   const adapter = _getAdapter();
@@ -210,7 +211,8 @@ test("adopted complete-milestone commits through projection obstruction and repa
   });
   assert.deepEqual(completionLineage(), { operations: 1, events: 1 });
 
-  rmSync(statePath, { recursive: true, force: true });
+  discardProjectionEvidence(basePath);
+  rmSync(statePath, { recursive: true });
   writeFileSync(join(basePath, "source.ts"), "export const source = 'drifted after completion';\n");
   const repaired = await handleCompleteMilestone(
     completionParams(),

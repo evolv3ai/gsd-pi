@@ -12,7 +12,7 @@ Install these first:
 
 | Requirement | Minimum | Recommended |
 | --- | --- | --- |
-| Node.js | 22.0.0 | 24 LTS |
+| Node.js | 22.18.0 | 24 LTS |
 | npm | Bundled with Node.js | Latest bundled LTS version |
 | Git | 2.20 | Latest stable |
 | Model provider credentials | One supported provider | The provider your team already uses |

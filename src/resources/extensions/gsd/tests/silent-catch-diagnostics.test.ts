@@ -29,6 +29,11 @@ const gsdDir = join(__dirname, "..");
 const EXEMPT_FILES = new Set([
   "workflow-logger.ts",       // The logger itself
   "debug-logger.ts",          // Separate opt-in debug system
+  // Bare worker-subprocess entry (runWorker): spawned via spawnSync with no
+  // workflow-logger context. It reports evidence on stdout and failures via
+  // process.stderr.write + a nonzero exit code, which the parent reads across
+  // the process boundary. The logger is neither available nor appropriate here.
+  "legacy-import-restore-drill.ts",
 ]);
 
 /**
@@ -60,7 +65,6 @@ const MIGRATED_FILES = new Set([
   "gsd-db.ts",
   "workflow-logger.ts",
   "workflow-reconcile.ts",
-  "workflow-migration.ts",
   "workflow-projections.ts",
   "workflow-events.ts",
   "worktree-manager.ts",

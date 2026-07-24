@@ -60,6 +60,6 @@ The recommended workflow: run auto mode in one terminal, steer from another. See
 
 ## Requirements
 
-- **Node.js** 22.0.0 or later (24 LTS recommended)
+- **Node.js** 22.18.0 or later (24 LTS recommended)
 - **Git** installed and configured
 - An API key for at least one LLM provider, browser sign-in for GitHub Copilot, or an authenticated local CLI provider such as Cursor Agent

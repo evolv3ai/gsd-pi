@@ -129,6 +129,7 @@ test("copyWorktreeDb copies DB file and data is queryable", (t) => {
 
   seedMainDb(srcDb);
   closeDatabase();
+  assert.ok(fs.statSync(`${srcDb}-wal`).size > 0, "source retains committed WAL frames before copy");
 
   const result = copyWorktreeDb(srcDb, destDb);
   assert.equal(result, true, "copyWorktreeDb returns true on success");
@@ -155,8 +156,7 @@ test("copyWorktreeDb skips -wal and -shm files", (t) => {
   seedMainDb(srcDb);
   closeDatabase();
 
-  fs.writeFileSync(srcDb + "-wal", "fake wal data");
-  fs.writeFileSync(srcDb + "-shm", "fake shm data");
+  assert.ok(fs.statSync(srcDb + "-wal").size > 0, "source has a real WAL to snapshot");
 
   copyWorktreeDb(srcDb, destDb);
 

@@ -5,10 +5,10 @@
 
 import type { ExtensionCommandContext, ExtensionAPI } from "@gsd/pi-coding-agent";
 import { createHash } from "node:crypto";
-import { existsSync, readFileSync, unlinkSync, readdirSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { join, basename } from "node:path";
 import { nativeRevertCommit, nativeRevertAbort } from "./native-git-bridge.js";
-import { atomicWriteSync } from "./atomic-write.js";
+import { atomicWriteSync, removeProjectionFileSync } from "./atomic-write.js";
 import { parseUnitId } from "./unit-id.js";
 import { deriveState } from "./state.js";
 import { invalidateAllCaches } from "./cache.js";
@@ -204,7 +204,7 @@ export async function handleUndo(args: string, ctx: ExtensionCommandContext, _pi
     if (tasksDir) {
       const summaryFile = join(tasksDir, buildTaskFileName(tid, "SUMMARY"));
       if (existsSync(summaryFile)) {
-        unlinkSync(summaryFile);
+        removeProjectionFileSync(summaryFile);
         summaryRemoved = true;
       }
     }
@@ -216,7 +216,7 @@ export async function handleUndo(args: string, ctx: ExtensionCommandContext, _pi
       for (const suffix of ["SUMMARY", "COMPLETE"]) {
         const candidates = findFileWithPrefix(slicePath, sid, suffix);
         for (const f of candidates) {
-          unlinkSync(f);
+          removeProjectionFileSync(f);
           summaryRemoved = true;
         }
       }
@@ -391,7 +391,7 @@ export async function handleUndoTask(
   if (tasksDir) summaryPaths.add(join(tasksDir, buildTaskFileName(tid, "SUMMARY")));
   for (const summaryPath of summaryPaths) {
     if (existsSync(summaryPath)) {
-      unlinkSync(summaryPath);
+      removeProjectionFileSync(summaryPath);
       summaryDeleted = true;
     }
   }

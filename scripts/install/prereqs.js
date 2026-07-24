@@ -7,14 +7,23 @@ import { fileURLToPath } from 'url'
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const require = createRequire(import.meta.url)
 
+function parseNodeVersion(version) {
+  const match = version.match(/^(\d+)\.(\d+)\.(\d+)/)
+  if (!match) throw new Error(`checkNodeVersion: cannot parse version from "${version}"`)
+  return [Number(match[1]), Number(match[2]), Number(match[3])]
+}
+
 const runtimeChecksFallback = {
+  MIN_NODE_VERSION: '22.18.0',
   MIN_NODE_MAJOR: 22,
-  checkNodeVersion(versionString, min = 22) {
-    const major = parseInt(versionString.split('.')[0], 10)
-    if (!Number.isFinite(major)) {
-      throw new Error(`checkNodeVersion: cannot parse major from "${versionString}"`)
+  checkNodeVersion(versionString, min = '22.18.0') {
+    const actual = parseNodeVersion(versionString)
+    const minimum = parseNodeVersion(min)
+    for (let index = 0; index < minimum.length; index += 1) {
+      if (actual[index] === minimum[index]) continue
+      return actual[index] < minimum[index] ? { ok: false, actualVersion: versionString } : { ok: true }
     }
-    return major < min ? { ok: false, actualMajor: major } : { ok: true }
+    return { ok: true }
   },
   requireGit(execFn) {
     try {
@@ -77,16 +86,16 @@ export function getGlobalBinDir() {
 }
 
 export function checkPrereqs({ isLocal, log }) {
-  const { checkNodeVersion, requireGit, MIN_NODE_MAJOR } = loadRuntimeChecks()
+  const { checkNodeVersion, requireGit, MIN_NODE_VERSION } = loadRuntimeChecks()
 
-  const nodeCheck = checkNodeVersion(process.versions.node, MIN_NODE_MAJOR)
+  const nodeCheck = checkNodeVersion(process.versions.node, MIN_NODE_VERSION)
   if (!nodeCheck.ok) {
     log?.fail?.(
       'Node.js',
-      `GSD requires Node.js >= ${MIN_NODE_MAJOR}.0.0 (you have ${process.versions.node})`,
+      `GSD requires Node.js >= ${MIN_NODE_VERSION} (you have ${process.versions.node})`,
     )
     process.stderr.write(
-      `\nError: GSD requires Node.js >= ${MIN_NODE_MAJOR}.0.0\n` +
+      `\nError: GSD requires Node.js >= ${MIN_NODE_VERSION}\n` +
       `       You are running Node.js ${process.versions.node}\n\n`,
     )
     process.exit(1)

@@ -200,6 +200,114 @@ describe("stale queued milestone selection (#3470)", () => {
     assert.equal(m068Entry!.status, "pending", "M068 with stale draft should be pending, not active");
   });
 
+  test("phantom queued shell (no content, no draft, no slices) is not promoted to active (#1524)", async () => {
+    base = createFixtureBase();
+    openDatabase(":memory:");
+
+    // M015: phantom row left by gsd_milestone_generate_id — never planned,
+    // no CONTEXT/ROADMAP/SUMMARY, no draft, no slices. It is the only
+    // milestone, so the old fallback would have promoted it to active.
+    insertMilestone({ id: "M015", title: "Phantom", status: "queued" });
+
+    invalidateStateCache();
+    const state = await deriveStateFromDb(base);
+
+    assert.equal(state.activeMilestone, null, "Phantom queued shell must not be promoted to active");
+
+    const m015Entry = state.registry.find((e: any) => e.id === "M015");
+    assert.ok(m015Entry, "M015 should still appear in registry");
+    assert.equal(m015Entry!.status, "pending", "Phantom queued shell should stay pending, not active");
+  });
+
+  test("content-less queued shell listed in the PROJECT.md sequence is promoted to pre-planning (#1524)", async () => {
+    base = createFixtureBase();
+    openDatabase(":memory:");
+
+    // M001/M002 are the roadmap the user committed to during deep-project setup:
+    // both are still content-less queued shells, but they appear in PROJECT.md's
+    // Milestone Sequence, so the first one is a real not-yet-planned stage (not a
+    // phantom) and must be promoted to active so the user can plan it.
+    insertMilestone({ id: "M001", title: "Foundation", status: "queued" });
+    insertMilestone({ id: "M002", title: "Polish", status: "queued" });
+    writeFile(
+      base,
+      "PROJECT.md",
+      [
+        "# Project",
+        "",
+        "## Milestone Sequence",
+        "",
+        "- [ ] M001: Foundation - Establish the first runnable slice.",
+        "- [ ] M002: Polish - Follow-up experience work.",
+        "",
+      ].join("\n"),
+    );
+
+    invalidateStateCache();
+    const state = await deriveStateFromDb(base);
+
+    assert.equal(state.activeMilestone?.id, "M001", "First in-sequence roadmap shell should be promoted to active");
+    assert.equal(state.phase, "pre-planning", "A content-less in-sequence shell should go to pre-planning, not needs-discussion");
+
+    const m001Entry = state.registry.find((e: any) => e.id === "M001");
+    assert.equal(m001Entry!.status, "active", "M001 should be active in the registry");
+    const m002Entry = state.registry.find((e: any) => e.id === "M002");
+    assert.equal(m002Entry!.status, "pending", "M002 should stay pending behind the active M001");
+  });
+
+  test("content-less queued shell NOT in the PROJECT.md sequence stays a phantom (#1524)", async () => {
+    base = createFixtureBase();
+    openDatabase(":memory:");
+
+    // PROJECT.md only commits to M001. M099 is a stray row left by
+    // gsd_milestone_generate_id that never entered the roadmap, so even though a
+    // PROJECT.md exists it must not be promoted.
+    insertMilestone({ id: "M099", title: "Stray Phantom", status: "queued" });
+    writeFile(
+      base,
+      "PROJECT.md",
+      [
+        "# Project",
+        "",
+        "## Milestone Sequence",
+        "",
+        "- [ ] M001: Foundation - Establish the first runnable slice.",
+        "",
+      ].join("\n"),
+    );
+
+    invalidateStateCache();
+    const state = await deriveStateFromDb(base);
+
+    assert.equal(state.activeMilestone, null, "A queued shell absent from the PROJECT.md sequence must not be promoted");
+    const m099Entry = state.registry.find((e: any) => e.id === "M099");
+    assert.equal(m099Entry!.status, "pending", "Stray phantom should stay pending");
+  });
+
+  test("phantom-only repo surfaces a doctor recovery path, not a misleading dep-block message (#1524)", async () => {
+    base = createFixtureBase();
+    openDatabase(":memory:");
+
+    // Two phantom shells, neither with content, draft, slices, or deps. With no
+    // promotable milestone, deriveStateFromDb falls into handleNoActiveMilestone.
+    insertMilestone({ id: "M015", title: "Phantom One", status: "queued" });
+    insertMilestone({ id: "M016", title: "Phantom Two", status: "queued" });
+
+    invalidateStateCache();
+    const state = await deriveStateFromDb(base);
+
+    assert.equal(state.activeMilestone, null, "Phantom-only repo has no active milestone");
+    // Must NOT claim the milestones are dependency-blocked — they have no deps.
+    assert.notEqual(state.phase, "blocked", "Phantom-only repo must not report a dependency block");
+    assert.deepStrictEqual(state.blockers, [], "No dependency blockers should be surfaced for phantom-only repo");
+    // Must direct the user toward a recovery path (doctor / planning).
+    assert.match(
+      state.nextAction,
+      /doctor/,
+      "nextAction should direct the user to the doctor for orphaned phantom rows",
+    );
+  });
+
   test("queued milestone with CONTEXT-DRAFT becomes active with needs-discussion phase when nothing else is active", async () => {
     base = createFixtureBase();
     openDatabase(":memory:");
@@ -213,5 +321,29 @@ describe("stale queued milestone selection (#3470)", () => {
 
     assert.equal(state.activeMilestone?.id, "M068", "Queued milestone with draft should become active when nothing else is");
     assert.equal(state.phase, "needs-discussion", "Should resume discussion for queued milestone with draft");
+  });
+
+  test("earlier phantom queued shell does not mask a later draft-bearing queued shell (#1524)", async () => {
+    base = createFixtureBase();
+    openDatabase(":memory:");
+
+    // M010: phantom shell encountered first — no CONTEXT, no draft, no slices.
+    insertMilestone({ id: "M010", title: "Phantom First", status: "queued" });
+
+    // M020: a real resumable draft milestone encountered later.
+    insertMilestone({ id: "M020", title: "Draft Later", status: "queued" });
+    writeFile(base, "milestones/M020/M020-CONTEXT-DRAFT.md", "# M020: Draft Later\n\nPartial context from an in-progress discussion.");
+
+    invalidateStateCache();
+    const state = await deriveStateFromDb(base);
+
+    // The earlier phantom must not permanently capture the promotion slot; the
+    // later draft-bearing shell is the resumable milestone and should win.
+    assert.equal(state.activeMilestone?.id, "M020", "Later draft-bearing shell must be promoted, not masked by the earlier phantom");
+    assert.equal(state.phase, "needs-discussion", "Promoted draft shell should resume discussion");
+
+    const m010Entry = state.registry.find((e: any) => e.id === "M010");
+    assert.ok(m010Entry, "M010 should still appear in registry");
+    assert.equal(m010Entry!.status, "pending", "Phantom M010 should stay pending, not active");
   });
 });

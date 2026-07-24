@@ -19,18 +19,22 @@ import type { DriftHandler } from "./types.js";
 
 export interface ReconciliationRepairPhase {
   name: string;
+  /** Stop before later phases when this phase surfaces a terminal blocker. */
+  stopOnBlocker?: boolean;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   handlers: ReadonlyArray<DriftHandler<any>>;
 }
 
 /**
  * Repairs run phase-by-phase; detection uses the flattened registry (all handlers).
- * external-markdown-edit MUST complete before re-project handlers (stale-render,
- * roadmap-divergence) so cross-tool edits are imported before DB re-projection.
+ * External modeled edits are an authority boundary: passthrough bookkeeping may
+ * complete, but a modeled-edit blocker must stop DB normalization/re-projection
+ * before those later phases can overwrite the user's source bytes.
  */
 export const RECONCILIATION_REPAIR_PHASES: ReadonlyArray<ReconciliationRepairPhase> = [
   {
-    name: "import-external-edits",
+    name: "external-edit-boundary",
+    stopOnBlocker: true,
     handlers: [externalMarkdownEditHandler, externalPlanningEditHandler],
   },
   {

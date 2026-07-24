@@ -8,11 +8,8 @@ import {
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as os from 'node:os';
-import {
-  _resetLogs,
-  peekLogs,
-  setStderrLoggingEnabled,
-} from '../workflow-logger.ts';
+import { DatabaseSync } from 'node:sqlite';
+import { _setMemoriesFtsRebuildBoundaryForTest } from '../db-memory-fts-schema.ts';
 import {
   getActiveMemories,
   getActiveMemoriesRanked,
@@ -414,6 +411,88 @@ test('memory-store: reopening rebuilds FTS index for pre-FTS memories', () => {
   }
 });
 
+test('memory-store: repairing FTS schema replaces a stale rebuild marker', () => {
+  const dbPath = tempDbPath();
+  try {
+    openDatabase(dbPath);
+    const adapter = _getAdapter()!;
+    const fts = adapter.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='memories_fts'").get();
+    if (!fts) return;
+
+    adapter.exec('DROP TRIGGER IF EXISTS memories_ai');
+    adapter.exec('DROP TRIGGER IF EXISTS memories_ad');
+    adapter.exec('DROP TRIGGER IF EXISTS memories_au');
+    adapter.exec('DROP TABLE IF EXISTS memories_fts');
+    adapter.prepare(`
+      UPDATE runtime_kv
+      SET value_json = '"stale-marker"'
+      WHERE scope = 'global' AND scope_id = '' AND key = 'memories_fts_rebuilt_at'
+    `).run();
+    const markerBefore = adapter.prepare(
+      "SELECT value_json FROM runtime_kv WHERE scope = 'global' AND scope_id = '' AND key = 'memories_fts_rebuilt_at'",
+    ).get()?.['value_json'];
+    assert.ok(markerBefore);
+    const id = createMemory({ category: 'gotcha', content: 'stale marker repair must restore search' });
+    closeDatabase();
+
+    openDatabase(dbPath);
+    const markerAfter = _getAdapter()!.prepare(
+      "SELECT value_json FROM runtime_kv WHERE scope = 'global' AND scope_id = '' AND key = 'memories_fts_rebuilt_at'",
+    ).get()?.['value_json'];
+    assert.notEqual(markerAfter, markerBefore);
+    const hits = queryMemoriesRanked({ query: 'restore', k: 5 }).map((hit) => hit.memory.id);
+    assert.deepEqual(hits, [id]);
+  } finally {
+    cleanupDbPath(dbPath);
+  }
+});
+
+test('memory-store: failed FTS repair durably invalidates its stale marker', () => {
+  const dbPath = tempDbPath();
+  try {
+    openDatabase(dbPath);
+    const adapter = _getAdapter()!;
+    const fts = adapter.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='memories_fts'").get();
+    if (!fts) return;
+
+    adapter.exec('DROP TRIGGER IF EXISTS memories_ai');
+    adapter.exec('DROP TRIGGER IF EXISTS memories_ad');
+    adapter.exec('DROP TRIGGER IF EXISTS memories_au');
+    adapter.exec('DROP TABLE IF EXISTS memories_fts');
+    adapter.prepare(`
+      UPDATE runtime_kv
+      SET value_json = '"stale-marker"'
+      WHERE scope = 'global' AND scope_id = '' AND key = 'memories_fts_rebuilt_at'
+    `).run();
+    const id = createMemory({ category: 'gotcha', content: 'failed repair must retry before readiness' });
+    closeDatabase();
+
+    _setMemoriesFtsRebuildBoundaryForTest(() => {
+      throw new Error('forced FTS rebuild failure');
+    });
+    assert.throws(() => openDatabase(dbPath), /forced FTS rebuild failure/);
+
+    const raw = new DatabaseSync(dbPath);
+    try {
+      const marker = raw.prepare(
+        "SELECT value_json FROM runtime_kv WHERE scope = 'global' AND scope_id = '' AND key = 'memories_fts_rebuilt_at'",
+      ).get();
+      assert.equal(marker, undefined);
+    } finally {
+      raw.close();
+    }
+
+    assert.throws(() => openDatabase(dbPath), /forced FTS rebuild failure/);
+    _setMemoriesFtsRebuildBoundaryForTest(null);
+    assert.equal(openDatabase(dbPath), true);
+    const hits = queryMemoriesRanked({ query: 'readiness', k: 5 }).map((hit) => hit.memory.id);
+    assert.deepEqual(hits, [id]);
+  } finally {
+    _setMemoriesFtsRebuildBoundaryForTest(null);
+    cleanupDbPath(dbPath);
+  }
+});
+
 // ═══════════════════════════════════════════════════════════════════════════
 // regression #4967 — createMemory must not silently swallow SQL errors
 // ═══════════════════════════════════════════════════════════════════════════
@@ -440,20 +519,14 @@ test('memory-store: createMemory throws on memory-table SQL errors (regression #
   closeDatabase();
 });
 
-test('memory-store: VACUUM retry rolls back partial memory and logs recovery', () => {
+test('memory-store: malformed writes fail loud without an unfenced VACUUM retry', () => {
   openDatabase(':memory:');
 
   const adapter = _getAdapter()!;
   const originalPrepareMethod = adapter.prepare;
   const originalPrepare = adapter.prepare.bind(adapter);
-  const previousStderrLogging = setStderrLoggingEnabled(false);
-  const streamAny = process.stderr as unknown as {
-    write: (chunk: string | Uint8Array, ...rest: unknown[]) => boolean;
-  };
-  const originalStderrWrite = streamAny.write.bind(streamAny);
   let selectFailures = 0;
   let vacuumRuns = 0;
-  _resetLogs();
 
   adapter.prepare = ((sql: string) => {
     if (sql === 'SELECT seq FROM memories WHERE id = :id' && selectFailures === 0) {
@@ -482,32 +555,20 @@ test('memory-store: VACUUM retry rolls back partial memory and logs recovery', (
 
     return originalPrepare(sql);
   }) as typeof adapter.prepare;
-  streamAny.write = (): boolean => true;
 
   try {
-    const id = createMemory({ category: 'gotcha', content: 'recover without duplicate' });
-    assert.equal(id, 'MEM001', 'retry should create a single first memory');
+    assert.throws(
+      () => createMemory({ category: 'gotcha', content: 'surface malformed store' }),
+      /database disk image is malformed/,
+      'createMemory must preserve the original malformed-store error',
+    );
 
     const rows = adapter.prepare('SELECT id FROM memories ORDER BY seq').all();
-    assert.deepStrictEqual(
-      rows.map((row) => row['id']),
-      ['MEM001'],
-      'failed first attempt should not leave a live _TMP_ memory behind',
-    );
+    assert.deepStrictEqual(rows, [], 'the failed transaction must roll back its temporary memory');
     assert.equal(selectFailures, 1, 'test should simulate one malformed SELECT after INSERT');
-    assert.equal(vacuumRuns, 1, 'malformed recovery should run VACUUM once');
-    assert.ok(
-      peekLogs().some((entry) =>
-        entry.component === 'memory-store' &&
-        entry.message === 'recovered malformed memory store via VACUUM'
-      ),
-      'successful VACUUM recovery should be emitted to the workflow logger',
-    );
+    assert.equal(vacuumRuns, 0, 'malformed writes must not bypass the replacement fence with VACUUM');
   } finally {
     adapter.prepare = originalPrepareMethod;
-    streamAny.write = originalStderrWrite;
-    setStderrLoggingEnabled(previousStderrLogging);
-    _resetLogs();
     closeDatabase();
   }
 });

@@ -1,0 +1,18 @@
+version: 1
+name: partial
+params:
+  target: default
+steps:
+  - id: collect
+    name: Collect
+    prompt: Collect for {{target}}.
+  - id: analyze
+    name: Analyze
+    prompt: Analyze for {{target}}.
+    requires:
+      - collect
+  - id: report
+    name: Report
+    prompt: Report for {{target}}.
+    requires:
+      - analyze

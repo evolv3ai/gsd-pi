@@ -2,6 +2,7 @@
 // File Purpose: Schema migration DDL steps for the GSD database facade.
 
 import type { DbAdapter } from "./db-adapter.js";
+import { createAuthorityRecoverySchemaV45 } from "./db-authority-recovery-schema.js";
 import { createAttemptRecoverySchemaV36 } from "./db-attempt-recovery-schema.js";
 import { createTaskCancellationSchemaV37 } from "./db-task-cancellation-schema.js";
 import { createTaskVerificationRecoverySchemaV38 } from "./db-task-verification-recovery-schema.js";
@@ -563,4 +564,8 @@ export function applyMigrationV43MilestoneCompletion(db: DbAdapter): void {
 
 export function applyMigrationV44MilestoneReopen(db: DbAdapter): void {
   createMilestoneReopenSchemaV44(db);
+}
+
+export function applyMigrationV45AuthorityRecovery(db: DbAdapter): void {
+  createAuthorityRecoverySchemaV45(db);
 }

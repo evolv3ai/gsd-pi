@@ -11,7 +11,7 @@
  * QUEUE-ORDER.json if the discarded milestone was in it.
  */
 
-import { existsSync, rmSync, writeFileSync, readFileSync, unlinkSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import {
   resolveMilestonePath,
@@ -32,6 +32,8 @@ import { removeWorktree } from "./worktree-manager.js";
 import { logWarning } from "./workflow-logger.js";
 import { isAutoActive } from "./auto.js";
 import { isClosedStatus } from "./status-guards.js";
+import { atomicWriteSync, removeProjectionFileSync } from "./atomic-write.js";
+import { removeManagedProjectionTreeExactSync } from "./managed-projection-history.js";
 
 /**
  * Writer-side assert for mutations that race with auto-mode's squash merge (#4704).
@@ -84,7 +86,7 @@ export function parkMilestone(basePath: string, milestoneId: string, reason: str
     "",
   ].join("\n");
 
-  writeFileSync(parkedPath, content, "utf-8");
+  atomicWriteSync(parkedPath, content, "utf-8");
   // Sync DB status so deriveStateFromDb also skips this milestone (#2694)
   if (dbAvailable) {
     try {
@@ -118,7 +120,7 @@ export function unparkMilestone(basePath: string, milestoneId: string): boolean 
   if (!hadParkedFile && !dbThinksParked) return false;
 
   if (hadParkedFile) {
-    unlinkSync(parkedPath);
+    removeProjectionFileSync(parkedPath);
   }
   // Sync DB status so deriveStateFromDb picks up the unparked milestone (#2694)
   if (isDbAvailable()) {
@@ -159,7 +161,7 @@ export function discardMilestone(basePath: string, milestoneId: string): boolean
   }
 
   if (hasMilestoneDir && mDir) {
-    rmSync(mDir, { recursive: true, force: true });
+    removeManagedProjectionTreeExactSync(basePath, mDir);
   }
 
   // Prune from queue order if present

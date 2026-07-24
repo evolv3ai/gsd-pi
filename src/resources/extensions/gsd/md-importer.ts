@@ -3,10 +3,21 @@
 // then upserts everything into the SQLite database.
 //
 // Exports: parseDecisionsTable, parseRequirementsSections, migrateFromMarkdown
+//
+// ⚠ TEST-ONLY EXPORTS — DO NOT WIRE INTO PRODUCTION PATHS ⚠
+// `migrateHierarchyToDb` and `migrateFromMarkdown` are an UNCONSENTED,
+// UNVERIFIED markdown→DB write path. Every production markdown→DB import MUST
+// go through the crash-safe Import Application (workflow_import_applications),
+// which stages, hashes, and fences the write before applying it. These two
+// functions bypass all of that and currently have ZERO production callers —
+// they exist solely so test scaffolding can exercise legacy import semantics.
+// Guarded by tests/implicit-import-startup-authority.test.ts ("no production
+// module imports the legacy markdown importer"). Do not import this module
+// from any non-test file; extend the Import Application instead.
 
 import { readFileSync, readdirSync, existsSync, statSync } from 'node:fs';
 import { join, relative, basename, dirname } from 'node:path';
-import type { Decision, Requirement } from './types.js';
+import type { Requirement } from './types.js';
 import {
   upsertDecision,
   upsertRequirement,
@@ -39,10 +50,11 @@ import { milestoneIdToPhaseNum } from './layout-policy.js';
 import { parseRoadmap, parsePlan } from './parsers-legacy.js';
 import { parseContextDependsOn, parseSummary } from './files.js';
 import { logWarning } from './workflow-logger.js';
+import { parseDecisionsTable } from './decision-markdown-parser.js';
+
+export { parseDecisionsTable } from './decision-markdown-parser.js';
 
 // ─── DECISIONS.md Parser ───────────────────────────────────────────────────
-
-const VALID_MADE_BY = new Set(['human', 'agent', 'collaborative']);
 
 const IMPORT_COMPLETE_STATUSES = new Set(['complete', 'done']);
 
@@ -106,80 +118,6 @@ function importCompletionTimestamp(summaryPath: string | null): string {
     }
   }
   return new Date().toISOString();
-}
-
-/**
- * Parse a DECISIONS.md markdown table into Decision objects (without seq).
- * Detects `(amends DXXX)` in the Decision column to build supersession info.
- * Returns parsed rows with superseded_by set to null; callers handle chaining.
- */
-export function parseDecisionsTable(content: string): Omit<Decision, 'seq'>[] {
-  const lines = content.split('\n');
-  const results: Omit<Decision, 'seq'>[] = [];
-
-  // Map from amended ID → amending ID for supersession
-  const amendsMap = new Map<string, string>();
-
-  for (const line of lines) {
-    // Skip non-table lines, header, and separator
-    if (!line.trim().startsWith('|')) continue;
-    const trimmed = line.trim();
-    // Skip separator rows like |---|---|...|
-    if (/^\|[\s-|]+\|$/.test(trimmed)) continue;
-
-    // Split on | and strip leading/trailing empty cells
-    const cells = trimmed.split('|').map(c => c.trim());
-    // Remove first and last empty strings from leading/trailing |
-    if (cells.length > 0 && cells[0] === '') cells.shift();
-    if (cells.length > 0 && cells[cells.length - 1] === '') cells.pop();
-
-    if (cells.length < 7) continue;
-
-    const id = cells[0].trim();
-    // Skip header row
-    if (id === '#' || id.toLowerCase() === 'id') continue;
-    // Must look like a decision ID (D followed by digits)
-    if (!/^D\d+/.test(id)) continue;
-
-    const when_context = cells[1].trim();
-    const scope = cells[2].trim();
-    const decisionText = cells[3].trim();
-    const choice = cells[4].trim();
-    const rationale = cells[5].trim();
-    const revisable = cells[6].trim();
-    // Made By column is optional for backward compatibility — defaults to 'agent'
-    const rawMadeBy = cells.length >= 8 ? cells[7].trim().toLowerCase() : 'agent';
-    const made_by = (VALID_MADE_BY.has(rawMadeBy) ? rawMadeBy : 'agent') as import('./types.js').DecisionMadeBy;
-
-    // Detect (amends DXXX) in the Decision column
-    const amendsMatch = decisionText.match(/\(amends\s+(D\d+)\)/i);
-    if (amendsMatch) {
-      amendsMap.set(amendsMatch[1], id);
-    }
-
-    results.push({
-      id,
-      when_context,
-      scope,
-      decision: decisionText,
-      choice,
-      rationale,
-      revisable,
-      made_by,
-      superseded_by: null,
-    });
-  }
-
-  // Apply supersession: if D010 amends D001, set D001.superseded_by = D010
-  // Handle chains: if D020 amends D010 and D010 amends D001,
-  // D001.superseded_by = D010, D010.superseded_by = D020
-  for (const row of results) {
-    if (amendsMap.has(row.id)) {
-      row.superseded_by = amendsMap.get(row.id)!;
-    }
-  }
-
-  return results;
 }
 
 // ─── REQUIREMENTS.md Parser ────────────────────────────────────────────────
@@ -729,8 +667,8 @@ function findFileByPrefixAndSuffix(dir: string, idPrefix: string, suffix: string
  * rides along with markdown authority it was never granted and its stale checked
  * checkbox silently reverts a reopened slice/milestone in the DB (#027).
  *
- * - opts absent → full markdown authority for unadopted rows (initial migration,
- *   gsd-core full import, /gsd recover rebuild). Adopted Task/Slice lifecycle
+ * - opts absent → full markdown authority for unadopted rows (initial migration
+ *   and gsd-core full import). Adopted Task/Slice lifecycle
  *   state always remains DB-authoritative; markdown may refresh metadata only.
  * - opts present → for a milestone NOT in the set whose DB row *already exists*,
  *   the existing DB status is preserved: the slice upsert is fed the current DB
@@ -740,6 +678,10 @@ function findFileByPrefixAndSuffix(dir: string, idPrefix: string, suffix: string
  *   the parsed status regardless of scope (new content is new content).
  *
  * Returns count of inserted hierarchy items.
+ *
+ * TEST-ONLY: unconsented markdown→DB write path with zero production callers.
+ * Production imports must go through the Import Application — see the loud
+ * warning at the top of this file.
  */
 export function migrateHierarchyToDb(
   basePath: string,
@@ -1106,6 +1048,10 @@ export function migrateHierarchyToDb(
  * Returns counts of imported items for logging.
  *
  * Missing files are skipped gracefully — no errors produced.
+ *
+ * TEST-ONLY: unconsented markdown→DB write path with zero production callers.
+ * Production imports must go through the Import Application — see the loud
+ * warning at the top of this file.
  */
 export function migrateFromMarkdown(gsdDir: string): {
   decisions: number;

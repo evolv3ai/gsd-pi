@@ -15,6 +15,7 @@
 import { createRequire } from "node:module";
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
+import { createSqliteProviderLoader, suppressSqliteWarning } from "./db-provider.js";
 
 const _require = createRequire(import.meta.url);
 
@@ -38,59 +39,12 @@ interface DbLike {
   close(): void;
 }
 
-type ProviderName = "node:sqlite" | "better-sqlite3";
-
-let providerName: ProviderName | null = null;
-let providerModule: unknown = null;
-let loadAttempted = false;
-
-function suppressSqliteWarning(): void {
-  const origEmit = process.emit;
-  // Override via loose cast: Node's overloaded emit signature is not directly assignable.
-  (process as any).emit = function (event: string, ...args: unknown[]): boolean {
-    if (
-      event === "warning" &&
-      args[0] &&
-      typeof args[0] === "object" &&
-      "name" in args[0] &&
-      (args[0] as { name: string }).name === "ExperimentalWarning" &&
-      "message" in args[0] &&
-      typeof (args[0] as { message: string }).message === "string" &&
-      (args[0] as { message: string }).message.includes("SQLite")
-    ) {
-      return false;
-    }
-    return origEmit.apply(process, [event, ...args] as Parameters<typeof process.emit>) as unknown as boolean;
-  };
-}
-
-function loadProvider(): void {
-  if (loadAttempted) return;
-  loadAttempted = true;
-
-  try {
-    suppressSqliteWarning();
-    const mod = _require("node:sqlite");
-    if (mod.DatabaseSync) {
-      providerModule = mod;
-      providerName = "node:sqlite";
-      return;
-    }
-  } catch {
-    // unavailable
-  }
-
-  try {
-    const mod = _require("better-sqlite3");
-    if (typeof mod === "function" || (mod && mod.default)) {
-      providerModule = mod.default || mod;
-      providerName = "better-sqlite3";
-      return;
-    }
-  } catch {
-    // unavailable
-  }
-}
+const providerLoader = createSqliteProviderLoader({
+  tryRequireNodeSqlite: () => _require("node:sqlite"),
+  suppressSqliteWarning,
+  nodeVersion: process.versions.node,
+  writeStderr: (message) => process.stderr.write(message),
+});
 
 function normalizeRow(row: unknown): Record<string, unknown> | undefined {
   if (row == null) return undefined;
@@ -101,18 +55,7 @@ function normalizeRow(row: unknown): Record<string, unknown> | undefined {
 }
 
 function openRawDb(path: string): unknown {
-  loadProvider();
-  if (!providerModule || !providerName) return null;
-
-  if (providerName === "node:sqlite") {
-    const { DatabaseSync } = providerModule as {
-      DatabaseSync: new (path: string) => unknown;
-    };
-    return new DatabaseSync(path);
-  }
-
-  const Database = providerModule as new (path: string) => unknown;
-  return new Database(path);
+  return providerLoader.openRaw(path);
 }
 
 function wrapDb(rawDb: unknown): DbLike {

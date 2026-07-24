@@ -8,6 +8,7 @@
 import { createHash } from "node:crypto";
 import { existsSync, readFileSync, realpathSync, renameSync, unlinkSync, writeFileSync, mkdirSync } from "node:fs";
 import { dirname, join, isAbsolute, normalize, relative, resolve } from "node:path";
+import { atomicWriteSync } from "../atomic-write.js";
 
 /** Current marker schema version. Bump on breaking format changes + migrate. */
 export const COMPAT_MARKER_SCHEMA = 2;
@@ -191,10 +192,7 @@ function emptyMarker(): CompatMarker {
  */
 export function writeCompatMarker(basePath: string, marker: CompatMarker): void {
   const path = compatMarkerPath(basePath);
-  mkdirSync(dirname(path), { recursive: true });
-  const tmp = `${path}.tmp-${process.pid}`;
-  writeFileSync(tmp, JSON.stringify(marker, null, 2), "utf-8");
-  renameSync(tmp, path);
+  atomicWriteSync(path, JSON.stringify(marker, null, 2));
 }
 
 /**

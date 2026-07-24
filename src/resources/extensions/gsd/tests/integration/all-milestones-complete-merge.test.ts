@@ -29,6 +29,7 @@ import { createAutoWorktree } from "../../auto-worktree-creation.ts";
 import { isInAutoWorktree } from "../../auto-worktree-entry.ts";
 import { mergeMilestoneToMain } from "../../auto-worktree-merge.ts";
 import { getAutoWorktreeOriginalBase } from "../../auto-worktree-session-registry.ts";
+import { closeDatabase } from "../../gsd-db.ts";
 import { seedMergeReadyMilestone } from "../merge-ready-fixture.ts";
 
 function run(command: string, cwd: string): string {
@@ -49,7 +50,7 @@ function createTempRepo(): string {
   writeFileSync(join(dir, "README.md"), "# test\n");
   // Mirror production: .gsd/worktrees/ is gitignored so autoCommitDirtyState
   // doesn't pick up the worktrees directory as dirty state (#1127 fix).
-  writeFileSync(join(dir, ".gitignore"), ".gsd/worktrees/\n");
+  writeFileSync(join(dir, ".gitignore"), ".gsd/worktrees/\n.gsd/gsd.db*\n");
   run("git add .", dir);
   run("git commit -m init", dir);
   run("git branch -M main", dir);
@@ -86,6 +87,7 @@ test("single milestone worktree is merged to main when all complete (#962)", (t)
 
   t.after(() => {
     process.chdir(savedCwd);
+    closeDatabase();
     if (tempDir && existsSync(tempDir)) {
     rmSync(tempDir, { recursive: true, force: true });
     }
@@ -152,6 +154,7 @@ test("last milestone worktree is merged when it's the final one (#962)", (t) => 
 
   t.after(() => {
     process.chdir(savedCwd);
+    closeDatabase();
     if (tempDir && existsSync(tempDir)) {
     rmSync(tempDir, { recursive: true, force: true });
     }

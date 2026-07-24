@@ -103,7 +103,7 @@ async function copyAssets(srcDir, destDir, options = {}) {
         if (existsSync(tsSibling)) continue;
       }
       await mkdir(destDir, { recursive: true });
-      await cp(srcPath, destPath, { force: true });
+      await cp(srcPath, destPath, { force: true, verbatimSymlinks: true });
     }
   }
 }

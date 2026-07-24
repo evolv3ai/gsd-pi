@@ -4,6 +4,10 @@
 import type { DbAdapter } from "./db-adapter.js";
 import { indexExists } from "./db-schema-metadata.js";
 
+export function hasVerificationEvidenceDedupIndex(db: DbAdapter): boolean {
+  return indexExists(db, "idx_verification_evidence_dedup");
+}
+
 export function dedupeVerificationEvidenceRows(db: DbAdapter): void {
   db.exec(`
     DELETE FROM verification_evidence

@@ -22,9 +22,9 @@ export function ensureWorktreeOriginalCwdFromPath(cwd: string = process.cwd()): 
   return originalCwd;
 }
 
-export function getActiveWorktreeName(): string | null {
+export function getActiveWorktreeName(basePath: string = process.cwd()): string | null {
   if (!originalCwd) return null;
-  const normalizedCwd = process.cwd().replaceAll("\\", "/");
+  const normalizedCwd = basePath.replaceAll("\\", "/");
   const normalizedOriginal = originalCwd.replace(/[\\/]+$/, "").replaceAll("\\", "/");
   const segment = findWorktreeSegment(normalizedCwd);
   if (!segment) return null;

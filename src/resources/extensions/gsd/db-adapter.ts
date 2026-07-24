@@ -31,9 +31,7 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
   return proto === Object.prototype || proto === null;
 }
 
-// node:sqlite accepts binding-object keys with or without the ':'/'@'/'$'
-// prefix, but better-sqlite3 accepts only bare keys — strip the prefix so
-// call sites written against node:sqlite also work on the fallback provider.
+// Normalize named binding keys before passing them to SQLite.
 function normalizeBindParams(params: unknown[]): unknown[] {
   return params.map((param) => {
     if (!isPlainObject(param)) return param;
@@ -51,7 +49,7 @@ function normalizeBindParams(params: unknown[]): unknown[] {
   });
 }
 
-export function createDbAdapter(rawDb: unknown): DbAdapter {
+export function createDbAdapter(rawDb: unknown, beforeOperation: () => void = () => {}): DbAdapter {
   const db = rawDb as {
     exec(sql: string): void;
     prepare(sql: string): {
@@ -71,12 +69,15 @@ export function createDbAdapter(rawDb: unknown): DbAdapter {
   }): DbStatement {
     return {
       run(...params: unknown[]): unknown {
+        beforeOperation();
         return raw.run(...normalizeBindParams(params));
       },
       get(...params: unknown[]): Record<string, unknown> | undefined {
+        beforeOperation();
         return normalizeDbRow(raw.get(...normalizeBindParams(params)));
       },
       all(...params: unknown[]): Record<string, unknown>[] {
+        beforeOperation();
         return normalizeDbRows(raw.all(...normalizeBindParams(params)));
       },
     };
@@ -84,9 +85,11 @@ export function createDbAdapter(rawDb: unknown): DbAdapter {
 
   return {
     exec(sql: string): void {
+      beforeOperation();
       db.exec(sql);
     },
     prepare(sql: string): DbStatement {
+      beforeOperation();
       let cached = stmtCache.get(sql);
       if (cached) return cached;
       cached = wrapStmt(db.prepare(sql));

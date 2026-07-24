@@ -10,7 +10,6 @@ import {
   rmSync,
   existsSync,
   readFileSync,
-  promises as fsPromises,
 } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -34,6 +33,7 @@ import {
   repairMissingMilestoneSummaryProjection,
 } from "../milestone-closeout.js";
 import { _setCompleteMilestoneProjectionInterleaveForTest } from "../tools/complete-milestone.js";
+import { _setManagedMutationBoundaryForTest } from "../atomic-write.js";
 import { targetMilestoneFile } from "../paths.js";
 import type { DispatchContext } from "../auto-dispatch.js";
 
@@ -167,10 +167,10 @@ function supersedeAdoptedCompletion(milestoneId: string) {
 }
 
 test.after(() => {
+  closeDatabase();
   for (const dir of tmpDirs) {
     rmSync(dir, { recursive: true, force: true });
   }
-  closeDatabase();
 });
 
 test("isMilestoneCloseoutSettled requires DB closed and summary artifact", async () => {
@@ -368,11 +368,11 @@ test("adopted SUMMARY repair cannot outlive a newer Milestone reopen", async (t)
   const summaryPath = targetMilestoneFile(base, "M044", "SUMMARY", "Durable Closeout");
   const beforeFence = readDomainOperationFence();
   const beforeOperations = operationCount();
-  const originalRename = fsPromises.rename.bind(fsPromises);
   let reopenReceipt: ReturnType<typeof reopenMilestone> | undefined;
 
-  t.mock.method(fsPromises, "rename", async (...args: Parameters<typeof fsPromises.rename>) => {
-    if (!reopenReceipt && String(args[1]) === summaryPath) {
+  t.after(() => _setManagedMutationBoundaryForTest(null));
+  _setManagedMutationBoundaryForTest((boundary, target) => {
+    if (boundary === "after-write" && !reopenReceipt && target === summaryPath) {
       reopenReceipt = reopenMilestone({
         invocation: {
           idempotencyKey: "test/milestone-closeout/M044/newer-reopen",
@@ -383,7 +383,6 @@ test("adopted SUMMARY repair cannot outlive a newer Milestone reopen", async (t)
         reason: "A newer operation reopened the Milestone during projection repair.",
       });
     }
-    return originalRename(...args);
   });
 
   const repair = await repairMissingMilestoneSummaryProjection(base, "M044");

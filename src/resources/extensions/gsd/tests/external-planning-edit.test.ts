@@ -2,7 +2,7 @@
 // File Purpose: Tests for the external-planning-edit drift handler.
 import test, { afterEach } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { randomUUID } from "node:crypto";
@@ -42,11 +42,7 @@ test("detect returns no drift when planning inactive and dir is empty", async ()
   assert.equal(marker.planning?.active, false, "should not activate without a recognisable layout");
 });
 
-test("detect does NOT write the marker when planning inactive (dry-run invariant)", async () => {
-  // Regression test for COMMENT:3449147735: detect() must be read-only because
-  // it is called in both dry-run and non-dry-run contexts. Activation is owned
-  // by capturePlanningCompatIfNeeded (called from reconcileBeforeDispatch when
-  // !dryRun), not by the detect function itself.
+test("detect reports inactive modeled planning without activating compatibility", async () => {
   const base = makeTmpBase();
   writeFileSync(
     join(base, ".planning", "ROADMAP.md"),
@@ -56,7 +52,12 @@ test("detect does NOT write the marker when planning inactive (dry-run invariant
   // No compat marker written → planning.active = false by default.
 
   const drift = await externalPlanningEditHandler.detect(stubState, ctx(base));
-  assert.equal(drift.length, 0);
+  assert.equal(drift.length, 1);
+  assert.equal(drift[0]?.projectionPath, "ROADMAP.md");
+  assert.equal(drift[0]?.passthrough, false);
+  const blocker = await externalPlanningEditHandler.blocker?.(drift[0]!, ctx(base));
+  assert.match(blocker ?? "", /database is authoritative/i);
+  assert.match(blocker ?? "", /Preview\/Application/);
 
   // Marker must NOT have been written by detect().
   const { readCompatMarker } = await import("../compat/compat-marker.ts");
@@ -158,16 +159,16 @@ test("repair refreshes passthrough marker sha (idempotent on second detect)", as
 
   const drift1 = await externalPlanningEditHandler.detect(stubState, ctx(base));
   assert.equal(drift1.length, 1);
+  const contentBefore = readFileSync(join(base, ".planning", rel));
   await externalPlanningEditHandler.repair(drift1[0]!, ctx(base));
 
   const drift2 = await externalPlanningEditHandler.detect(stubState, ctx(base));
   assert.equal(drift2.length, 0);
+  assert.deepEqual(readFileSync(join(base, ".planning", rel)), contentBefore);
 });
 
 test("reconcileBeforeDispatch dryRun=true does not write compat marker (planning)", async () => {
-  // Regression test for COMMENT:3449147735: /gsd sync --dry-run claimed to be
-  // read-only but capturePlanningCompatIfNeeded wrote the marker. The guard
-  // added in reconcileBeforeDispatch must prevent any marker mutations.
+  // /gsd sync --dry-run must leave planning compatibility state untouched.
   const base = makeTmpBase();
   writeFileSync(
     join(base, ".planning", "ROADMAP.md"),
@@ -177,12 +178,14 @@ test("reconcileBeforeDispatch dryRun=true does not write compat marker (planning
   // Capture the marker state before the dry-run reconcile.
   const markerBefore = readCompatMarker(base);
 
-  await reconcileBeforeDispatch(base, {
+  const result = await reconcileBeforeDispatch(base, {
     dryRun: true,
-    registry: [], // empty: no handlers, no repairs
+    registry: [externalPlanningEditHandler],
     invalidateStateCache: () => {},
     deriveState: async () => stubState as unknown as import("../types.ts").GSDState,
   });
+  assert.match(result.blockers.join("\n"), /Preview\/Application/);
+  assert.equal(result.repaired.length, 0);
 
   // Marker must be identical to before: no planning activation, no SHA seeding.
   const markerAfter = readCompatMarker(base);

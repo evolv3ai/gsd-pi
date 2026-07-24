@@ -23,7 +23,7 @@ import { isMilestoneLifecycleAdopted } from "../db/milestone-closeout-readiness.
 import type { ExecutionInvocation } from "../execution-invocation.js";
 import { invalidateStateCache } from "../state.js";
 import { flushWorkflowProjections } from "../projection-flush.js";
-import { writeManifest } from "../workflow-manifest.js";
+import { writeManifestAndFlush } from "../workflow-manifest.js";
 import { appendEvent } from "../workflow-events.js";
 import { logWarning } from "../workflow-logger.js";
 import { debugLog } from "../debug-logger.js";
@@ -246,7 +246,7 @@ export async function handleReopenMilestone(
       );
       projectionStale ||= flushed.stale;
       superseded ||= flushed.superseded;
-      if (!superseded && isCurrent()) writeManifest(basePath);
+      if (!superseded && isCurrent()) await writeManifestAndFlush(basePath);
       if (!canonicalReceipt) {
         appendEvent(basePath, {
           cmd: "reopen-milestone",

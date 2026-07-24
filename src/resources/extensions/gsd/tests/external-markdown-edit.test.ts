@@ -2,7 +2,7 @@
 // File Purpose: Unit tests for the external-markdown-edit drift handler.
 import test, { afterEach } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { randomUUID } from "node:crypto";
@@ -139,7 +139,7 @@ test("detect ignores files missing from disk (other handlers cover that)", async
   assert.equal(drift.length, 0);
 });
 
-test("repair is idempotent: running twice produces no further drift on second detect", async () => {
+test("modeled drift blocks with an explicit route and cannot run repair", async () => {
   const base = makeTmpBase();
   const rel = "m1/roadmap.md";
   mkdirSync(join(base, ".gsd", "m1"), { recursive: true });
@@ -155,20 +155,17 @@ test("repair is idempotent: running twice produces no further drift on second de
 
   const drift1 = await externalMarkdownEditHandler.detect(stubState, ctx(base));
   assert.equal(drift1.length, 1);
-  // repair may call migrateHierarchyToDb which requires a DB; we only assert
-  // that detect after repair produces no further drift on THIS handler. Wrap
-  // in try/catch so a no-DB environment doesn't fail the idempotency check —
-  // the marker refresh is the load-bearing part of the assertion.
-  try {
-    await externalMarkdownEditHandler.repair(drift1[0], ctx(base));
-  } catch {
-    // migrateHierarchyToDb may throw without an open DB; that's fine for this
-    // unit test — the marker refresh below the import call still runs if the
-    // import succeeds. If it throws, we skip the second-detect assertion.
-    return;
-  }
+  const sourceBefore = readFileSync(join(base, ".gsd", rel));
+  const markerBefore = readCompatMarker(base);
 
-  // After repair, marker should reflect the file's actual sha → no drift.
-  const drift2 = await externalMarkdownEditHandler.detect(stubState, ctx(base));
-  assert.equal(drift2.length, 0);
+  const blocker = await externalMarkdownEditHandler.blocker?.(drift1[0], ctx(base));
+  assert.match(blocker ?? "", /database is authoritative/i);
+  assert.match(blocker ?? "", /\/gsd rebuild markdown/);
+  assert.match(blocker ?? "", /\/gsd recover/);
+  assert.throws(
+    () => externalMarkdownEditHandler.repair(drift1[0], ctx(base)),
+    /modeled projection repair must remain blocked/,
+  );
+  assert.deepEqual(readFileSync(join(base, ".gsd", rel)), sourceBefore);
+  assert.deepEqual(readCompatMarker(base), markerBefore);
 });

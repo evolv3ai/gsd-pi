@@ -152,6 +152,10 @@ export function resolveWorktreeProjectRoot(
   return resolveProjectRootFromPath(basePath || envProjectRoot || process.cwd());
 }
 
+export function resolveWorktreeOwningProjectRoot(basePath: string): string {
+  return resolveProjectRootFromPath(basePath);
+}
+
 function resolveProjectRootFromPath(path: string): string {
   const normalizedPath = path.replaceAll("\\", "/");
   const segment = findWorktreeSegment(normalizedPath);

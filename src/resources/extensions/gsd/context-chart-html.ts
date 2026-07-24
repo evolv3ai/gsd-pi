@@ -2,13 +2,13 @@
  * Self-contained HTML chart for /gsd context --open
  */
 
-import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 import type { ContextBreakdownReport, ContextSectionBreakdown } from "./commands-context.js";
 import { getContextChartTotals } from "./context-overlay.js";
 import { formatTokenCount } from "./metrics.js";
 import { gsdRoot } from "./paths.js";
+import { atomicWriteSync } from "./atomic-write.js";
 
 const SYSTEM_COLORS = ["#5e6ad2", "#7c89ff", "#9aa5ff", "#b8c0ff", "#d4d9ff"];
 const HISTORY_COLORS = ["#3ecf8e", "#56d89a", "#72e2ad", "#8eebc1", "#aaf4d4"];
@@ -187,9 +187,8 @@ body{margin:0;background:var(--bg);color:var(--text);font:14px/1.5 var(--font)}
 
 export function writeContextChartHtml(basePath: string, report: ContextBreakdownReport): string {
   const reportsDir = join(gsdRoot(basePath), "reports");
-  mkdirSync(reportsDir, { recursive: true });
   const timestamp = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
   const outPath = join(reportsDir, `context-${timestamp}.html`);
-  writeFileSync(outPath, buildContextChartHtml(report), "utf-8");
+  atomicWriteSync(outPath, buildContextChartHtml(report), "utf-8");
   return outPath;
 }

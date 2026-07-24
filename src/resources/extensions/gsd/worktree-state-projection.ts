@@ -33,7 +33,7 @@ import { join } from "node:path";
 
 import { reconcileWorktreeDb } from "./gsd-db.js";
 import { dirIsContentBearingLegacyMilestone, resolveGsdPathContract } from "./paths.js";
-import { safeCopy, safeCopyRecursive } from "./safe-fs.js";
+import { copyProjectionFileSync, mergeProjectionTreeSync } from "./atomic-write.js";
 import type { MilestoneScope } from "./workspace.js";
 import { logError, logWarning } from "./workflow-logger.js";
 
@@ -88,8 +88,7 @@ function forceOverwriteValidationWithVerdict(
     const srcContent = readFileSync(srcFile, "utf-8");
     if (!VERDICT_RE.test(srcContent)) return;
 
-    mkdirSync(dstMilestoneDir, { recursive: true });
-    safeCopy(srcFile, join(dstMilestoneDir, `${milestoneId}-VALIDATION.md`), { force: true });
+    copyProjectionFileSync(srcFile, join(dstMilestoneDir, `${milestoneId}-VALIDATION.md`), true);
   } catch (err) {
     logWarning(
       "worktree",
@@ -123,8 +122,7 @@ function forceOverwriteAssessmentsWithVerdict(
             const srcContent = readFileSync(srcFile, "utf-8");
             if (!VERDICT_RE.test(srcContent)) continue;
 
-            mkdirSync(dstSliceDir, { recursive: true });
-            safeCopy(srcFile, join(dstSliceDir, fileEntry.name), { force: true });
+            copyProjectionFileSync(srcFile, join(dstSliceDir, fileEntry.name), true);
           } catch (err) {
             logWarning(
               "worktree",
@@ -170,7 +168,7 @@ function syncOtherMilestoneArtifacts(
       // detector doesn't flag them as missing (DB has summary, disk doesn't).
       // force:false preserves any worktree-local files (#1886 invariant) and
       // only fills in files absent from the worktree projection.
-      safeCopyRecursive(srcMilestoneDir, dstMilestoneDir, { force: false });
+      mergeProjectionTreeSync(srcMilestoneDir, dstMilestoneDir, false);
     }
   } catch (err) {
     logWarning(
@@ -181,11 +179,7 @@ function syncOtherMilestoneArtifacts(
 }
 
 function syncFlatPhaseArtifacts(prGsd: string, wtGsd: string): void {
-  safeCopyRecursive(
-    join(prGsd, "phases"),
-    join(wtGsd, "phases"),
-    { force: false },
-  );
+  mergeProjectionTreeSync(join(prGsd, "phases"), join(wtGsd, "phases"), false);
 }
 
 /**
@@ -223,7 +217,7 @@ function syncRootProjectionFilesToWorktree(prGsd: string, wtGsd: string): void {
     const dst = join(wtGsd, file);
     if (!existsSync(src) || existsSync(dst)) continue;
 
-    safeCopy(src, dst, { force: false });
+    copyProjectionFileSync(src, dst, false);
   }
 }
 
@@ -275,7 +269,7 @@ export function _projectRootToWorktreeImpl(
   const prMilestoneDir = join(prGsd, "milestones", milestoneId);
   const wtMilestoneDir = join(wtGsd, "milestones", milestoneId);
   if (dirIsContentBearingLegacyMilestone(prMilestoneDir)) {
-    safeCopyRecursive(prMilestoneDir, wtMilestoneDir, { force: false });
+    mergeProjectionTreeSync(prMilestoneDir, wtMilestoneDir, false);
 
     // Force-sync ASSESSMENT files that have a verdict from project root (#2821).
     // The additive-only copy above preserves worktree-local files, but
@@ -301,10 +295,10 @@ export function _projectRootToWorktreeImpl(
   // Forward-sync completed-units.json from project root to worktree.
   // Project root is authoritative for completion state after crash recovery;
   // without this, the worktree re-dispatches already-completed units (#1886).
-  safeCopy(
+  copyProjectionFileSync(
     join(prGsd, "completed-units.json"),
     join(wtGsd, "completed-units.json"),
-    { force: true },
+    true,
   );
 
   // Delete a legacy worktree-local gsd.db ONLY if it is empty (0 bytes).
@@ -371,24 +365,24 @@ export function _projectWorktreeToRootImpl(
   // metrics.json — session cost/token tracking (#2313).
   // Without this, metrics accumulated in the worktree are invisible from the
   // project root and never appear in the dashboard or skill-health reports.
-  safeCopy(join(wtGsd, "metrics.json"), join(prGsd, "metrics.json"), { force: true });
+  copyProjectionFileSync(join(wtGsd, "metrics.json"), join(prGsd, "metrics.json"), true);
 
   // completed-units.json — runtime completion diagnostics used to avoid
   // re-dispatching work already completed in an isolated worktree.
-  safeCopy(
+  copyProjectionFileSync(
     join(wtGsd, "completed-units.json"),
     join(prGsd, "completed-units.json"),
-    { force: true },
+    true,
   );
 
   // Runtime records — unit dispatch diagnostics used by selfHealRuntimeRecords().
   // Without this, a crash during a unit leaves the runtime record only in the
   // worktree. If the next session resolves basePath before worktree re-entry,
   // selfHeal can't find or clear the stale record (#769).
-  safeCopyRecursive(
+  mergeProjectionTreeSync(
     join(wtGsd, "runtime", "units"),
     join(prGsd, "runtime", "units"),
-    { force: true },
+    true,
   );
 }
 

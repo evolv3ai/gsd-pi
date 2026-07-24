@@ -10,7 +10,7 @@ interface DispatchLedgerFailDeps extends DispatchLedgerWriteDeps {
 }
 
 interface DispatchLedgerCompleteDeps extends DispatchLedgerWriteDeps {
-  markCompleted: (dispatchId: number) => void;
+  markCompleted: (dispatchId: number) => boolean;
 }
 
 export function settleDispatchIfNeeded(
@@ -42,8 +42,7 @@ export function settleDispatchCompleted(
   if (dispatchId === null) return false;
 
   try {
-    deps.markCompleted(dispatchId);
-    return true;
+    return deps.markCompleted(dispatchId);
   } catch (err) {
     deps.logWriteFailure(err);
     return false;

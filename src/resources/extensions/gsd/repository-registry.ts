@@ -82,10 +82,7 @@ export function createRepositoryRegistry(
   basePath: string,
   workspacePrefs?: WorkspacePreferences,
 ): RepositoryRegistry {
-  const contract = resolveGsdPathContract(basePath);
-  const projectRoot = contract.isWorktree
-    ? resolveGitWorkingTreeRoot(contract.workRoot) ?? contract.workRoot
-    : contract.projectRoot;
+  const projectRoot = resolveRepositoryProjectRoot(basePath);
   const mode = workspacePrefs?.mode ?? "project";
   const repoMap = new Map<string, RegisteredRepository>();
 
@@ -106,6 +103,13 @@ export function createRepositoryRegistry(
     repositories: Array.from(repoMap.values()),
     byId: repoMap,
   };
+}
+
+export function resolveRepositoryProjectRoot(basePath: string): string {
+  const contract = resolveGsdPathContract(basePath);
+  return contract.isWorktree
+    ? resolveGitWorkingTreeRoot(contract.workRoot) ?? contract.workRoot
+    : contract.projectRoot;
 }
 
 export function createRepositoryRegistryFromPreferences(

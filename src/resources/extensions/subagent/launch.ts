@@ -3,10 +3,12 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { SessionManager } from "@gsd/pi-coding-agent";
+import { shellEscape } from "../cmux/index.js";
 import type { AgentConfig } from "./agents.js";
 
 export const SUBAGENT_CHILD_ENV_VAR = "GSD_SUBAGENT_CHILD";
 export const SUBAGENT_CHILD_ENV_VALUE = "1";
+export const SUBAGENT_RUNTIME_CONTRACT_ROOT_ENV_VAR = "GSD_RUNTIME_CONTRACT_ROOT";
 
 export type SubagentContextMode = "fresh" | "fork";
 
@@ -32,6 +34,8 @@ export interface SubagentLaunchInput {
 	session?: SubagentSessionArgs;
 	cwd?: string;
 	defaultCwd: string;
+	projectRoot?: string;
+	projectRootSourceCwd?: string;
 }
 
 export interface SubagentLaunchPlan {
@@ -45,16 +49,42 @@ export function isSubagentChildProcess(env: NodeJS.ProcessEnv = process.env): bo
 	return env[SUBAGENT_CHILD_ENV_VAR] === SUBAGENT_CHILD_ENV_VALUE;
 }
 
-export function buildSubagentProcessEnv(env: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
-	return {
+export function buildSubagentProcessEnv(
+	env: NodeJS.ProcessEnv = process.env,
+	runtimeContractRoot?: string,
+): NodeJS.ProcessEnv {
+	const childEnv: NodeJS.ProcessEnv = {
 		...env,
 		[SUBAGENT_CHILD_ENV_VAR]: SUBAGENT_CHILD_ENV_VALUE,
 	};
+	if (runtimeContractRoot) childEnv[SUBAGENT_RUNTIME_CONTRACT_ROOT_ENV_VAR] = path.resolve(runtimeContractRoot);
+	else delete childEnv[SUBAGENT_RUNTIME_CONTRACT_ROOT_ENV_VAR];
+	return childEnv;
 }
 
 export function buildShellEnvAssignments(env: NodeJS.ProcessEnv = process.env): string[] {
-	const value = env[SUBAGENT_CHILD_ENV_VAR];
-	return value ? [`${SUBAGENT_CHILD_ENV_VAR}=${JSON.stringify(value)}`] : [];
+	return [SUBAGENT_CHILD_ENV_VAR, SUBAGENT_RUNTIME_CONTRACT_ROOT_ENV_VAR]
+		.flatMap((name) => env[name] ? [`${name}=${shellEscape(env[name])}`] : []);
+}
+
+function isWithin(root: string, candidate: string): boolean {
+	const rel = path.relative(root, candidate);
+	return rel === "" || (!rel.startsWith(`..${path.sep}`) && rel !== ".." && !path.isAbsolute(rel));
+}
+
+function resolveExistingPath(candidate: string): string | undefined {
+	try {
+		return fs.realpathSync.native(path.resolve(candidate));
+	} catch {
+		return undefined;
+	}
+}
+
+export function resolveSubagentProjectRoot(defaultCwd: string, sourceCwd: string): string | undefined {
+	const parent = resolveExistingPath(defaultCwd);
+	const source = resolveExistingPath(sourceCwd);
+	if (!parent || !source) return undefined;
+	return isWithin(parent, source) ? parent : source;
 }
 
 export function buildSubagentProcessArgs(
@@ -123,6 +153,18 @@ export function resolveSubagentSessionArgs(
 
 export function createSubagentLaunchPlan(input: SubagentLaunchInput): SubagentLaunchPlan {
 	const session = input.session ?? resolveSubagentSessionArgs(input.contextMode ?? "fresh", input.parentSessionManager);
+	const requestedCwd = path.resolve(input.cwd ?? input.defaultCwd);
+	const resolvedCwd = resolveExistingPath(requestedCwd);
+	const cwd = resolvedCwd ?? requestedCwd;
+	const defaultCwd = resolveExistingPath(input.defaultCwd);
+	const candidateProjectRoot = input.projectRoot
+		? resolveExistingPath(input.projectRoot)
+		: defaultCwd;
+	const authoritySourceCwd = resolveExistingPath(input.projectRootSourceCwd ?? requestedCwd);
+	const projectRoot = resolvedCwd && candidateProjectRoot && authoritySourceCwd
+		&& isWithin(candidateProjectRoot, authoritySourceCwd)
+		? candidateProjectRoot
+		: undefined;
 	return {
 		args: buildSubagentProcessArgs(
 			input.agent,
@@ -132,8 +174,8 @@ export function createSubagentLaunchPlan(input: SubagentLaunchInput): SubagentLa
 			input.thinkingOverride,
 			session,
 		),
-		env: buildSubagentProcessEnv(),
-		cwd: input.cwd ?? input.defaultCwd,
+		env: buildSubagentProcessEnv(process.env, projectRoot),
+		cwd,
 		session,
 	};
 }

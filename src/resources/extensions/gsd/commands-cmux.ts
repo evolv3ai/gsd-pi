@@ -14,11 +14,12 @@ import { ensurePreferencesFile, serializePreferencesToFrontmatter } from "./comm
  * Called at boot (before agent start) — no ExtensionCommandContext needed.
  * Returns true if preferences were written, false if skipped.
  */
-export function autoEnableCmuxPreferences(): boolean {
-  const path = resolveProjectPreferencesWritePath();
+export function autoEnableCmuxPreferences(basePath?: string): boolean {
+  const path = resolveProjectPreferencesWritePath(basePath);
   if (!existsSync(path)) return false;
 
-  const existing = loadProjectGSDPreferences();
+  const existing = loadProjectGSDPreferences(basePath);
+  if (existing?.ignored || existing?.projectRuntimeContract === "invalid") return false;
   const prefs: Record<string, unknown> = existing?.preferences ? { ...existing.preferences } : { version: 1 };
   prefs.cmux = {
     enabled: true,
@@ -75,8 +76,8 @@ async function writeProjectCmuxPreferences(
   await ctx.reload();
 }
 
-function resolveProjectPreferencesWritePath(): string {
-  return loadProjectGSDPreferences()?.path ?? getProjectGSDPreferencesPath();
+function resolveProjectPreferencesWritePath(basePath?: string): string {
+  return loadProjectGSDPreferences(basePath)?.path ?? getProjectGSDPreferencesPath(basePath);
 }
 
 async function formatCmuxStatus(): Promise<string> {

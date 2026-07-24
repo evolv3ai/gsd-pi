@@ -118,6 +118,12 @@ const PREF_SAMPLE_VALUES: Record<string, unknown> = {
       },
     },
   },
+  runtime: {
+    contract: {
+      path: "script/local-runtime",
+      entry: "start.sh",
+    },
+  },
 };
 
 test("prefs serializer preserves nested hook on_block objects", () => {

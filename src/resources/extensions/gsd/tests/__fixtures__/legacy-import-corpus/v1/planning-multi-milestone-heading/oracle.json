@@ -1,0 +1,162 @@
+{
+  "preview_schema_version": 1,
+  "preview_id": "planning-multi-milestone-heading",
+  "import_kind": "legacy-corpus",
+  "importer_version": "v1-test",
+  "base_project_revision": 0,
+  "base_authority_epoch": 0,
+  "base_database_schema_version": 45,
+  "source_set_hash": "sha256:b148b2fc47c305489ced9aacabf37cda06375a2d45db8546054f4252095fb9b3",
+  "change_set_hash": "sha256:9c43092b55ab0dca0ba712947866b9123cf12fc285f9837cdb965b659548c529",
+  "counts": {
+    "create": 4,
+    "update": 0,
+    "delete": 0,
+    "preserve": 0,
+    "unparsed": 0,
+    "unresolved": 0
+  },
+  "sources": [
+    {
+      "source_id": "source-planning-roadmap",
+      "path": ".planning/ROADMAP.md",
+      "kind": "markdown",
+      "byte_size": 128,
+      "sha256": "sha256:a776afb1458ae26077685a65a4e44323fbf6caf1779987f619eb809db4da15cd",
+      "parser_id": "planning-roadmap-parser",
+      "parser_version": "1",
+      "encoding": "utf-8",
+      "outcome": "mapped"
+    }
+  ],
+  "changes": [
+    {
+      "change_id": "change-milestone-m001",
+      "action": "create",
+      "target": {
+        "kind": "milestone",
+        "key": "M001"
+      },
+      "raw": {
+        "source_id": "source-planning-roadmap",
+        "locator": {
+          "start_byte": 19,
+          "end_byte": 41,
+          "line": 3
+        },
+        "value": "## v1.0 — Foundation",
+        "sha256": "sha256:cc80c61bae3aa9f38ffcb99bf83a028317e6fa21869d16b4ab6b9df0e3778f61"
+      },
+      "normalized": {
+        "grammar": "heading",
+        "id": "M001",
+        "title": "Foundation",
+        "status": "complete",
+        "sequence": 1
+      },
+      "provenance": {
+        "source_id": "source-planning-roadmap",
+        "parser_id": "planning-roadmap-parser",
+        "parser_version": "1"
+      },
+      "reason_code": "heading-milestone"
+    },
+    {
+      "change_id": "change-milestone-m002",
+      "action": "create",
+      "target": {
+        "kind": "milestone",
+        "key": "M002"
+      },
+      "raw": {
+        "source_id": "source-planning-roadmap",
+        "locator": {
+          "start_byte": 79,
+          "end_byte": 99,
+          "line": 7
+        },
+        "value": "## v2.0 — Delivery",
+        "sha256": "sha256:cf5ae7f1f1ddbc3ec6d2eabfa4c4970910e1d76b1e1c042f26c71cd77ad72851"
+      },
+      "normalized": {
+        "grammar": "heading",
+        "id": "M002",
+        "title": "Delivery",
+        "status": "active",
+        "sequence": 2
+      },
+      "provenance": {
+        "source_id": "source-planning-roadmap",
+        "parser_id": "planning-roadmap-parser",
+        "parser_version": "1"
+      },
+      "reason_code": "heading-milestone"
+    },
+    {
+      "change_id": "change-slice-m001-s01",
+      "action": "create",
+      "target": {
+        "kind": "slice",
+        "key": "M001/S01"
+      },
+      "raw": {
+        "source_id": "source-planning-roadmap",
+        "locator": {
+          "start_byte": 43,
+          "end_byte": 77,
+          "line": 5
+        },
+        "value": "- [x] 01 — Repository Foundation",
+        "sha256": "sha256:e3d1d3cc854a952be46279ecdccb91570457e2b90ad393f555e1ca567109fb30"
+      },
+      "normalized": {
+        "grammar": "heading",
+        "id": "S01",
+        "milestone_id": "M001",
+        "title": "Repository Foundation",
+        "status": "complete",
+        "sequence": 1
+      },
+      "provenance": {
+        "source_id": "source-planning-roadmap",
+        "parser_id": "planning-roadmap-parser",
+        "parser_version": "1"
+      },
+      "reason_code": "heading-slice"
+    },
+    {
+      "change_id": "change-slice-m002-s01",
+      "action": "create",
+      "target": {
+        "kind": "slice",
+        "key": "M002/S01"
+      },
+      "raw": {
+        "source_id": "source-planning-roadmap",
+        "locator": {
+          "start_byte": 101,
+          "end_byte": 127,
+          "line": 9
+        },
+        "value": "- [ ] 02 — Delivery Path",
+        "sha256": "sha256:b7e17c9fe0b22cf59e0576aec46bd0b80e65aff2001418576736bb452507678e"
+      },
+      "normalized": {
+        "grammar": "heading",
+        "id": "S01",
+        "milestone_id": "M002",
+        "title": "Delivery Path",
+        "status": "pending",
+        "sequence": 1
+      },
+      "provenance": {
+        "source_id": "source-planning-roadmap",
+        "parser_id": "planning-roadmap-parser",
+        "parser_version": "1"
+      },
+      "reason_code": "heading-slice"
+    }
+  ],
+  "diagnoses": [],
+  "resolutions": []
+}

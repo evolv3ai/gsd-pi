@@ -48,7 +48,6 @@ import {
 import {
   existsSync,
   mkdirSync,
-  writeFileSync,
 } from "node:fs";
 import { execFileSync } from "node:child_process";
 
@@ -63,6 +62,7 @@ import { hasVerdict } from "./verdict-parser.js";
 import { validateArtifact } from "./schemas/validate.js";
 import { getProjectResearchStatus } from "./project-research-policy.js";
 import { isGsdWorktreePath } from "./worktree-root.js";
+import { atomicWriteSync } from "./atomic-write.js";
 import { resolveCanonicalMilestoneRoot } from "./worktree-manager.js";
 import { resolveWorktreeProjectRoot } from "./worktree-root.js";
 import { hasImplementationArtifacts } from "./milestone-implementation-evidence.js";
@@ -384,7 +384,7 @@ export function writeReactiveExecuteBlocker(
     "This diagnostic placeholder does not complete, skip, or cancel Tasks.",
     "Review the durable recovery state before relying on downstream artifacts.",
   ].join("\n");
-  writeFileSync(blockerPath, content, "utf-8");
+  atomicWriteSync(blockerPath, content, "utf-8");
 
   clearPathCache();
   clearParseCache();
@@ -441,7 +441,7 @@ export function writeBlockerPlaceholder(
     recoveryLine,
     `Review and replace this file before relying on downstream artifacts.`,
   ].join("\n");
-  writeFileSync(absPath, content, "utf-8");
+  atomicWriteSync(absPath, content, "utf-8");
 
   // #4414: Clear caches so subsequent dispatch guards (e.g.
   // resolveMilestoneFile) see the placeholder file. Without this, the
@@ -503,7 +503,7 @@ export function buildLoopRemediationSteps(
       return [
         `   1. Run \`gsd undo-task ${mid}/${sid}/${tid}\` to reset the task state`,
         `   2. Resume auto-mode — it will re-execute the task`,
-        `   3. If the task keeps failing and markdown should repopulate the DB, run \`gsd recover --confirm\``,
+        `   3. If the task keeps failing and markdown should repopulate the DB, run \`gsd recover\` and approve its exact Preview hash`,
       ].join("\n");
     }
     case "plan-slice":
@@ -515,7 +515,7 @@ export function buildLoopRemediationSteps(
           : relSliceFile(base, mid, sid, "RESEARCH");
       return [
         `   1. Write ${artifactRel} manually (or with the LLM in interactive mode)`,
-        `   2. Run \`gsd recover --confirm\` to import the markdown into the DB`,
+        `   2. Run \`gsd recover\` and approve its exact Preview hash to import the markdown into the DB`,
         `   3. Resume auto-mode`,
       ].join("\n");
     }
@@ -524,7 +524,7 @@ export function buildLoopRemediationSteps(
       return [
         `   1. Run \`gsd reset-slice ${mid}/${sid}\` to reset the slice and all its tasks`,
         `   2. Resume auto-mode — it will re-execute incomplete tasks and re-complete the slice`,
-        `   3. If the slice keeps failing and markdown should repopulate the DB, run \`gsd recover --confirm\``,
+        `   3. If the slice keeps failing and markdown should repopulate the DB, run \`gsd recover\` and approve its exact Preview hash`,
       ].join("\n");
     }
     case "validate-milestone": {
@@ -532,7 +532,7 @@ export function buildLoopRemediationSteps(
       const artifactRel = relMilestoneFile(base, mid, "VALIDATION");
       return [
         `   1. Write ${artifactRel} with verdict: pass`,
-        `   2. Run \`gsd recover --confirm\` to import the markdown into the DB`,
+        `   2. Run \`gsd recover\` and approve its exact Preview hash to import the markdown into the DB`,
         `   3. Resume auto-mode`,
       ].join("\n");
     }

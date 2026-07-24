@@ -14,7 +14,7 @@ import { describe, test } from "node:test";
 import assert from "node:assert/strict";
 import { existsSync } from "node:fs";
 
-import { createTmpProject, gsdSync } from "./_shared/index.ts";
+import { buildE2eEnv, createTmpProject, gsdSync } from "./_shared/index.ts";
 
 function binaryAvailable(): { ok: boolean; reason?: string } {
 	const bin = process.env.GSD_SMOKE_BINARY;
@@ -73,5 +73,16 @@ describe("e2e sanity (real-process)", () => {
 
 		const result = gsdSync(["--version"], { cwd: project.dir, timeoutMs: 15_000 });
 		assert.equal(result.code, 0, `expected child to ignore parent GSD_*; got code=${result.code} stderr=${result.stderrClean}`);
+	});
+
+	test("native build parity survives environment isolation", (t) => {
+		const previous = process.env.GSD_NATIVE_PREFER_LOCAL;
+		process.env.GSD_NATIVE_PREFER_LOCAL = "1";
+		t.after(() => {
+			if (previous === undefined) delete process.env.GSD_NATIVE_PREFER_LOCAL;
+			else process.env.GSD_NATIVE_PREFER_LOCAL = previous;
+		});
+
+		assert.equal(buildE2eEnv().GSD_NATIVE_PREFER_LOCAL, "1");
 	});
 });

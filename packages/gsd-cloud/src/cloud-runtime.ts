@@ -2,6 +2,8 @@ import WebSocket from "ws";
 import type { Logger } from "./logger.js";
 import type { DaemonConfig } from "./types.js";
 import type { AdvertisedProject, Executor } from "./executors/executor.js";
+import { decodeBinaryFrame, encodeBinaryFrame } from "./binary-frame.js";
+import { TerminalManager } from "./terminal-manager.js";
 import { createGatewayLookup, parseCloudGatewayUrl, validateGatewayNetworkTarget } from "./cloud-config.js";
 import { SessionEventProducer } from "./session-events.js";
 import {
@@ -23,6 +25,9 @@ interface GatewayMessage {
   toolName?: string;
   args?: Record<string, unknown>;
   projectAlias?: string;
+  sessionId?: string;
+  cols?: number;
+  rows?: number;
 }
 
 interface QueuedFrame {
@@ -34,6 +39,37 @@ interface InFlightRequest {
   message: GatewayMessage;
   routingKey?: string;
 }
+
+/**
+ * Normalizes a `ws` binary payload to a single Buffer. Per the `RawData` type,
+ * `ws` may deliver a binary message as a Buffer, an ArrayBuffer, or a Buffer[]
+ * (fragmented frames); casting straight to Buffer silently drops the latter two
+ * shapes, so decode fails and terminal input routing breaks.
+ */
+function toFrameBuffer(data: Buffer | ArrayBuffer | Buffer[]): Buffer {
+  if (Buffer.isBuffer(data)) return data;
+  if (Array.isArray(data)) return Buffer.concat(data);
+  return Buffer.from(data);
+}
+
+/** Upper bound for terminal cols/rows; guards against absurd allocations. */
+const MAX_TERMINAL_DIMENSION = 1000;
+
+/**
+ * Clamps an untrusted terminal dimension (cols/rows arrive over the network) to
+ * a sane positive integer. node-pty throws synchronously on non-finite, zero,
+ * negative, or non-integer sizes, which would otherwise crash the runtime.
+ */
+function toTerminalDimension(value: unknown, fallback: number): number {
+  const n = typeof value === "number" ? value : Number(value);
+  if (!Number.isFinite(n)) return fallback;
+  const int = Math.floor(n);
+  if (int < 1) return fallback;
+  return Math.min(int, MAX_TERMINAL_DIMENSION);
+}
+
+/** Max UTF-8 byte length of a binary-frame channel name (1-byte length prefix). */
+const MAX_CHANNEL_BYTES = 255;
 
 export class CloudRuntime {
   private static readonly MAX_OUTBOX = 200;
@@ -54,6 +90,8 @@ export class CloudRuntime {
   // Kept across reconnects so per-session seq counters and replay buffers
   // survive; polling pauses while the socket is down.
   private sessionEvents: SessionEventProducer | undefined;
+  // Created per connection so the send closures bind to the live socket.
+  private terminalManager: TerminalManager | undefined;
 
   constructor(
     private readonly cloud: NonNullable<DaemonConfig["cloud"]>,
@@ -73,6 +111,7 @@ export class CloudRuntime {
       throw error;
     });
     try {
+      this.executor.initialize?.();
       this.connect();
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
@@ -93,6 +132,9 @@ export class CloudRuntime {
     this.sessionEvents?.stopPolling();
     this.inFlight.clear();
     this.outbox = [];
+    // Kill any active PTY session before closing the socket.
+    this.terminalManager?.dispose();
+    this.terminalManager = undefined;
     const socket = this.socket;
     this.socket = undefined;
     socket?.close();
@@ -138,11 +180,26 @@ export class CloudRuntime {
       }
     }
 
+    // Per-connection terminal subsystem; its send closures bind to this socket.
+    this.terminalManager?.dispose();
+    this.terminalManager = new TerminalManager(
+      (frame: Buffer) => {
+        if (socket.readyState === WebSocket.OPEN) {
+          socket.send(frame, { binary: true });
+        }
+      },
+      (message: object) => this.send(message),
+    );
+
     socket.on("open", () => {
       this.handleSocketOpen(socket);
     });
-    socket.on("message", (data) => {
-      void this.handleSocketMessage(socket, data.toString("utf8"));
+    socket.on("message", (data, isBinary) => {
+      if (isBinary) {
+        this.handleBinaryInput(socket, toFrameBuffer(data));
+      } else {
+        void this.handleSocketMessage(socket, data.toString("utf8"));
+      }
     });
     socket.on("close", () => {
       this.handleSocketClose(socket);
@@ -259,6 +316,28 @@ export class CloudRuntime {
     this.sessionEvents.start();
   }
 
+  /**
+   * Handles incoming binary frames from the gateway (browser terminal input).
+   * Decodes the channel header and writes the payload to the PTY.
+   */
+  private handleBinaryInput(socket: WebSocket, frame: Buffer): void {
+    if (socket !== this.socket) return;
+    try {
+      const { channel, data } = decodeBinaryFrame(frame);
+      if (!channel.startsWith("terminal:") || !this.terminalManager) return;
+      // Only route input to the PTY when the frame's channel names the currently
+      // active session. A stale or incorrect sessionId (e.g. a frame that raced a
+      // reconnect) must not inject keystrokes into a different session's PTY.
+      const sessionId = channel.slice("terminal:".length);
+      if (sessionId !== this.terminalManager.getActiveSessionId()) return;
+      this.terminalManager.write(data);
+    } catch (err) {
+      this.logger.warn("binary frame decode error", {
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
+
   private async handleMessage(text: string): Promise<void> {
     let message: GatewayMessage;
     try {
@@ -270,6 +349,70 @@ export class CloudRuntime {
       void this.cancelInFlight(message.requestId);
       return;
     }
+
+    // Terminal control messages (D-04-01, D-04-02, D-04-12)
+    if (message.type === "terminal.start" && message.sessionId && this.terminalManager) {
+      void this.terminalManager.startSession(
+        message.sessionId,
+        toTerminalDimension(message.cols, 80),
+        toTerminalDimension(message.rows, 24),
+      );
+      return;
+    }
+    if (message.type === "terminal.resize" && this.terminalManager) {
+      // cols/rows are untrusted; clamp them and guard the resize so a malformed
+      // size (string/NaN/0) cannot make node-pty throw and crash the runtime.
+      const cols = toTerminalDimension(message.cols, 80);
+      const rows = toTerminalDimension(message.rows, 24);
+      try {
+        this.terminalManager.resize(cols, rows);
+      } catch (err) {
+        this.logger.warn("terminal resize failed", {
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
+      return;
+    }
+    if (message.type === "terminal.stop" && this.terminalManager) {
+      this.terminalManager.stopSession();
+      return;
+    }
+
+    // Browser attach/detach notifications for 5-minute persistence (D-04-02)
+    if (message.type === "terminal.detached" && this.terminalManager) {
+      this.terminalManager.onBrowserDisconnect();
+      return;
+    }
+    if (message.type === "terminal.attached" && this.terminalManager) {
+      // Address replay to the active PTY session's channel, not the sessionId the
+      // browser claims: output-channel selection must follow the real session so
+      // replay cannot be mis-multiplexed onto a different session by untrusted
+      // input. Fall back to message.sessionId only when no PTY is active, and
+      // skip replay entirely when neither yields a channel.
+      const sessionId = this.terminalManager.getActiveSessionId() ?? message.sessionId;
+      if (!sessionId) return;
+      const channel: `terminal:${string}` = `terminal:${sessionId}`;
+      // encodeBinaryFrame throws when the channel name exceeds 255 UTF-8 bytes.
+      // The fallback sessionId is untrusted, and handleMessage() rejections are
+      // not caught upstream, so guard here rather than risk crashing the runtime.
+      if (Buffer.byteLength(channel, "utf8") > MAX_CHANNEL_BYTES) {
+        this.logger.warn("terminal.attached channel name too long; skipping replay", {
+          bytes: Buffer.byteLength(channel, "utf8"),
+        });
+        return;
+      }
+      const replay = this.terminalManager.onBrowserReconnect();
+      if (replay) {
+        for (const buf of replay.replayData) {
+          const frame = encodeBinaryFrame(channel, buf);
+          if (this.socket?.readyState === WebSocket.OPEN) {
+            this.socket.send(frame, { binary: true });
+          }
+        }
+      }
+      return;
+    }
+
     if (message.type !== "tool_call" || !message.requestId || !message.toolName) return;
     const routingKey = this.resolveRoutingKey(message);
     const project = this.resolveProject(routingKey);

@@ -8,7 +8,7 @@ GSD 是一个 AI 编程代理，负责规划、执行、验证和交付，让你
 
 | 要求 | 最低版本 | 推荐版本 |
 |------|----------|----------|
-| **[Node.js](https://nodejs.org/)** | 22.0.0 | 24 LTS |
+| **[Node.js](https://nodejs.org/)** | 22.18.0 | 24 LTS |
 | **[Git](https://git-scm.com/)** | 2.20+ | 最新版 |
 | **LLM API key** | 任意受支持提供商 | Anthropic（Claude） |
 
@@ -457,7 +457,7 @@ npm update -g @opengsd/gsd-pi
 | `gsd` 实际执行了 `git svn dcommit` | oh-my-zsh 冲突，执行 `unalias gsd` 或改用 `gsd-cli` |
 | `npm install -g @opengsd/gsd-pi` 权限错误 | 修复 npm prefix（见 Linux 说明）或改用 nvm |
 | 无法连接到 LLM | 用 `gsd config` 检查 API key，并确认网络可用 |
-| `gsd` 启动时卡住 | 检查 Node.js 版本：`node --version`（需要 22+） |
+| `gsd` 启动时卡住 | 检查 Node.js 版本：`node --version`（需要 22.18+） |
 
 更多问题见 [故障排查](./troubleshooting.md)。
 

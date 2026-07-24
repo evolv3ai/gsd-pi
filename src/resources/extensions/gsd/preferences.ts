@@ -15,7 +15,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 
 import { gsdRoot } from "./paths.js";
-import { parse as parseYaml } from "yaml";
+import { parse as parseYaml, parseDocument } from "yaml";
 import type { PostUnitHookConfig, PreDispatchHookConfig, TokenProfile } from "./types.js";
 import type { DynamicRoutingConfig } from "./model-router.js";
 import { normalizeStringArray } from "../shared/format-utils.js";
@@ -343,6 +343,12 @@ export function loadProjectGSDPreferences(basePath?: string): LoadedGSDPreferenc
   return loadFirstUsablePreferencesFile(projectPreferencesCandidatePaths(basePath), "project");
 }
 
+export function _loadProjectPreferencesCandidatesForTest(
+  paths: string[],
+): LoadedGSDPreferences | null {
+  return loadFirstUsablePreferencesFile(paths, "project");
+}
+
 export function loadEffectiveGSDPreferences(
   basePath?: string,
   opts?: EffectivePreferencesLoadOptions,
@@ -357,8 +363,14 @@ export function loadEffectiveGSDPreferences(
   const effectiveGlobalPreferences = globalPreferences?.ignored ? null : globalPreferences;
   const effectiveProjectPreferences = projectPreferences?.ignored ? null : projectPreferences;
   const projectHasPlanningDepth = effectiveProjectPreferences?.preferences.planning_depth !== undefined;
+  const projectHasRuntimeContract = effectiveProjectPreferences?.preferences.runtime?.contract !== undefined;
 
   if (!effectiveGlobalPreferences && !effectiveProjectPreferences) {
+    if (projectPreferences?.projectRuntimeContract === "invalid") {
+      const result = { ...projectPreferences, preferences: {} };
+      cacheEffectivePreferences(cacheKey, result);
+      return result;
+    }
     cacheEffectivePreferences(cacheKey, null);
     return null;
   }
@@ -374,6 +386,7 @@ export function loadEffectiveGSDPreferences(
       path: effectiveProjectPreferences.path,
       scope: "project",
       preferences: mergePreferences(effectiveGlobalPreferences.preferences, effectiveProjectPreferences.preferences),
+      ...(metadata.projectRuntimeContract ? { projectRuntimeContract: metadata.projectRuntimeContract } : {}),
       ...(metadata.warnings ? { warnings: metadata.warnings } : {}),
       ...(metadata.diagnostics ? { diagnostics: metadata.diagnostics } : {}),
     };
@@ -416,6 +429,7 @@ export function loadEffectiveGSDPreferences(
   }
 
   result = stripInheritedPlanningDepth(result, projectHasPlanningDepth);
+  result = stripInheritedRuntimeContract(result, projectHasRuntimeContract);
   result = appendCrossAxisPreferenceWarnings(result);
 
   cacheEffectivePreferences(cacheKey, result);
@@ -466,8 +480,12 @@ function mergePreferenceMetadata(
     ...(primary.diagnostics ?? []),
     ...(secondary?.diagnostics ?? []),
   ];
+  const projectRuntimeContract = secondary?.projectRuntimeContract === "invalid"
+    ? "invalid"
+    : primary.projectRuntimeContract ?? secondary?.projectRuntimeContract;
   return {
     ...primary,
+    ...(projectRuntimeContract ? { projectRuntimeContract } : {}),
     ...(mergedWarnings.length > 0 ? { warnings: mergedWarnings } : {}),
     ...(mergedDiagnostics.length > 0 ? { diagnostics: mergedDiagnostics } : {}),
   };
@@ -507,6 +525,19 @@ function stripInheritedPlanningDepth(
   return { ...loaded, preferences };
 }
 
+function stripInheritedRuntimeContract(
+  loaded: LoadedGSDPreferences,
+  projectHasRuntimeContract: boolean,
+): LoadedGSDPreferences {
+  if (projectHasRuntimeContract || loaded.preferences.runtime?.contract === undefined) {
+    return loaded;
+  }
+
+  const preferences: GSDPreferences = { ...loaded.preferences };
+  delete preferences.runtime;
+  return { ...loaded, preferences };
+}
+
 function loadPreferencesFile(path: string, scope: "global" | "project"): LoadedGSDPreferences | null {
   if (!existsSync(path)) return null;
 
@@ -517,6 +548,18 @@ function loadPreferencesFile(path: string, scope: "global" | "project"): LoadedG
   const ignored = parsed.diagnostics.some((diagnostic) => diagnostic.ignored === true);
   const preferences = parsed.preferences ?? {};
   const validation = validatePreferences(preferences);
+  const rawRuntime = (preferences as Record<string, unknown>).runtime;
+  const hasParsedRuntimeContract = hasRuntimeContractProperty(rawRuntime);
+  const hasConfiguredRuntimeContract = scope === "project"
+    && (
+      hasParsedRuntimeContract
+      || parsed.runtimeContractParseFailed
+      || (ignored && containsRuntimeContractSetting(raw))
+    );
+  let projectRuntimeContract: LoadedGSDPreferences["projectRuntimeContract"];
+  if (hasConfiguredRuntimeContract) {
+    projectRuntimeContract = validation.preferences.runtime?.contract ? "valid" : "invalid";
+  }
   const allWarnings = [...validation.warnings, ...validation.errors];
   const diagnostics: PreferenceDiagnostic[] = [
     ...parsed.diagnostics.map((diagnostic) => ({ ...diagnostic, path, scope })),
@@ -542,10 +585,37 @@ function loadPreferencesFile(path: string, scope: "global" | "project"): LoadedG
     path,
     scope,
     preferences: validation.preferences,
+    ...(projectRuntimeContract ? { projectRuntimeContract } : {}),
     ...(ignored ? { ignored: true } : {}),
     ...(allWarnings.length > 0 ? { warnings: allWarnings } : {}),
     ...(diagnostics.length > 0 ? { diagnostics } : {}),
   };
+}
+
+function containsRuntimeContractSetting(content: string): boolean {
+  let start = 0;
+  if (content.startsWith("---\r\n")) {
+    start = 5;
+  } else if (content.startsWith("---\n")) {
+    start = 4;
+  } else {
+    return false;
+  }
+  const end = content.indexOf("\n---", start);
+  const frontmatter = content.slice(start, end === -1 ? undefined : end);
+  return parseDocument(frontmatter).hasIn(["runtime", "contract"]);
+}
+
+function hasRuntimeContractProperty(runtime: unknown): boolean {
+  if (Array.isArray(runtime)) return runtime.some(hasRuntimeContractProperty);
+  return typeof runtime === "object" && runtime !== null && Object.hasOwn(runtime, "contract");
+}
+
+function arrayRootHasRuntimeContract(preferences: unknown[]): boolean {
+  return preferences.some((item) => {
+    if (typeof item !== "object" || item === null || Array.isArray(item)) return false;
+    return hasRuntimeContractProperty((item as Record<string, unknown>).runtime);
+  });
 }
 
 let _warnedUnrecognizedFormat = false;
@@ -568,6 +638,7 @@ type PreferenceParseDiagnostic = Omit<PreferenceDiagnostic, "path" | "scope">;
 interface PreferenceParseResult {
   preferences: GSDPreferences | null;
   diagnostics: PreferenceParseDiagnostic[];
+  runtimeContractParseFailed?: boolean;
 }
 
 function parsePreferencesMarkdownWithDiagnostics(content: string): PreferenceParseResult {
@@ -594,10 +665,7 @@ function parsePreferencesMarkdownWithDiagnostics(content: string): PreferencePar
   // Fallback: heading+list format (e.g. "## Git\n- isolation: none") (#2036)
   // GSD agents may write preferences files without frontmatter delimiters.
   if (/^##\s+\w/m.test(content)) {
-    return {
-      preferences: parseHeadingListFormat(content),
-      diagnostics: [],
-    };
+    return parseHeadingListFormat(content);
   }
 
   // Warn when a non-empty file exists but lacks frontmatter delimiters (#2036).
@@ -625,10 +693,10 @@ let _warnedFrontmatterParse = false;
 function parseFrontmatterBlockWithDiagnostics(
   frontmatter: string,
   lineOffset: number,
-): { preferences: GSDPreferences; diagnostics: PreferenceParseDiagnostic[] } {
+): PreferenceParseResult {
   try {
     const parsed = parseYaml(frontmatter);
-    if (typeof parsed !== 'object' || parsed === null) {
+    if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
       return {
         preferences: {} as GSDPreferences,
         diagnostics: [{
@@ -637,6 +705,9 @@ function parseFrontmatterBlockWithDiagnostics(
           message: "preferences frontmatter must be a YAML object",
           ignored: true,
         }],
+        ...(Array.isArray(parsed) && arrayRootHasRuntimeContract(parsed)
+          ? { runtimeContractParseFailed: true }
+          : {}),
       };
     }
     return {
@@ -702,6 +773,22 @@ function normalizeParsedPreferences(preferences: GSDPreferences): GSDPreferences
 }
 
 /**
+ * Detect whether a heading+list section whose YAML failed to parse was trying
+ * to configure a runtime contract, so discovery fails closed instead of
+ * silently proceeding. A runtime contract can appear either as a top-level
+ * `contract` under a `## Runtime` heading, or nested as `runtime: { contract }`
+ * under any other supported heading (e.g. `## Settings`) — the successful parse
+ * path re-homes that nested form onto the `runtime` key, so a malformed variant
+ * must be treated the same. `parseDocument` never throws, so `hasIn` still sees
+ * the keys captured before the syntax error.
+ */
+function brokenSectionReferencesRuntimeContract(section: string, yamlBlock: string): boolean {
+  const doc = parseDocument(yamlBlock);
+  if (section === "runtime" && doc.hasIn(["contract"])) return true;
+  return doc.hasIn(["runtime", "contract"]);
+}
+
+/**
  * Parse heading+list format into a nested object, then cast to GSDPreferences.
  * Handles markdown like:
  *   ## Git
@@ -710,8 +797,10 @@ function normalizeParsedPreferences(preferences: GSDPreferences): GSDPreferences
  *   ## Models
  *   - planner: sonnet
  */
-function parseHeadingListFormat(content: string): GSDPreferences {
+function parseHeadingListFormat(content: string): PreferenceParseResult {
   const result: Record<string, string[]> = {};
+  const diagnostics: PreferenceParseDiagnostic[] = [];
+  let runtimeContractParseFailed = false;
   let currentSection: string | null = null;
 
   for (const rawLine of content.split('\n')) {
@@ -756,6 +845,15 @@ function parseHeadingListFormat(content: string): GSDPreferences {
 
       typed[targetSection] = value;
     } catch (e) {
+      if (brokenSectionReferencesRuntimeContract(section, yamlBlock)) {
+        runtimeContractParseFailed = true;
+        diagnostics.push({
+          severity: "error",
+          kind: "parse",
+          message: "preferences runtime contract section could not be parsed",
+          sanitized: true,
+        });
+      }
       if (!_warnedSectionParse) {
         _warnedSectionParse = true;
         logWarning("guided", `preferences section parse failed: ${(e as Error).message}`);
@@ -763,7 +861,11 @@ function parseHeadingListFormat(content: string): GSDPreferences {
     }
   }
 
-  return normalizeParsedPreferences(typed as GSDPreferences);
+  return {
+    preferences: normalizeParsedPreferences(typed as GSDPreferences),
+    diagnostics,
+    ...(runtimeContractParseFailed ? { runtimeContractParseFailed: true } : {}),
+  };
 }
 
 // ─── Merging ────────────────────────────────────────────────────────────────

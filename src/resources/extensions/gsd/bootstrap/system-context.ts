@@ -1,7 +1,7 @@
 // Project/App: gsd-pi
 // File Purpose: System prompt and hidden context bootstrap for GSD sessions.
-import { existsSync, readFileSync, unlinkSync } from "node:fs";
-import { join } from "node:path";
+import { existsSync, readFileSync, realpathSync, unlinkSync } from "node:fs";
+import { join, resolve } from "node:path";
 
 import type { ExtensionContext } from "@gsd/pi-coding-agent";
 
@@ -10,10 +10,12 @@ import { debugTime } from "../debug-logger.js";
 import { loadPrompt, getTemplatesDir } from "../prompt-loader.js";
 import { readForensicsMarker } from "../forensics.js";
 import { resolveAllSkillReferences, renderPreferencesForSystemPrompt, loadEffectiveGSDPreferences } from "../preferences.js";
+import { renderRuntimeContractForSystemPrompt } from "../runtime-contract.js";
 import { resolveModelWithFallbacksForUnit } from "../preferences-models.js";
-import { resolveGsdRootFile, resolveSliceFile, resolveSlicePath, resolveTaskFile, resolveTaskFiles, resolveTasksDir, relSliceFile, relSlicePath, relTaskFile } from "../paths.js";
+import { gsdRoot, resolveGsdRootFile, resolveSliceFile, resolveSlicePath, resolveTaskFile, resolveTaskFiles, resolveTasksDir, relSliceFile, relSlicePath, relTaskFile } from "../paths.js";
 import { extractIntroAndRules } from "../knowledge-parser.js";
 import { ensureCodebaseMapFresh, readCodebaseMap } from "../codebase-generator.js";
+import { resolveRepositoryProjectRoot } from "../repository-registry.js";
 import { getActiveAutoWorktreeContext } from "../auto-worktree-session-registry.js";
 import { getActiveWorktreeName, getWorktreeOriginalCwd } from "../worktree-session-state.js";
 import { deriveState } from "../state.js";
@@ -103,10 +105,10 @@ export function stripVolatileCodebaseMetadata(content: string): string {
     .trim();
 }
 
-function warnDeprecatedAgentInstructions(): void {
+function warnDeprecatedAgentInstructions(basePath: string): void {
   const paths = [
     join(gsdHome(), "agent-instructions.md"),
-    join(process.cwd(), ".gsd", "agent-instructions.md"),
+    join(gsdRoot(basePath), "agent-instructions.md"),
   ];
   for (const path of paths) {
     if (existsSync(path)) {
@@ -304,11 +306,29 @@ export async function _flushDeferredContextMaintenanceForTest(basePath?: string)
   await Promise.allSettled(tasks);
 }
 
+function resolveExistingContextPath(candidate: string | undefined): string | undefined {
+  if (!candidate) return undefined;
+  try {
+    return realpathSync.native(resolve(candidate));
+  } catch {
+    return undefined;
+  }
+}
+
 export async function buildBeforeAgentStartResult(
   event: { prompt: string; systemPrompt: string },
   ctx: ExtensionContext,
 ): Promise<{ systemPrompt: string; message?: { customType: string; content: string; display: false } } | undefined> {
-  if (!existsSync(join(process.cwd(), ".gsd"))) return undefined;
+  const compatibleContext = ctx as ExtensionContext & { projectRoot?: string };
+  const contextPath = compatibleContext.cwd ?? compatibleContext.projectRoot;
+  const resolvedContextPath = resolveExistingContextPath(contextPath);
+  if (!resolvedContextPath) return undefined;
+  const propagatedRuntimeContractRoot = process.env.GSD_SUBAGENT_CHILD === "1"
+    ? resolveExistingContextPath(process.env.GSD_RUNTIME_CONTRACT_ROOT?.trim())
+    : undefined;
+  const basePath = resolvedContextPath;
+  const runtimeContractBasePath = propagatedRuntimeContractRoot ?? basePath;
+  if (!existsSync(gsdRoot(basePath)) && !existsSync(gsdRoot(runtimeContractBasePath))) return undefined;
 
   const stopContextTimer = debugTime("context-inject");
   const systemContent = loadPrompt("system", {
@@ -316,13 +336,13 @@ export async function buildBeforeAgentStartResult(
     shortcutDashboard: formatShortcut("Ctrl+Alt+G"),
     shortcutShell: formatShortcut("Ctrl+Alt+B"),
   });
-  let loadedPreferences = loadEffectiveGSDPreferences();
+  let loadedPreferences = loadEffectiveGSDPreferences(basePath);
   try {
     const { markCmuxPromptShown, shouldPromptToEnableCmux } = await import("../../cmux/index.js");
     if (shouldPromptToEnableCmux(loadedPreferences?.preferences)) {
       markCmuxPromptShown();
-      if (autoEnableCmuxPreferences()) {
-        loadedPreferences = loadEffectiveGSDPreferences();
+      if (autoEnableCmuxPreferences(basePath)) {
+        loadedPreferences = loadEffectiveGSDPreferences(basePath);
         ctx.ui.notify(
           "cmux detected — auto-enabled. Run /gsd cmux off to disable.",
           "info",
@@ -333,15 +353,9 @@ export async function buildBeforeAgentStartResult(
     logWarning("bootstrap", `cmux prompt setup skipped: ${(e as Error).message}`);
   }
 
-  const ctxProjectRoot = (ctx as { projectRoot?: unknown }).projectRoot;
-  const basePath = typeof ctxProjectRoot === "string" && ctxProjectRoot.length > 0
-    ? ctxProjectRoot
-    : process.cwd();
-
   let preferenceBlock = "";
   if (loadedPreferences) {
-    const cwd = basePath;
-    const report = resolveAllSkillReferences(loadedPreferences.preferences, cwd);
+    const report = resolveAllSkillReferences(loadedPreferences.preferences, basePath);
     preferenceBlock = `\n\n${renderPreferencesForSystemPrompt(loadedPreferences.preferences, report.resolutions, { includeResolvedPaths: false })}`;
     if (report.warnings.length > 0) {
       ctx.ui.notify(
@@ -350,6 +364,16 @@ export async function buildBeforeAgentStartResult(
       );
     }
   }
+
+  const runtimeContractPreferences = runtimeContractBasePath === basePath
+    ? loadedPreferences
+    : loadEffectiveGSDPreferences(runtimeContractBasePath);
+  const renderedRuntimeContract = renderRuntimeContractForSystemPrompt(
+    runtimeContractBasePath,
+    runtimeContractPreferences?.preferences,
+    runtimeContractPreferences?.projectRuntimeContract,
+  );
+  const runtimeContractBlock = renderedRuntimeContract ? `\n\n${renderedRuntimeContract}` : "";
 
   await runSessionStartupMaintenanceOnce(basePath, ctx);
 
@@ -362,21 +386,30 @@ export async function buildBeforeAgentStartResult(
   }
 
   let codebaseBlock = "";
-  try {
-    const codebaseOptions = loadedPreferences?.preferences?.codebase
-      ? {
-          excludePatterns: loadedPreferences.preferences.codebase.exclude_patterns,
-          maxFiles: loadedPreferences.preferences.codebase.max_files,
-          collapseThreshold: loadedPreferences.preferences.codebase.collapse_threshold,
-        }
-      : undefined;
-    ensureCodebaseMapFresh(process.cwd(), codebaseOptions);
-  } catch (e) {
-    logWarning("bootstrap", `CODEBASE refresh failed: ${(e as Error).message}`);
+  const codebaseBasePath = resolveRepositoryProjectRoot(basePath);
+  // Behaviour-neutral when no local contract exists: only refresh (and thereby
+  // create) the codebase map when this workspace already owns a `.gsd`.
+  // `buildBeforeAgentStartResult` may now proceed solely because a propagated
+  // runtime-contract root has a `.gsd`; in that case a nested/isolated child
+  // without its own `.gsd` must not be mutated with a fresh `.gsd/CODEBASE.md`,
+  // since `ensureCodebaseMapFresh` mkdirs the target `.gsd` root.
+  if (existsSync(gsdRoot(basePath))) {
+    try {
+      const codebaseOptions = loadedPreferences?.preferences?.codebase
+        ? {
+            excludePatterns: loadedPreferences.preferences.codebase.exclude_patterns,
+            maxFiles: loadedPreferences.preferences.codebase.max_files,
+            collapseThreshold: loadedPreferences.preferences.codebase.collapse_threshold,
+          }
+        : undefined;
+      ensureCodebaseMapFresh(codebaseBasePath, codebaseOptions);
+    } catch (e) {
+      logWarning("bootstrap", `CODEBASE refresh failed: ${(e as Error).message}`);
+    }
   }
 
-  const codebasePath = resolveGsdRootFile(process.cwd(), "CODEBASE");
-  const rawCodebase = readCodebaseMap(process.cwd());
+  const codebasePath = resolveGsdRootFile(codebaseBasePath, "CODEBASE");
+  const rawCodebase = readCodebaseMap(codebaseBasePath);
   if (existsSync(codebasePath) && rawCodebase) {
     try {
       // Strip the volatile `Generated: <timestamp>` header line and the
@@ -400,19 +433,19 @@ export async function buildBeforeAgentStartResult(
     }
   }
 
-  warnDeprecatedAgentInstructions();
+  warnDeprecatedAgentInstructions(basePath);
 
-  const injection = await buildGuidedExecuteContextInjection(event.prompt, process.cwd());
+  const injection = await buildGuidedExecuteContextInjection(event.prompt, basePath);
   const memoryBlock = await loadMemoryBlock(event.prompt ?? "", {
     includePromptRelevant: !(injection && isLowEntropyResumePrompt(event.prompt ?? "")),
   });
 
   // Re-inject forensics context on follow-up turns (#2941)
-  const forensicsInjection = !injection ? buildForensicsContextInjection(process.cwd(), event.prompt) : null;
+  const forensicsInjection = !injection ? buildForensicsContextInjection(basePath, event.prompt) : null;
 
-  const worktreeBlock = buildWorktreeContextBlock();
+  const worktreeBlock = buildWorktreeContextBlock(basePath);
 
-  const subagentModelConfig = resolveModelWithFallbacksForUnit("subagent");
+  const subagentModelConfig = resolveModelWithFallbacksForUnit("subagent", basePath);
   const subagentModelBlock = subagentModelConfig
     ? `\n\n## Subagent Model\n\nWhen spawning subagents via the \`subagent\` tool, always pass \`model: "${subagentModelConfig.primary}"\` in the tool call parameters. Never omit this — always specify it explicitly.`
     : "";
@@ -421,7 +454,7 @@ export async function buildBeforeAgentStartResult(
   // Keeping it out of `fullSystem` preserves provider prompt-cache stability
   // for the static system/tool prefix. The dynamic memory block rides the
   // volatile context message instead. (#5019)
-  const fullSystem = `${event.systemPrompt}\n\n[SYSTEM CONTEXT — GSD]\n\n${systemContent}${preferenceBlock}${knowledgeBlock}${codebaseBlock}${worktreeBlock}${subagentModelBlock}`;
+  const fullSystem = `${event.systemPrompt}\n\n[SYSTEM CONTEXT — GSD]\n\n${systemContent}${preferenceBlock}${runtimeContractBlock}${knowledgeBlock}${codebaseBlock}${worktreeBlock}${subagentModelBlock}`;
 
   stopContextTimer({
     systemPromptSize: fullSystem.length,
@@ -634,10 +667,10 @@ function limitKnowledgeBlock(content: string, limit: number | null): string {
   return `${content.slice(0, headBudget).trimEnd()}${suffix}`;
 }
 
-function buildWorktreeContextBlock(): string {
-  const worktreeName = getActiveWorktreeName();
+function buildWorktreeContextBlock(basePath: string): string {
+  const worktreeName = getActiveWorktreeName(basePath);
   const worktreeMainCwd = getWorktreeOriginalCwd();
-  const autoWorktree = getActiveAutoWorktreeContext();
+  const autoWorktree = getActiveAutoWorktreeContext(basePath);
 
   if (worktreeName && worktreeMainCwd) {
     return [
@@ -645,11 +678,11 @@ function buildWorktreeContextBlock(): string {
       "",
       "[WORKTREE CONTEXT — OVERRIDES CURRENT WORKING DIRECTORY ABOVE]",
       `IMPORTANT: Ignore the "Current working directory" shown earlier in this prompt.`,
-      `The actual current working directory is: ${toPosixPath(process.cwd())}`,
+      `The actual current working directory is: ${toPosixPath(basePath)}`,
       "",
       `You are working inside a GSD worktree.`,
       `- Worktree name: ${worktreeName}`,
-      `- Worktree path (this is the real cwd): ${toPosixPath(process.cwd())}`,
+      `- Worktree path (this is the real cwd): ${toPosixPath(basePath)}`,
       `- Main project: ${toPosixPath(worktreeMainCwd)}`,
       `- Branch: worktree/${worktreeName}`,
       "",
@@ -664,11 +697,11 @@ function buildWorktreeContextBlock(): string {
       "",
       "[WORKTREE CONTEXT — OVERRIDES CURRENT WORKING DIRECTORY ABOVE]",
       `IMPORTANT: Ignore the "Current working directory" shown earlier in this prompt.`,
-      `The actual current working directory is: ${toPosixPath(process.cwd())}`,
+      `The actual current working directory is: ${toPosixPath(basePath)}`,
       "",
       "You are working inside a GSD auto-worktree.",
       `- Milestone worktree: ${autoWorktree.worktreeName}`,
-      `- Worktree path (this is the real cwd): ${toPosixPath(process.cwd())}`,
+      `- Worktree path (this is the real cwd): ${toPosixPath(basePath)}`,
       `- Main project: ${toPosixPath(autoWorktree.originalBase)}`,
       `- Branch: ${autoWorktree.branch}`,
       "",
@@ -695,7 +728,7 @@ export function isLowEntropyResumePrompt(prompt: string): boolean {
 async function buildGuidedExecuteContextInjection(prompt: string, basePath: string): Promise<string | null> {
   const ensureStateDbOpen = async () => {
     const { ensureDbOpen } = await import("./dynamic-tools.js");
-    await ensureDbOpen();
+    await ensureDbOpen(basePath);
   };
 
   const executeMatch = prompt.match(/Execute the next task:\s+(T\d+)\s+\("([^"]+)"\)\s+in slice\s+(S\d+)\s+of milestone\s+(M\d+(?:-[a-z0-9]{6})?)/i);
@@ -916,7 +949,7 @@ export function buildForensicsContextInjection(basePath: string, prompt: string)
  * is complete or the session expires.
  */
 export function clearForensicsMarker(basePath: string): void {
-  const markerPath = join(basePath, ".gsd", "runtime", "active-forensics.json");
+  const markerPath = join(gsdRoot(basePath), "runtime", "active-forensics.json");
   if (existsSync(markerPath)) {
     try {
       unlinkSync(markerPath);

@@ -75,7 +75,7 @@ source ~/.zshrc
 
 - 缺少 workspace packages：已在近期版本 修复
 - Linux 上 `postinstall` 卡住（Playwright `--with-deps` 触发 sudo）：已在近期版本 修复
-- Node.js 版本过低：要求 ≥ 22.0.0
+- Node.js 版本过低：要求 ≥ 22.18.0
 
 ### 自动模式中的 provider 错误
 

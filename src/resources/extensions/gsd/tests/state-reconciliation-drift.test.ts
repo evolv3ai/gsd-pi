@@ -2200,9 +2200,52 @@ test("deriveState is pure: stale sketch healed only via reconcileBeforeDispatch"
   assert.notEqual(afterReconcile.phase, "refining", "derive after reconcile advances past sketch gate");
 });
 
-test("reconciliation repair phases: external edits precede re-project handlers", () => {
+test("reconciliation repair phases: external authority boundary precedes re-project handlers", () => {
   assert.equal(RECONCILIATION_REPAIR_PHASES.length, 3);
+  assert.equal(RECONCILIATION_REPAIR_PHASES[0]?.name, "external-edit-boundary");
+  assert.equal(RECONCILIATION_REPAIR_PHASES[0]?.stopOnBlocker, true);
   assert.ok(handlerPhaseIndex("external-markdown-edit") < handlerPhaseIndex("stale-render"));
   assert.ok(handlerPhaseIndex("external-planning-edit") < handlerPhaseIndex("roadmap-divergence"));
   assert.ok(handlerPhaseIndex("stale-sketch-flag") < handlerPhaseIndex("stale-render"));
+});
+
+test("external authority blocker stops later re-projection in the same pass", async () => {
+  const externalDrift: DriftRecord = {
+    kind: "external-markdown-edit",
+    projectionPath: "phases/01-test/01-ROADMAP.md",
+    expectedSha: "before",
+    actualSha: "after",
+    entities: ["M001"],
+  };
+  const renderDrift: DriftRecord = {
+    kind: "stale-render",
+    renderPath: "phases/01-test/01-ROADMAP.md",
+    reason: "DB projection is stale",
+  };
+  let rendered = false;
+  const externalHandler: DriftHandler = {
+    kind: "external-markdown-edit",
+    detect: () => [externalDrift],
+    blocker: () => "review the external modeled edit",
+    repair: () => {
+      throw new Error("blocked external repair must not run");
+    },
+  };
+  const renderHandler: DriftHandler = {
+    kind: "stale-render",
+    detect: () => [renderDrift],
+    repair: () => {
+      rendered = true;
+    },
+  };
+
+  const result = await reconcileBeforeDispatch("/project", {
+    invalidateStateCache: () => {},
+    deriveState: async () => makeState(),
+    registry: [externalHandler, renderHandler],
+  });
+
+  assert.equal(rendered, false);
+  assert.equal(result.repaired.length, 0);
+  assert.deepEqual(result.blockers, ["review the external modeled edit"]);
 });

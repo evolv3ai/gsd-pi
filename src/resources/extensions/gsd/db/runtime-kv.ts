@@ -103,9 +103,11 @@ export function deleteRuntimeKv(
 ): void {
   if (!isDbAvailable()) return;
   const db = _getAdapter()!;
-  db.prepare(
-    `DELETE FROM runtime_kv WHERE scope = :scope AND scope_id = :scope_id AND key = :key`,
-  ).run({ ":scope": scope, ":scope_id": scopeId, ":key": key });
+  transaction(() => {
+    db.prepare(
+      `DELETE FROM runtime_kv WHERE scope = :scope AND scope_id = :scope_id AND key = :key`,
+    ).run({ ":scope": scope, ":scope_id": scopeId, ":key": key });
+  });
 }
 
 /**

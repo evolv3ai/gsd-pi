@@ -1,0 +1,15 @@
+{
+  "version": 1,
+  "exported_at": "2026-01-01T00:00:00.000Z",
+  "requirements": [],
+  "artifacts": [],
+  "milestones": [],
+  "slices": [],
+  "tasks": [],
+  "decisions": [{"seq":1,"id":"D001","when_context":"For user guidance","scope":"global","decision":"Recommend one option and explain why","choice":"guided recommendation","rationale":"Keeps the conversation natural.","revisable":"yes","made_by":"collaborative","source":"discussion","superseded_by":null},{"seq":2,"id":"D002","when_context":"Before import","scope":"global","decision":"Use the database queue","choice":"database queue","rationale":"Keeps one source of truth.","revisable":"yes","made_by":"human","source":"discussion","superseded_by":null},{"seq":4,"id":"D004","when_context":"For readable status","scope":"global","decision":"Project Markdown from database state","choice":"projection only","rationale":"Prevents authority drift.","revisable":"no","made_by":"collaborative","source":"discussion","superseded_by":null}],
+  "replan_history": [],
+  "assessments": [],
+  "quality_gates": [],
+  "verification_evidence": [],
+  "milestone_commit_attributions": []
+}

@@ -11,7 +11,23 @@ import { deriveState } from "./state.js";
 import { gsdProjectionRoot, gsdRoot } from "./paths.js";
 import { nativeBranchList, nativeDetectMainBranch, nativeBranchListMerged, nativeBranchDelete, nativeForEachRef, nativeUpdateRef } from "./native-git-bridge.js";
 import { logWarning } from "./workflow-logger.js";
-import { backupWorkflowDatabaseSnapshot, refreshWorkflowDatabaseFromDisk } from "./db-workspace.js";
+import {
+  applyPreparedVerifiedRecoverApplication,
+  loadRetainedVerifiedRecoverApplication,
+  loadVerifiedRecoverApplication,
+  prepareVerifiedRecoverApplication,
+  type PreparedVerifiedRecoverApplication,
+  refreshWorkflowDatabaseFromDisk,
+} from "./db-workspace.js";
+import {
+  executeLegacyImportRecoveryAction,
+  parseLegacyImportRecoveryAction,
+} from "./legacy-import-recovery-action.js";
+import {
+  formatLegacyImportForwardRepairChoice,
+  parseLegacyImportForwardRepairChoices,
+} from "./legacy-import-forward-repair-choice-token.js";
+import { LEGACY_IMPORT_RESTORE_ASSESSMENT_CONSENT_SCHEMA_VERSION, type LegacyImportRestoreAssessmentConsent } from "./legacy-import-restore-assessment.js";
 
 export async function handleCleanupBranches(ctx: ExtensionCommandContext, basePath: string): Promise<void> {
   let branches: string[];
@@ -484,56 +500,42 @@ export async function handleCleanupProjects(args: string, ctx: ExtensionCommandC
 
 type HierarchyCounts = { milestones: number; slices: number; tasks: number };
 
-function recoverConfirmed(args: string): boolean {
-  return args
-    .split(/\s+/)
-    .map((part) => part.trim().toLowerCase())
-    .some((part) => part === "--confirm" || part === "--yes" || part === "confirm");
+function requestedApplication(args: string): string | null {
+  return /(?:^|\s)--application=([^\s]+)(?=\s|$)/u.exec(args)?.[1] ?? null;
 }
 
-function recoverAllowsDataLoss(args: string): boolean {
-  return args
-    .split(/\s+/)
-    .map((part) => part.trim().toLowerCase())
-    .some((part) => part === "--allow-data-loss" || part === "--force");
+function requestedPreviewApproval(args: string): string | null {
+  return /(?:^|\s)--preview=(sha256:[0-9a-f]{64})(?=\s|$)/u.exec(args)?.[1] ?? null;
+}
+
+function requestedRestoreConsent(args: string): LegacyImportRestoreAssessmentConsent | undefined {
+  const evidenceHash = /(?:^|\s)--consent=proceed:destructive-database-restore:(sha256:[0-9a-f]{64})(?=\s|$)/u.exec(args)?.[1];
+  return evidenceHash ? { consentSchemaVersion: LEGACY_IMPORT_RESTORE_ASSESSMENT_CONSENT_SCHEMA_VERSION, decision: "proceed", destructiveDatabaseRestore: true, evidenceHash } : undefined;
 }
 
 async function confirmRecover(
   ctx: ExtensionCommandContext,
-  args: string,
+  prepared: Readonly<PreparedVerifiedRecoverApplication>,
+  approvedPreviewHash: string | null,
   markdown: HierarchyCounts,
   beforeDb: HierarchyCounts,
-  dataLoss: boolean,
 ): Promise<boolean> {
   const warning = [
     "gsd recover imports markdown into the database.",
-    "It clears and reconstructs milestone, slice, and task hierarchy rows from rendered markdown.",
+    "It applies modeled changes through one verified Import Application.",
+    "Existing database rows absent from markdown are not cleared.",
     "Use /gsd rebuild markdown for normal DB-to-markdown realignment.",
     "",
     `  Markdown on disk: ${markdown.milestones}M/${markdown.slices}S/${markdown.tasks}T`,
     `  Current DB:       ${beforeDb.milestones}M/${beforeDb.slices}S/${beforeDb.tasks}T`,
+    "",
+    prepared.authorizationText,
   ];
-  if (dataLoss) {
-    warning.push(
-      "",
-      "⚠ The DB holds rows the markdown lacks. Recover will permanently DELETE",
-      "  those rows. A snapshot is written to .gsd/backups/ first, but if the DB",
-      "  is the source of truth you almost certainly want /gsd rebuild markdown.",
-    );
-  }
   const warningText = warning.join("\n");
 
-  if (recoverConfirmed(args)) {
-    // Non-interactive --confirm still refuses a data-loss recover unless the
-    // caller explicitly opts in with --allow-data-loss / --force.
-    if (dataLoss && !recoverAllowsDataLoss(args)) {
-      ctx.ui.notify(
-        `${warningText}\n\nRefusing: this would delete authoritative DB rows. Re-run with ` +
-          `/gsd recover --confirm --allow-data-loss to proceed, or use /gsd rebuild markdown ` +
-          `to re-project markdown from the DB instead.`,
-        "error",
-      );
-      return false;
+  if (approvedPreviewHash !== null) {
+    if (approvedPreviewHash !== prepared.preview.preview_hash) {
+      throw new Error("gsd recover approval does not match the sealed Import Preview");
     }
     return true;
   }
@@ -547,91 +549,85 @@ async function confirmRecover(
       ctx.ui.notify("gsd recover cancelled. No database changes made.", "info");
       return false;
     }
-    // Data loss requires a second, explicit acknowledgement — the interactive
-    // equivalent of the --allow-data-loss opt-in the non-interactive paths
-    // demand. A single generic "yes" must not silently delete DB rows.
-    if (dataLoss) {
-      const acknowledged = await ctx.ui.confirm(
-        "Permanently delete DB rows the markdown lacks?",
-        "This recover will DELETE authoritative DB rows the markdown does not contain. " +
-          "A snapshot is saved to .gsd/backups/ first, but /gsd rebuild markdown is usually " +
-          "what you want. Proceed with the deletion?",
-      );
-      if (!acknowledged) {
-        ctx.ui.notify("gsd recover cancelled. No database changes made.", "info");
-        return false;
-      }
-    }
     return true;
   }
 
   ctx.ui.notify(
-    `${warningText}\n\nNo database changes made. Re-run /gsd recover --confirm to proceed.`,
+    `${warningText}\n\nNo database changes made. Re-run /gsd recover --preview=${prepared.preview.preview_hash} to approve this exact Preview.`,
     "warning",
   );
   return false;
 }
 
 /**
- * `gsd recover` — Reconstruct DB hierarchy state from rendered markdown on disk.
+ * `gsd recover` — Explicitly import legacy markdown into canonical DB state.
  *
- * Deletes milestones, slices, and tasks table rows (preserves decisions,
- * requirements, artifacts, memories), re-runs `migrateHierarchyToDb()` to
- * repopulate from markdown, then calls `deriveState()` to verify sanity.
+ * Applies one sealed Preview through the verified Import Application boundary,
+ * then calls `deriveState()` to verify sanity.
  *
  * Prints counts of recovered items and the resulting project phase.
  */
-export async function handleRecover(ctx: ExtensionCommandContext, basePath: string, args = ""): Promise<void> {
-  const { isDbAvailable: dbAvailable, clearEngineHierarchy, transaction: dbTransaction } = await import("./gsd-db.js");
-  const { migrateHierarchyToDb } = await import("./md-importer.js");
+export async function handleRecover(
+  ctx: ExtensionCommandContext,
+  basePath: string,
+  args = "",
+): Promise<void> {
+  const { isDbAvailable: dbAvailable } = await import("./gsd-db.js");
   const { invalidateStateCache } = await import("./state.js");
-  const { countDbHierarchy, countMarkdownHierarchy, recoverWouldDeleteDbRows } = await import("./migration-auto-check.js");
-  const { renderAllFromDb } = await import("./markdown-renderer.js");
+  const { countDbHierarchy, countMarkdownHierarchy } = await import("./migration-auto-check.js");
 
   if (!dbAvailable()) {
     ctx.ui.notify("gsd recover: No database open. Run a GSD command first to initialize the DB.", "error");
     return;
   }
 
-  // Compare markdown-on-disk against the live DB so the confirmation prompt can
-  // surface exactly what recover will overwrite (and refuse silent data loss).
-  // The data-loss check is identity-based, not count-based: it flags any DB row
-  // markdown lacks, including equal-count divergence (DB S99 vs markdown S01).
+  // Show both sides before the user approves the explicit import. Application
+  // updates only modeled Preview targets and never clears absent DB rows.
   const markdown = countMarkdownHierarchy(basePath);
   const beforeDb = countDbHierarchy();
-  const dataLoss = recoverWouldDeleteDbRows(basePath);
-
-  if (!(await confirmRecover(ctx, args, markdown, beforeDb, dataLoss))) return;
 
   try {
-    // 0. Snapshot the DB before the destructive clear so recover is reversible.
-    const backupPath = backupWorkflowDatabaseSnapshot("pre-recover");
+    const action = parseLegacyImportRecoveryAction(args.trim().split(/\s+/u).filter(Boolean));
+    const applicationId = requestedApplication(args);
+    if (!applicationId && action !== "assess") {
+      throw new Error("run gsd recover assessment first, then use its --application evidence");
+    }
+    let application = applicationId
+      ? loadVerifiedRecoverApplication(applicationId)
+      : loadRetainedVerifiedRecoverApplication();
+    let appliedPreview = false;
+    if (!application) {
+      const prepared = prepareVerifiedRecoverApplication(basePath);
+      if (!(await confirmRecover(
+        ctx,
+        prepared,
+        requestedPreviewApproval(args),
+        markdown,
+        beforeDb,
+      ))) return;
+      application = applyPreparedVerifiedRecoverApplication(
+        prepared,
+        prepared.preview.preview_hash,
+      );
+      appliedPreview = true;
+    }
+    const { backup } = application;
+    const recoveryAction = executeLegacyImportRecoveryAction(
+      application,
+      action,
+      parseLegacyImportForwardRepairChoices(args),
+      requestedRestoreConsent(args),
+    );
+    const recoveryAssessment = recoveryAction.status === "assessed"
+      || recoveryAction.status === "choice-required"
+      ? recoveryAction.assessment
+      : null;
 
-    // 1. Delete + re-populate inside a single transaction for atomicity.
-    //    clearEngineHierarchy() uses transaction() internally but transaction()
-    //    is re-entrant, so wrapping in dbTransaction() keeps the whole
-    //    clear+repopulate atomic.
-    const counts = dbTransaction(() => {
-      clearEngineHierarchy();
-      return migrateHierarchyToDb(basePath);
-    });
-
-    // 2. Invalidate state cache so deriveState() picks up fresh DB data
+    const counts = countDbHierarchy();
     invalidateStateCache();
-
-    // 3. Re-project markdown from the freshly imported DB so disk and DB agree
-    //    immediately (otherwise the markdown still reflects the pre-import state
-    //    and the next startup check would flag fresh drift). renderAllFromDb
-    //    swallows per-artifact failures into its result, so inspect them — a
-    //    silent projection failure must not be reported as a clean success.
-    const renderResult = await renderAllFromDb(basePath);
-
-    // 4. Derive state to verify sanity
     const state = await deriveState(basePath);
-
-    // 5. Report
     const lines = [
-      `gsd recover: reconstructed hierarchy from markdown`,
+      `gsd recover: ${applicationId || application.receipt.status === "replayed" ? "loaded retained" : "applied verified markdown Preview"} Import Application`,
       `  Milestones: ${counts.milestones}`,
       `  Slices:     ${counts.slices}`,
       `  Tasks:      ${counts.tasks}`,
@@ -641,9 +637,10 @@ export async function handleRecover(ctx: ExtensionCommandContext, basePath: stri
     // Post-import verification: markdown that failed to parse imports as fewer
     // rows than countMarkdownHierarchy saw on disk. Surface the shortfall.
     if (
-      counts.milestones < markdown.milestones ||
-      counts.slices < markdown.slices ||
-      counts.tasks < markdown.tasks
+      appliedPreview
+      && (counts.milestones < markdown.milestones
+        || counts.slices < markdown.slices
+        || counts.tasks < markdown.tasks)
     ) {
       lines.push(
         ``,
@@ -652,8 +649,35 @@ export async function handleRecover(ctx: ExtensionCommandContext, basePath: stri
           `Some markdown may have failed to parse — review before continuing.`,
       );
     }
-    if (backupPath) {
-      lines.push(``, `  Backup:     ${backupPath}`);
+    lines.push(``, `  Verified backup: ${backup.backup_ref}`);
+    if (recoveryAction.status === "restored") {
+      lines.push(``, `  Restored database: ${recoveryAction.result.status}`);
+    } else if (recoveryAction.status === "forward-repaired") {
+      lines.push(``, `  Forward Repair: ${recoveryAction.result.status}`);
+    } else if (recoveryAction.status === "choice-required") {
+      lines.push(
+        ``,
+        `  ${recoveryAction.assessment.recommendation.recommendationText}`,
+        ...recoveryAction.choices.map((choice) => (
+          `  Review ${choice.reasonCode} at ${choice.instructionIndex}:${choice.targetKind}:${choice.targetKey} (${choice.reviewHash}).\n`
+          + `    Current canonical value: ${choice.currentValueJson}\n`
+          + `    Proposed backup mutation: ${choice.proposedMutationJson}\n`
+          + `    Recommended: ${choice.recommendedDecision} — ${choice.recommendationRationale}\n`
+          + `Use ${formatLegacyImportForwardRepairChoice(choice, "preserve-later")} or `
+          + formatLegacyImportForwardRepairChoice(choice, "restore-backup")
+        )),
+      );
+    } else if (recoveryAssessment) {
+      lines.push(
+        ``,
+        `  ${recoveryAssessment.recommendation.recommendationText}`,
+        `  Application: ${application.receipt.operationId}`,
+      );
+      if (recoveryAssessment.decision === "restore-consent-required") {
+        lines.push(`  To consent: --application=${application.receipt.operationId} --restore --consent=proceed:destructive-database-restore:${recoveryAssessment.evidenceHash}`);
+      } else if (recoveryAssessment.decision === "forward-repair-required") {
+        lines.push(`  Use --application=${application.receipt.operationId} --forward-repair to apply the assessed action.`);
+      }
     }
     if (state.activeMilestone) {
       lines.push(`  Active:     ${state.activeMilestone.id}: ${state.activeMilestone.title}`);
@@ -665,27 +689,23 @@ export async function handleRecover(ctx: ExtensionCommandContext, basePath: stri
       lines.push(`  Task:       ${state.activeTask.id}: ${state.activeTask.title}`);
     }
 
-    // Surface markdown projection failures: renderAllFromDb resolves even when
-    // individual artifacts fail to render, so a clean exit here would otherwise
-    // hide a stale/partial projection.
-    const renderFailed = renderResult.errors.length > 0;
-    if (renderFailed) {
-      lines.push(
-        ``,
-        `  ⚠ ${renderResult.errors.length} markdown projection(s) failed to render — ` +
-          `markdown may be stale. Re-run /gsd rebuild markdown.`,
-      );
-      for (const e of renderResult.errors.slice(0, 5)) lines.push(`    - ${e}`);
-      if (renderResult.errors.length > 5) {
-        lines.push(`    …and ${renderResult.errors.length - 5} more`);
-      }
+    if (recoveryAction.status === "choice-required") {
+      ctx.ui.notify(lines.join("\n"), "warning");
+      return;
     }
-
+    if (
+      recoveryAssessment?.decision === "transaction-rollback-only"
+      || recoveryAssessment?.decision === "temporarily-unavailable"
+      || recoveryAssessment?.decision === "refused"
+    ) {
+      lines.push(`  Assessment: ${recoveryAssessment.decision} (${recoveryAssessment.reasonCode})`);
+      ctx.ui.notify(lines.join("\n"), recoveryAssessment.decision === "refused" ? "error" : "warning");
+      return;
+    }
     process.stderr.write(
-      `gsd-recover: recovered ${counts.milestones}M/${counts.slices}S/${counts.tasks}T hierarchy` +
-        `${renderFailed ? ` (${renderResult.errors.length} projection errors)` : ""}\n`,
+      `gsd-recover: recovered ${counts.milestones}M/${counts.slices}S/${counts.tasks}T hierarchy\n`,
     );
-    ctx.ui.notify(lines.join("\n"), renderFailed ? "warning" : "success");
+    ctx.ui.notify(lines.join("\n"), "success");
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     logWarning("command", `recover failed: ${msg}`);
@@ -807,12 +827,10 @@ export async function rebuildMarkdownProjectionsFromDb(
 }
 
 /**
- * `/gsd sync` — pull in external (gsd-core) markdown edits and re-project.
+ * `/gsd sync` — inspect external projection edits and re-project when safe.
  *
- * Non-destructive cousin of `/gsd recover`: does NOT clear the DB. Runs the
- * ADR-017 reconcile pipeline (which picks up the external-markdown-edit handler
- * automatically), then re-projects via renderAllFromDb, then refreshes the
- * compat marker. Use this when switching from gsd-core mid-session.
+ * Runs the ADR-017 reconcile pipeline, stops for modeled authority conflicts,
+ * then re-projects from the DB and refreshes the compat marker when unblocked.
  *
  * Accepts `--dry-run` to report what would change without writing.
  */
@@ -833,32 +851,31 @@ export async function handleSync(
     return;
   }
 
-  const lines: string[] = ["gsd sync: reconciling .gsd/ for cross-tool edits…"];
+  const lines: string[] = ["gsd sync: checking projections against the database…"];
 
   try {
     const result = await reconcileBeforeDispatch(basePath, { dryRun });
-    const repairedExternal = result.repaired.filter((r) => r.kind === "external-markdown-edit");
-    lines.push(
-      `  External .gsd/ edits ${dryRun ? "to import" : "imported"}: ${repairedExternal.length}`,
+    const refreshedPlanningPassthrough = result.repaired.flatMap(
+      (record) => record.kind === "external-planning-edit" && record.passthrough
+        ? [record.projectionPath]
+        : [],
     );
-    for (const r of repairedExternal) {
-      const e = r as { kind: "external-markdown-edit"; projectionPath: string };
-      lines.push(`    • ${e.projectionPath}`);
-    }
-    const repairedPlanningExternal = result.repaired.filter((r) => r.kind === "external-planning-edit");
-    if (repairedPlanningExternal.length > 0) {
+    if (refreshedPlanningPassthrough.length > 0) {
       lines.push(
-        `  External .planning/ edits ${dryRun ? "to import" : "imported"}: ${repairedPlanningExternal.length}`,
+        `  Planning passthrough checksums ${dryRun ? "to refresh" : "refreshed"}: ${refreshedPlanningPassthrough.length}`,
       );
-      for (const r of repairedPlanningExternal) {
-        const e = r as { kind: "external-planning-edit"; projectionPath: string; passthrough: boolean };
-        const tag = e.passthrough ? " (passthrough)" : "";
-        lines.push(`    • ${e.projectionPath}${tag}`);
+      for (const projectionPath of refreshedPlanningPassthrough) {
+        lines.push(`    • ${projectionPath}`);
       }
     }
     if (result.blockers.length > 0) {
       lines.push("", "  ⚠ Blockers:");
       for (const b of result.blockers) lines.push(`    • ${b}`);
+      if (dryRun) {
+        lines.push("", "  (dry-run: no repairs, projection, or marker writes performed)");
+      }
+      ctx.ui.notify(lines.join("\n"), "warning");
+      return;
     }
 
     if (dryRun) {
@@ -931,7 +948,7 @@ export async function handleRebuild(ctx: ExtensionCommandContext, basePath: stri
         "gsd rebuild database is reserved for DB-native rebuilds.",
         "It will not import markdown projections into the DB.",
         "For normal realignment, run /gsd rebuild markdown.",
-        "If the DB is lost or corrupt and markdown is the source to import, run /gsd recover --confirm.",
+        "If the DB is lost or corrupt and markdown is the source to import, run /gsd recover and approve its exact Preview hash.",
       ].join("\n"),
       "warning",
     );

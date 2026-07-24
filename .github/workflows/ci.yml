@@ -84,7 +84,7 @@ jobs:
           version: 10.12.1
 
       - name: Setup Node.js
-        uses: actions/setup-node@v6
+        uses: actions/setup-node@v7
         with:
           node-version: '24'
           cache: 'pnpm'
@@ -104,10 +104,22 @@ jobs:
 
   build:
     name: build
+    # Raised from 25: this job compiles the native engine addon from source
+    # (a cold Rust build) before running the native-backed test suites.
     timeout-minutes: 45
     needs: [fast-gates]
     if: needs.fast-gates.outputs.heavy-code-changed == 'true'
     runs-on: blacksmith-4vcpu-ubuntu-2404
+    env:
+      # native/.cargo/config.toml sets `-C target-cpu=native` for local dev speed,
+      # which bakes host-specific CPU instructions into build artifacts, including
+      # the proc-macro .so files (e.g. napi_derive) that rustc dlopens during macro
+      # expansion. On the heterogeneous CI runner fleet those artifacts can be
+      # executed on a CPU that lacks the instructions they were built for, crashing
+      # rustc with `interrupted by SIGILL` (as seen expanding gsd_ast). Override
+      # RUSTFLAGS to a portable baseline for CI, exactly as that config file's own
+      # "CI/release builds should override via RUSTFLAGS for portability" note directs.
+      RUSTFLAGS: '-C target-cpu=x86-64'
 
     steps:
       - name: Checkout repository without GITHUB_TOKEN
@@ -131,7 +143,7 @@ jobs:
           version: 10.12.1
 
       - name: Setup Node.js
-        uses: actions/setup-node@v6
+        uses: actions/setup-node@v7
         with:
           node-version: '24'
           cache: 'pnpm'
@@ -145,6 +157,27 @@ jobs:
           GSD_SKIP_RTK_INSTALL: '1'
           GSD_SKIP_DEP_REPAIR: '1'
         run: pnpm install --frozen-lockfile
+
+      # The native engine (@opengsd/engine-*) is published only at release time,
+      # so the pinned npm binary lags the Rust source in native/crates/engine.
+      # When native code changes (e.g. new N-API exports), the tests below must
+      # run against the addon built from THIS commit, not the stale published
+      # binary. Build it from source and load it via GSD_NATIVE_PREFER_LOCAL=1
+      # on the test steps. The built .node is packed into ci-build-artifacts so
+      # node22-smoke reuses it without re-compiling.
+      - name: Setup Rust toolchain (native addon for tests)
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+
+      - name: Cache Rust build (native addon)
+        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+        with:
+          shared-key: native-linux-x64-gnu
+          workspaces: native -> target
+
+      - name: Build native addon from source (test parity)
+        # Dev profile: faster to compile and the profile the @gsd/native package
+        # tests already use. GSD_NATIVE_PREFER_LOCAL loads gsd_engine.dev.node.
+        run: pnpm run build:native:test
 
       - name: Build core
         run: pnpm run build:core
@@ -180,11 +213,24 @@ jobs:
       - name: Compile test artifacts
         run: pnpm run test:compile
 
+      # The compiled-test native loader (dist-test/packages/native/dist/native.js)
+      # resolves its addon dir relative to its own location, i.e. dist-test/native/addon.
+      # Mirror the from-source addon there so GSD_NATIVE_PREFER_LOCAL=1 finds it for
+      # the compiled unit/package suites (build:native only writes repo-root native/addon).
+      - name: Mirror native addon into dist-test (compiled-test loader path)
+        run: |
+          mkdir -p dist-test/native/addon
+          cp native/addon/*.node dist-test/native/addon/
+          ls -la dist-test/native/addon/
+
       - name: Run unit tests
+        env:
+          GSD_NATIVE_PREFER_LOCAL: '1'
         run: pnpm run test:unit:compiled
 
       - name: Run package tests
         env:
+          GSD_NATIVE_PREFER_LOCAL: '1'
           GSD_SKIP_NATIVE_PACKAGE_TESTS: ${{ needs.fast-gates.outputs.portability-changed == 'true' && '0' || '1' }}
         run: pnpm run test:packages:compiled
 
@@ -195,9 +241,13 @@ jobs:
         run: pnpm exec playwright install chromium
 
       - name: Run integration tests
+        env:
+          GSD_NATIVE_PREFER_LOCAL: '1'
         run: pnpm run test:integration
 
       - name: Run e2e suite (against built binary)
+        env:
+          GSD_NATIVE_PREFER_LOCAL: '1'
         run: |
           chmod +x dist/loader.js
           export GSD_SMOKE_BINARY="$(pwd)/dist/loader.js"
@@ -218,7 +268,9 @@ jobs:
 
   windows-portability:
     name: windows-portability
-    timeout-minutes: 25
+    # Raised from 25: this job now compiles the native engine addon from source
+    # (a cold Rust build) before running the native-backed portability tests.
+    timeout-minutes: 45
     needs: [fast-gates, build]
     if: >-
       needs.fast-gates.outputs.heavy-code-changed == 'true' &&
@@ -248,7 +300,7 @@ jobs:
           version: 10.12.1
 
       - name: Setup Node.js
-        uses: actions/setup-node@v6
+        uses: actions/setup-node@v7
         with:
           node-version: '24'
           cache: 'pnpm'
@@ -262,16 +314,40 @@ jobs:
 
       - uses: ./.github/actions/restore-ci-build-artifacts
 
+      # Build the native engine addon from THIS commit's Rust source so the
+      # Windows-native file-identity/directory-sync code paths are exercised
+      # against real N-API exports, not the stale published engine binary.
+      - name: Setup Rust toolchain (native addon for tests)
+        if: needs.fast-gates.outputs.portability-changed == 'true'
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+
+      - name: Cache Rust build (native addon)
+        if: needs.fast-gates.outputs.portability-changed == 'true'
+        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+        with:
+          shared-key: native-win32-x64-msvc
+          workspaces: native -> target
+
+      - name: Build native addon from source (test parity)
+        if: needs.fast-gates.outputs.portability-changed == 'true'
+        # Dev profile: faster to compile and the profile the @gsd/native package
+        # tests already use. GSD_NATIVE_PREFER_LOCAL loads gsd_engine.dev.node.
+        run: pnpm run build:native:test
+
       - name: Typecheck extensions
         if: needs.fast-gates.outputs.portability-changed == 'true'
         run: pnpm run typecheck:extensions
 
       - name: Run package tests
         if: needs.fast-gates.outputs.portability-changed == 'true'
+        env:
+          GSD_NATIVE_PREFER_LOCAL: '1'
         run: pnpm run test:packages
 
       - name: Run Windows portability tests
         if: needs.fast-gates.outputs.portability-changed == 'true'
+        env:
+          GSD_NATIVE_PREFER_LOCAL: '1'
         run: >-
           node --import ./src/resources/extensions/gsd/tests/resolve-ts.mjs
           --experimental-strip-types --test
@@ -306,7 +382,7 @@ jobs:
           if-no-files-found: ignore
           retention-days: 7
 
-  # Validate the declared engines floor (package.json engines.node ">=22.0.0").
+  # Validate the strictest declared workspace engines floor (currently ">=22.19.0").
   # The main build/test lanes run on Node 24, so without this lane the supported
   # minor (22.x) is never exercised. Cheap: reuse the build artifacts and just run
   # the smoke suite against the built binary on Node 22.
@@ -338,9 +414,9 @@ jobs:
           version: 10.12.1
 
       - name: Setup Node.js 22 (engines floor)
-        uses: actions/setup-node@v6
+        uses: actions/setup-node@v7
         with:
-          node-version: '22'
+          node-version: '22.19.0'
           cache: 'pnpm'
 
       - name: Install dependencies
@@ -354,10 +430,20 @@ jobs:
 
       - name: Run smoke suite on Node 22
         shell: bash
+        env:
+          # Load the from-source native addon restored from ci-build-artifacts
+          # (native/addon/*.node), not the stale published engine binary.
+          GSD_NATIVE_PREFER_LOCAL: '1'
         run: |
           chmod +x dist/loader.js
           export GSD_SMOKE_BINARY="$(pwd)/dist/loader.js"
           pnpm run test:smoke
+
+      - name: Verify SQLite close behavior on Node 22
+        run: >-
+          node --import ./src/resources/extensions/gsd/tests/resolve-ts.mjs
+          --experimental-strip-types --test
+          src/resources/extensions/gsd/tests/db-provider.test.ts
 
   # Single aggregate gate. Make THIS the only required status check in branch
   # protection. Because it always runs, branch protection always has a concrete

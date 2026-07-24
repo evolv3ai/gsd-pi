@@ -14,6 +14,7 @@ import {
 } from "../gsd-db.js";
 import { clearPathCache } from "../paths.js";
 import { handleCompleteTask } from "../tools/complete-task.js";
+import { discardProjectionEvidence } from "./projection-evidence-helpers.js";
 
 const PARAMS = {
   milestoneId: "M001",
@@ -64,6 +65,7 @@ test("complete-task reports shell projection staleness and same-task repair clea
   assert.equal(staleReplay.duplicate, true, "same-task retry must repair instead of completing twice");
   assert.equal(staleReplay.stale, true, "missing-summary repair must preserve shell projection staleness");
 
+  discardProjectionEvidence(basePath);
   rmSync(roadmapPath, { recursive: true });
   rmSync(staleReplay.summaryPath);
   const repaired = await handleCompleteTask(PARAMS, basePath);

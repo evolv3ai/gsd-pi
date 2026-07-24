@@ -138,4 +138,24 @@ describe("db-memory-fts-schema", () => {
     assert.ok(db.execCalls.some((sql) => sql.includes("CREATE TABLE IF NOT EXISTS runtime_kv")));
     assert.ok(!db.execCalls.some((sql) => sql.includes("VALUES('rebuild')")));
   });
+
+  test("forced rebuild fails when the repaired FTS schema is unavailable", () => {
+    const db = new FakeAdapter();
+
+    assert.throws(
+      () => rebuildMemoriesFtsSchemaOnce(db, { force: true }),
+      /FTS5 schema is unavailable/,
+    );
+  });
+
+  test("uses a savepoint when rebuilding inside startup initialization", () => {
+    const db = new FakeAdapter();
+    db.hasFts = true;
+
+    rebuildMemoriesFtsSchemaOnce(db, { transactionOpen: true });
+
+    assert.ok(db.execCalls.includes("SAVEPOINT memories_fts_rebuild"));
+    assert.ok(db.execCalls.includes("RELEASE SAVEPOINT memories_fts_rebuild"));
+    assert.ok(!db.execCalls.includes("BEGIN"));
+  });
 });

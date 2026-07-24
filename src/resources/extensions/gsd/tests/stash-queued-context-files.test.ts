@@ -33,6 +33,7 @@ import { mergeMilestoneToMain } from "../auto-worktree-merge.ts";
 import { _resetServiceCache } from "../worktree.ts";
 import { _clearGsdRootCache } from "../paths.ts";
 import { seedMergeReadyMilestone } from "./merge-ready-fixture.ts";
+import { closeDatabase } from "../gsd-db.ts";
 
 // Isolate from user's global preferences (which may have git.main_branch set)
 let originalHome: string | undefined;
@@ -55,6 +56,7 @@ test.after(() => {
 });
 
 function cleanupTempPaths(...paths: string[]): void {
+  closeDatabase();
   try { process.chdir(testCwd); } catch { /* best-effort */ }
   for (const p of paths) {
     rmSync(p, { recursive: true, force: true });

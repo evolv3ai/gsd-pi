@@ -3,6 +3,12 @@
 
 import type { DbAdapter } from "./db-adapter.js";
 
+export function hasRuntimeKvSchemaV25(db: DbAdapter): boolean {
+  return db.prepare(
+    "SELECT 1 AS present FROM sqlite_master WHERE type = 'table' AND name = 'runtime_kv'",
+  ).get() !== undefined;
+}
+
 /**
  * Create the v25 runtime_kv table. Idempotent — uses IF NOT EXISTS.
  *

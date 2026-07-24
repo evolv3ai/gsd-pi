@@ -8,11 +8,12 @@
  * `.gsd/CAPTURES.md`, not the worktree's local `.gsd/`.
  */
 
-import { existsSync, readFileSync, writeFileSync, mkdirSync } from "node:fs";
+import { existsSync, readFileSync, mkdirSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { randomUUID } from "node:crypto";
 import { gsdRoot } from "./paths.js";
 import { projectRootFromWorktreePath } from "./worktree-root.js";
+import { atomicWriteSync } from "./atomic-write.js";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -95,10 +96,10 @@ export function appendCapture(basePath: string, text: string): string {
 
   if (existsSync(filePath)) {
     const existing = readFileSync(filePath, "utf-8");
-    writeFileSync(filePath, existing.trimEnd() + "\n\n" + entry, "utf-8");
+    atomicWriteSync(filePath, existing.trimEnd() + "\n\n" + entry, "utf-8");
   } else {
     const header = `# Captures\n\n`;
-    writeFileSync(filePath, header + entry, "utf-8");
+    atomicWriteSync(filePath, header + entry, "utf-8");
   }
 
   return id;
@@ -213,7 +214,7 @@ export function markCaptureResolved(
   section = section.trimEnd() + "\n" + newFields.join("\n") + "\n";
 
   const updated = content.replace(sectionRegex, section);
-  writeFileSync(filePath, updated, "utf-8");
+  atomicWriteSync(filePath, updated, "utf-8");
 }
 
 /**
@@ -243,7 +244,7 @@ export function markCaptureExecuted(basePath: string, captureId: string): void {
   section = section.trimEnd() + "\n" + `**Executed:** ${executedAt}` + "\n";
 
   const updated = content.replace(sectionRegex, section);
-  writeFileSync(filePath, updated, "utf-8");
+  atomicWriteSync(filePath, updated, "utf-8");
 }
 
 /**
@@ -337,7 +338,7 @@ export function revertExecutorResolvedCaptures(basePath: string): number {
   }
 
   if (reverted > 0) {
-    writeFileSync(filePath, content, "utf-8");
+    atomicWriteSync(filePath, content, "utf-8");
   }
 
   return reverted;
@@ -380,7 +381,7 @@ export function stampCaptureMilestone(basePath: string, captureId: string, miles
   }
 
   const updated = content.replace(sectionRegex, section);
-  writeFileSync(filePath, updated, "utf-8");
+  atomicWriteSync(filePath, updated, "utf-8");
 }
 
 // ─── Parser ───────────────────────────────────────────────────────────────────

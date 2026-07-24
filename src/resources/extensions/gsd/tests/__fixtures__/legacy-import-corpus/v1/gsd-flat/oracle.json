@@ -1,0 +1,381 @@
+{
+  "preview_schema_version": 1,
+  "preview_id": "gsd-flat",
+  "import_kind": "legacy-corpus",
+  "importer_version": "v1-test",
+  "base_project_revision": 0,
+  "base_authority_epoch": 0,
+  "base_database_schema_version": 45,
+  "source_set_hash": "sha256:8141a2bd96940243a054ec42cf758315dc8896a3a2be41c58a2414f6fae7f070",
+  "change_set_hash": "sha256:ed1f2b88786e05e37cc62e156a9b0dd91331799d5d17c0d5372515f209044c30",
+  "counts": {
+    "create": 7,
+    "update": 1,
+    "delete": 0,
+    "preserve": 1,
+    "unparsed": 1,
+    "unresolved": 1
+  },
+  "sources": [
+    {
+      "source_id": "flat-m001-s01-t01-plan",
+      "path": ".gsd/phases/01-foundation/01-01-PLAN.md",
+      "kind": "markdown",
+      "byte_size": 80,
+      "sha256": "sha256:9db0e49d58ca9c4d5c240b9682ceb17d5057676278da8261591aa0b9f88505e2",
+      "parser_id": "gsd-flat-hierarchy",
+      "parser_version": "1",
+      "encoding": "utf-8",
+      "outcome": "mapped"
+    },
+    {
+      "source_id": "flat-m001-s01-t01-summary",
+      "path": ".gsd/phases/01-foundation/01-01-SUMMARY.md",
+      "kind": "markdown",
+      "byte_size": 108,
+      "sha256": "sha256:47e0a532cbe45e2f5552c5782c17296715030c2d1c2e7017f576fd3a0995d405",
+      "parser_id": "gsd-flat-hierarchy",
+      "parser_version": "1",
+      "encoding": "utf-8",
+      "outcome": "mapped"
+    },
+    {
+      "source_id": "flat-wrong-parent-summary",
+      "path": ".gsd/phases/01-foundation/01-02-SUMMARY.md",
+      "kind": "markdown",
+      "byte_size": 129,
+      "sha256": "sha256:34342efa0a48374a92cd8b34c5c3cd63bb4404f7cc92415f3deb661a7d62e7cf",
+      "parser_id": "gsd-flat-hierarchy",
+      "parser_version": "1",
+      "encoding": "utf-8",
+      "outcome": "unparsed"
+    },
+    {
+      "source_id": "flat-m001-roadmap",
+      "path": ".gsd/phases/01-foundation/01-ROADMAP.md",
+      "kind": "markdown",
+      "byte_size": 41,
+      "sha256": "sha256:c9ef0c1dbfb729b573748c49bc729a01948b57902070e7c5e759c752d47e1b4a",
+      "parser_id": "gsd-flat-hierarchy",
+      "parser_version": "1",
+      "encoding": "utf-8",
+      "outcome": "mapped"
+    },
+    {
+      "source_id": "flat-unknown-notes",
+      "path": ".gsd/phases/01-foundation/NOTES.md",
+      "kind": "markdown",
+      "byte_size": 60,
+      "sha256": "sha256:e170bb3f0cfe3cd702307ca35edf1abe06efcb6257c0e6543ebca0312219eb39",
+      "parser_id": "gsd-artifact-classifier",
+      "parser_version": "1",
+      "encoding": "utf-8",
+      "outcome": "preserved"
+    },
+    {
+      "source_id": "flat-m015-roadmap",
+      "path": ".gsd/phases/15-observability/15-ROADMAP.md",
+      "kind": "markdown",
+      "byte_size": 45,
+      "sha256": "sha256:e8433171c27673ea3f20e93ba03dbad51dccc56ab63645cc5dd4d1f0cba81e0a",
+      "parser_id": "gsd-flat-hierarchy",
+      "parser_version": "1",
+      "encoding": "utf-8",
+      "outcome": "mapped"
+    },
+    {
+      "source_id": "flat-m016-roadmap",
+      "path": ".gsd/phases/M016-delivery/M016-ROADMAP.md",
+      "kind": "markdown",
+      "byte_size": 46,
+      "sha256": "sha256:214dd61ce9e69027da2e548e3336fbb19602137f76c6c5eb32a9a6b40e542535",
+      "parser_id": "gsd-flat-hierarchy",
+      "parser_version": "1",
+      "encoding": "utf-8",
+      "outcome": "mapped"
+    }
+  ],
+  "changes": [
+    {
+      "change_id": "change-flat-m001",
+      "action": "create",
+      "target": {
+        "kind": "milestone",
+        "key": "M001"
+      },
+      "raw": {
+        "source_id": "flat-m001-roadmap",
+        "locator": {
+          "start_byte": 0,
+          "end_byte": 18,
+          "line": 1
+        },
+        "value": "# M001: Foundation",
+        "sha256": "sha256:a9be734e7aa2ed65d857caad516220fa968589b9fc01b7ecb675ff9c4ff3043a"
+      },
+      "normalized": {
+        "id": "M001",
+        "title": "Foundation"
+      },
+      "provenance": {
+        "source_id": "flat-m001-roadmap",
+        "parser_id": "gsd-flat-hierarchy",
+        "parser_version": "1"
+      },
+      "reason_code": "flat-milestone-alias"
+    },
+    {
+      "change_id": "change-flat-m001-s01",
+      "action": "create",
+      "target": {
+        "kind": "slice",
+        "key": "M001/S01"
+      },
+      "raw": {
+        "source_id": "flat-m001-roadmap",
+        "locator": {
+          "start_byte": 20,
+          "end_byte": 40,
+          "line": 3
+        },
+        "value": "- [ ] S01 Core setup",
+        "sha256": "sha256:8cfe21cebb14bd13a8981a3c0f55e44868ca6ddc3e36dc75f0a5b5dc64962fca"
+      },
+      "normalized": {
+        "id": "S01",
+        "milestone_id": "M001",
+        "status": "pending",
+        "title": "Core setup"
+      },
+      "provenance": {
+        "source_id": "flat-m001-roadmap",
+        "parser_id": "gsd-flat-hierarchy",
+        "parser_version": "1"
+      },
+      "reason_code": "flat-slice-checklist"
+    },
+    {
+      "change_id": "change-flat-m001-s01-t01",
+      "action": "create",
+      "target": {
+        "kind": "task",
+        "key": "M001/S01/T01"
+      },
+      "raw": {
+        "source_id": "flat-m001-s01-t01-plan",
+        "locator": {
+          "start_byte": 45,
+          "end_byte": 79,
+          "line": 6
+        },
+        "value": "# T01: Create the project skeleton",
+        "sha256": "sha256:e6d4ab59f352d61ce30319271e61f5cbc068a21cb546cf1247b9e3ca541ad87d"
+      },
+      "normalized": {
+        "id": "T01",
+        "milestone_id": "M001",
+        "slice_id": "S01",
+        "status": "pending",
+        "title": "Create the project skeleton"
+      },
+      "provenance": {
+        "source_id": "flat-m001-s01-t01-plan",
+        "parser_id": "gsd-flat-hierarchy",
+        "parser_version": "1"
+      },
+      "reason_code": "flat-task-frontmatter-parent"
+    },
+    {
+      "change_id": "change-flat-m001-s01-t01-status",
+      "action": "update",
+      "target": {
+        "kind": "task",
+        "key": "M001/S01/T01",
+        "field": "status"
+      },
+      "raw": {
+        "source_id": "flat-m001-s01-t01-summary",
+        "locator": {
+          "start_byte": 41,
+          "end_byte": 57,
+          "line": 5
+        },
+        "value": "status: complete",
+        "sha256": "sha256:616d629c3c9f5237d19101043f1cd808888b1c2c28dab0537bcab3f79c5dc80e"
+      },
+      "normalized": "complete",
+      "provenance": {
+        "source_id": "flat-m001-s01-t01-summary",
+        "parser_id": "gsd-flat-hierarchy",
+        "parser_version": "1"
+      },
+      "reason_code": "flat-matching-summary-attestation"
+    },
+    {
+      "change_id": "change-flat-m015",
+      "action": "create",
+      "target": {
+        "kind": "milestone",
+        "key": "M015"
+      },
+      "raw": {
+        "source_id": "flat-m015-roadmap",
+        "locator": {
+          "start_byte": 0,
+          "end_byte": 19,
+          "line": 1
+        },
+        "value": "# 15: Observability",
+        "sha256": "sha256:ac3e0efe5366eaa92fc4a31757243e7f228a7605dc53d385e233870eaf30fe2c"
+      },
+      "normalized": {
+        "id": "M015",
+        "source_alias": "15",
+        "title": "Observability"
+      },
+      "provenance": {
+        "source_id": "flat-m015-roadmap",
+        "parser_id": "gsd-flat-hierarchy",
+        "parser_version": "1"
+      },
+      "reason_code": "flat-bare-numeric-milestone"
+    },
+    {
+      "change_id": "change-flat-m015-s01",
+      "action": "create",
+      "target": {
+        "kind": "slice",
+        "key": "M015/S01"
+      },
+      "raw": {
+        "source_id": "flat-m015-roadmap",
+        "locator": {
+          "start_byte": 21,
+          "end_byte": 44,
+          "line": 3
+        },
+        "value": "- [ ] S01 Add telemetry",
+        "sha256": "sha256:8d444b2e641c361f3da29056893628a4f70a5f1643420642c615125daa1e05b8"
+      },
+      "normalized": {
+        "id": "S01",
+        "milestone_id": "M015",
+        "status": "pending",
+        "title": "Add telemetry"
+      },
+      "provenance": {
+        "source_id": "flat-m015-roadmap",
+        "parser_id": "gsd-flat-hierarchy",
+        "parser_version": "1"
+      },
+      "reason_code": "flat-slice-checklist"
+    },
+    {
+      "change_id": "change-flat-m016",
+      "action": "create",
+      "target": {
+        "kind": "milestone",
+        "key": "M016"
+      },
+      "raw": {
+        "source_id": "flat-m016-roadmap",
+        "locator": {
+          "start_byte": 0,
+          "end_byte": 16,
+          "line": 1
+        },
+        "value": "# M016: Delivery",
+        "sha256": "sha256:1ff83e994b61fd0f882dd697ef2a9413f29625785a018abc362c42ba8aa5caf2"
+      },
+      "normalized": {
+        "id": "M016",
+        "source_alias": "M016-delivery",
+        "title": "Delivery"
+      },
+      "provenance": {
+        "source_id": "flat-m016-roadmap",
+        "parser_id": "gsd-flat-hierarchy",
+        "parser_version": "1"
+      },
+      "reason_code": "flat-descriptor-milestone"
+    },
+    {
+      "change_id": "change-flat-m016-s01",
+      "action": "create",
+      "target": {
+        "kind": "slice",
+        "key": "M016/S01"
+      },
+      "raw": {
+        "source_id": "flat-m016-roadmap",
+        "locator": {
+          "start_byte": 18,
+          "end_byte": 45,
+          "line": 3
+        },
+        "value": "- [ ] S01 Release candidate",
+        "sha256": "sha256:2716d33eb639f0e58b22ba1dc02b6629c5ae01cb6576f5f3db61438255d6d001"
+      },
+      "normalized": {
+        "id": "S01",
+        "milestone_id": "M016",
+        "status": "pending",
+        "title": "Release candidate"
+      },
+      "provenance": {
+        "source_id": "flat-m016-roadmap",
+        "parser_id": "gsd-flat-hierarchy",
+        "parser_version": "1"
+      },
+      "reason_code": "flat-slice-checklist"
+    },
+    {
+      "change_id": "change-flat-unknown-notes",
+      "action": "preserve",
+      "target": {
+        "kind": "artifact",
+        "key": ".gsd/phases/01-foundation/NOTES.md"
+      },
+      "raw": {
+        "source_id": "flat-unknown-notes",
+        "locator": {
+          "start_byte": 0,
+          "end_byte": 15,
+          "line": 1
+        },
+        "value": "# Working notes",
+        "sha256": "sha256:fa6fcbb10be382932ce9a134e6dbaceb1fc039465a807724b5aec9536189ef08"
+      },
+      "normalized": {
+        "reason": "unknown-phase-suffix"
+      },
+      "provenance": {
+        "source_id": "flat-unknown-notes",
+        "parser_id": "gsd-artifact-classifier",
+        "parser_version": "1"
+      },
+      "reason_code": "flat-unknown-artifact-preserved"
+    }
+  ],
+  "diagnoses": [
+    {
+      "diagnosis_id": "diagnosis-flat-wrong-parent-summary",
+      "code": "task-summary-parent-conflict",
+      "severity": "blocker",
+      "source_id": "flat-wrong-parent-summary",
+      "locator": {
+        "start_byte": 20,
+        "end_byte": 30,
+        "line": 3
+      },
+      "raw_value": "slice: S09",
+      "message": "Summary parent metadata conflicts with its containing phase and cannot select a task."
+    }
+  ],
+  "resolutions": [
+    {
+      "diagnosis_id": "diagnosis-flat-wrong-parent-summary",
+      "disposition": "requires-user"
+    }
+  ]
+}

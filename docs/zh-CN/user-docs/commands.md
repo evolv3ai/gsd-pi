@@ -367,6 +367,14 @@ gsd --mode mcp
 
 服务会注册 agent 会话中的全部工具，并把 MCP 的 `tools/list` 与 `tools/call` 请求映射到 GSD 的工具定义上。连接会一直保持，直到底层 transport 关闭。
 
+MCP 模式也会暴露 headless 和 cloud runtime 使用的 GSD workflow adapter 工具：
+
+- 会话控制工具：`gsd_execute`、`gsd_status`、`gsd_result`、`gsd_cancel`、`gsd_resolve_blocker`
+- 项目状态和只读工具：`gsd_query`、`gsd_progress`、`gsd_roadmap`、`gsd_history`、`gsd_doctor`、`gsd_captures`、`gsd_knowledge`、`gsd_graph`
+- 交互式表单工具：`ask_user_questions`
+
+运行自动模式时，先用绝对路径 `projectDir` 调用 `gsd_execute`。它会返回 `sessionId`；之后用这个 `sessionId` 轮询 `gsd_status`，直到运行结束，再调用 `gsd_result` 获取累积输出，或调用 `gsd_cancel` 停止运行。如果客户端丢失了 `sessionId`，`gsd_status` 可以回退到 `projectDir`；只有当这个 MCP server 只跟踪一个会话时，才可以同时省略这两个字段。项目只读工具会直接读取 `.gsd/`，不需要活跃会话。
+
 ## 会话内更新
 
 `/gsd update` 会检查 npm 上是否有更新版本，并在不离开当前会话的情况下完成安装。

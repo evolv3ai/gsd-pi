@@ -9,7 +9,7 @@ import { nativeGetCurrentBranch } from "./native-git-bridge.js";
 import {
   isGsdWorktreePath,
   normalizeWorktreePathForCompare,
-  resolveWorktreeProjectRoot,
+  resolveWorktreeOwningProjectRoot,
 } from "./worktree-root.js";
 import { detectWorktreeName } from "./worktree.js";
 import type { GsdWorkspace } from "./workspace.js";
@@ -42,7 +42,7 @@ export function _resetAutoWorktreeOriginalBaseForTests(): void {
   setActiveWorkspace(null);
 }
 
-export function getActiveAutoWorktreeContext(): {
+export function getActiveAutoWorktreeContext(basePath: string = process.cwd()): {
   originalBase: string;
   worktreeName: string;
   branch: string;
@@ -50,9 +50,9 @@ export function getActiveAutoWorktreeContext(): {
   const ws = getActiveWorkspace();
   if (!ws) return null;
   const originalBase = ws.projectRoot;
-  const cwd = process.cwd();
+  const cwd = basePath;
   if (!isGsdWorktreePath(cwd)) return null;
-  const cwdProjectRoot = resolveWorktreeProjectRoot(cwd, originalBase);
+  const cwdProjectRoot = resolveWorktreeOwningProjectRoot(cwd);
   if (
     normalizeWorktreePathForCompare(cwdProjectRoot) !==
     normalizeWorktreePathForCompare(originalBase)

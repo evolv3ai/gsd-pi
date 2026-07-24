@@ -68,18 +68,26 @@ import { getAutoWorktreePath } from "./auto-worktree-path-resolution.js";
 import { checkoutBranchWithStashGuard } from "./worktree-git-recovery.js";
 import { cleanStaleRuntimeUnits } from "./auto-worktree-runtime-cleanup.js";
 import { readResourceVersion } from "./auto-worktree-resource-version.js";
+import { queryJournal } from "./journal.js";
 import { worktreePath as getWorktreeDir, isInsideWorktreesDir } from "./worktree-manager.js";
 import { emitWorktreeOrphaned } from "./worktree-telemetry.js";
-import { queryJournal } from "./journal.js";
 import { initMetrics } from "./metrics.js";
 import { initRoutingHistory } from "./routing-history.js";
 import { restoreHookState, resetHookState, reconcileRestoredHookDispatch } from "./post-unit-hooks.js";
 import { resetProactiveHealing, setLevelChangeCallback } from "./doctor-proactive.js";
 import { snapshotSkills } from "./skill-discovery.js";
-import { isDbAvailable, probeDbWritable, getMilestone, getAllMilestones, insertMilestone, updateMilestoneStatus } from "./gsd-db.js";
+import {
+  isDbAvailable,
+  probeDbWritable,
+  getMilestone,
+  getAllMilestones,
+  insertMilestone,
+  updateMilestoneStatus,
+} from "./gsd-db.js";
 import { readMilestoneMergeObservation } from "./db/milestone-closeout-readiness.js";
 import { immediateTransaction } from "./db/engine.js";
 import {
+  closeAllWorkflowDatabases,
   getWorkflowDatabaseStatus,
   openExistingWorkflowDatabase,
   openWorkflowDatabase,
@@ -89,7 +97,6 @@ import { isClosedStatus } from "./status-guards.js";
 import { classifyMilestoneSummaryContent } from "./milestone-summary-classifier.js";
 import { extractVerdict } from "./verdict-parser.js";
 import { auditOrphanedPreflightStashes } from "./orphan-stash-audit.js";
-import { parseProject } from "./schemas/parsers.js";
 import { LAYOUT_SEGMENTS } from "./layout-policy.js";
 
 import {
@@ -109,6 +116,7 @@ import {
   rmSync,
 } from "node:fs";
 import { join } from "node:path";
+import { removeProjectionTreeSync } from "./atomic-write.js";
 
 import { validateDirectory } from "./validate-directory.js";
 import {
@@ -170,7 +178,7 @@ export function reconcileFlatPhaseBootstrapLayout(basePath: string): boolean {
 
   if (isEmptyDirectory(milestonesPath)) {
     if (!existsSync(phasesPath)) mkdirSync(phasesPath, { recursive: true });
-    rmSync(milestonesPath, { recursive: true, force: true });
+    removeProjectionTreeSync(milestonesPath);
     return true;
   }
 
@@ -197,38 +205,6 @@ export async function openProjectDbIfPresent(basePath: string): Promise<void> {
   const result = openExistingWorkflowDatabase(basePath);
   if (!result.ok && result.reason === "open-failed") {
     logWarning("engine", `gsd-db: failed to open existing database: ${result.error?.message ?? "open failed"}`);
-  }
-}
-
-export function reconcileProjectMilestonesFromDisk(basePath: string): number {
-  if (!isDbAvailable()) return 0;
-  const projectPath = join(basePath, ".gsd", "PROJECT.md");
-  if (!existsSync(projectPath)) return 0;
-
-  try {
-    const content = readFileSync(projectPath, "utf-8");
-    const parsed = parseProject(content);
-    if (parsed.milestones.length === 0) return 0;
-
-    const dbMilestones = new Set(getAllMilestones().map((m) => m.id));
-    let inserted = 0;
-    for (const milestone of parsed.milestones) {
-      if (dbMilestones.has(milestone.id)) continue;
-      insertMilestone({
-        id: milestone.id,
-        title: milestone.title,
-        status: milestone.done ? "complete" : "queued",
-      });
-      dbMilestones.add(milestone.id);
-      inserted += 1;
-    }
-    return inserted;
-  } catch (err) {
-    logWarning(
-      "bootstrap",
-      `PROJECT milestone reconciliation failed: ${err instanceof Error ? err.message : String(err)}`,
-    );
-    return 0;
   }
 }
 
@@ -1196,12 +1172,18 @@ export async function bootstrapAutoSession(
     // Migration MUST run before ensureGitignore to avoid adding ".gsd" to
     // .gitignore when .gsd/ is git-tracked (data-loss bug #1364).
     recoverFailedMigration(base);
+    // startAuto's interrupted-session assessment may already have opened the
+    // database. Retire every handle before migration moves the containing
+    // directory so the WAL is checkpointed and no cached adapter remains
+    // bound to the pre-migration inode.
+    closeAllWorkflowDatabases();
     const migration = migrateToExternalState(base);
     if (migration.error) {
       ctx.ui.notify(`External state migration warning: ${migration.error}`, "warning");
     }
     // Ensure symlink exists (handles fresh projects and post-migration)
     ensureGsdSymlink(base);
+    openWorkflowDatabase(base);
 
     // Ensure .gitignore has baseline patterns.
     // ensureGitignore checks for git-tracked .gsd/ files and skips the
@@ -1266,9 +1248,6 @@ export async function bootstrapAutoSession(
     // only have a failure-path SUMMARY on disk (#4663).
     await openProjectDbIfPresent(base);
     registerAutoWorkerForSession(base);
-    reconcileProjectMilestonesFromDisk(base);
-    reconcileMergedMilestonesFromJournal(base);
-
     // Clean stale runtime unit files for completed milestones (#887).
     // DB-authoritative: when DB is available, require DB status to be closed
     // before clearing runtime units. A SUMMARY file alone is no longer
@@ -1836,7 +1815,7 @@ export async function bootstrapAutoSession(
       const errorDetail = dbStatus.lastError ? ` (${dbStatus.lastError.message})` : "";
       const providerHint = dbStatus.provider
         ? ` Provider: ${dbStatus.provider}.`
-        : " No SQLite provider available — check Node >= 22 or install better-sqlite3.";
+        : " No SQLite provider available — check Node >= 22.18 with node:sqlite enabled.";
       ctx.ui.notify(
         `SQLite database exists but failed to open: ${gsdDbPath}. ${phaseHint}${errorDetail}.${providerHint}`,
         "error",

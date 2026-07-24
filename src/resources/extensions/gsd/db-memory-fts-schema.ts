@@ -2,16 +2,29 @@
 // File Purpose: Memory FTS5 SQLite schema helpers for the GSD database facade.
 
 import type { DbAdapter } from "./db-adapter.js";
-import { createRuntimeKvTableV25 } from "./db-runtime-kv-schema.js";
+import { createRuntimeKvTableV25, hasRuntimeKvSchemaV25 } from "./db-runtime-kv-schema.js";
 
 export const MEMORIES_FTS_REBUILT_KEY = "memories_fts_rebuilt_at";
+let memoriesFtsRebuildBoundaryForTest: (() => void) | null = null;
+
+export function _setMemoriesFtsRebuildBoundaryForTest(boundary: (() => void) | null): void {
+  memoriesFtsRebuildBoundaryForTest = boundary;
+}
 
 export interface MemoryFtsSchemaOptions {
   onUnavailable?: (message: string) => void;
 }
 
 export interface MemoryFtsRebuildOptions {
+  force?: boolean;
   onRebuildFailed?: (message: string) => void;
+  transactionOpen?: boolean;
+}
+
+export interface MemoryFtsStartupState {
+  readonly supported: boolean;
+  readonly schemaComplete: boolean;
+  readonly rebuildMarked: boolean;
 }
 
 function formatFtsUnavailableError(err: unknown): string {
@@ -72,21 +85,58 @@ export function isMemoriesFtsAvailableSchema(db: DbAdapter): boolean {
   }
 }
 
+export function inspectMemoriesFtsStartupState(db: DbAdapter): MemoryFtsStartupState {
+  try {
+    db.prepare("SELECT fts5_source_id() AS source_id").get();
+  } catch (error) {
+    if (!/no such function:\s*fts5_source_id/iu.test(String(error))) throw error;
+    return { supported: false, schemaComplete: true, rebuildMarked: true };
+  }
+
+  const schema = db.prepare(`
+    SELECT COUNT(*) AS count
+    FROM sqlite_master
+    WHERE (type = 'table' AND name = 'memories_fts')
+      OR (type = 'trigger' AND name IN ('memories_ai', 'memories_ad', 'memories_au'))
+  `).get();
+  const schemaComplete = Number(schema?.["count"]) === 4;
+  const rebuildMarked = hasRuntimeKvSchemaV25(db) && db.prepare(
+    "SELECT 1 AS present FROM runtime_kv WHERE scope = 'global' AND scope_id = '' AND key = :key",
+  ).get({ ":key": MEMORIES_FTS_REBUILT_KEY }) !== undefined;
+  return { supported: true, schemaComplete, rebuildMarked };
+}
+
+export function invalidateMemoriesFtsRebuildMarker(db: DbAdapter): void {
+  if (!hasRuntimeKvSchemaV25(db)) return;
+  db.prepare(
+    "DELETE FROM runtime_kv WHERE scope = 'global' AND scope_id = '' AND key = :key",
+  ).run({ ":key": MEMORIES_FTS_REBUILT_KEY });
+}
+
 export function rebuildMemoriesFtsSchemaOnce(
   db: DbAdapter,
   options: MemoryFtsRebuildOptions = {},
 ): void {
-  if (!isMemoriesFtsAvailableSchema(db)) return;
+  if (!isMemoriesFtsAvailableSchema(db)) {
+    if (options.force) throw new Error("FTS5 schema is unavailable after repair");
+    return;
+  }
 
   createRuntimeKvTableV25(db);
   const marker = db.prepare(
     "SELECT 1 as present FROM runtime_kv WHERE scope = 'global' AND scope_id = '' AND key = :key",
   ).get({ ":key": MEMORIES_FTS_REBUILT_KEY });
-  if (marker) return;
+  if (marker && !options.force) return;
 
   const now = new Date().toISOString();
+  const begin = options.transactionOpen ? "SAVEPOINT memories_fts_rebuild" : "BEGIN";
+  const commit = options.transactionOpen ? "RELEASE SAVEPOINT memories_fts_rebuild" : "COMMIT";
+  const rollback = options.transactionOpen
+    ? "ROLLBACK TO SAVEPOINT memories_fts_rebuild; RELEASE SAVEPOINT memories_fts_rebuild"
+    : "ROLLBACK";
   try {
-    db.exec("BEGIN");
+    db.exec(begin);
+    memoriesFtsRebuildBoundaryForTest?.();
     db.exec("INSERT INTO memories_fts(memories_fts) VALUES('rebuild')");
     db.prepare(
       `INSERT INTO runtime_kv (scope, scope_id, key, value_json, updated_at)
@@ -99,13 +149,14 @@ export function rebuildMemoriesFtsSchemaOnce(
       ":value_json": JSON.stringify(now),
       ":updated_at": now,
     });
-    db.exec("COMMIT");
+    db.exec(commit);
   } catch (err) {
     try {
-      db.exec("ROLLBACK");
+      db.exec(rollback);
     } catch {
       // Best effort: leave startup alive and retry the rebuild on next open.
     }
     options.onRebuildFailed?.(`FTS5 rebuild failed: ${(err as Error).message}`);
+    if (options.force) throw err;
   }
 }

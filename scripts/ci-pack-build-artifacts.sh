@@ -15,6 +15,9 @@ paths=(dist)
 for pkg_dist in packages/*/dist; do
   [ -d "$pkg_dist" ] && paths+=("$pkg_dist")
 done
+# Include the from-source native addon so downstream jobs (node22-smoke) can
+# load it via GSD_NATIVE_PREFER_LOCAL=1 instead of the stale published binary.
+[ -d native/addon ] && paths+=(native/addon)
 # Omit dist/web — Next.js standalone contains symlinks that break tar extract on
 # Windows runners. validate-pack runs in the build job before this pack step.
 

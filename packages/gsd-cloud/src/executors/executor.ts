@@ -31,6 +31,8 @@ export interface AdvertisedProject {
  *   CloudRuntime sends them in the `hello` message on every (re)connect.
  */
 export interface Executor {
+  /** Optional startup preflight. Must throw synchronously when validation fails. */
+  initialize?(): void;
   execute(
     toolName: string,
     rawArgs: Record<string, unknown>,

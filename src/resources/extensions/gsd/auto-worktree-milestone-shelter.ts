@@ -5,13 +5,10 @@
 // restores them after merge closeout without hiding restore failures.
 
 import {
-  cpSync,
   existsSync,
-  mkdirSync,
   readdirSync,
-  rmSync,
 } from "node:fs";
-import { basename, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 
 import {
   canonicalPhaseDirName,
@@ -20,6 +17,11 @@ import {
   resolveMilestonePath,
 } from "./paths.js";
 import { logError, logWarning } from "./workflow-logger.js";
+import {
+  restoreManagedProjectionTreeSync,
+  shelterManagedProjectionTreeSync,
+  type ManagedProjectionTreeShelterReceipt,
+} from "./managed-projection-history.js";
 
 export interface MilestoneDirectoryShelter {
   restore(): void;
@@ -49,7 +51,7 @@ export function createMilestoneDirectoryShelter(
 ): MilestoneDirectoryShelter {
   const planningDir = milestonesDir(originalBasePath);
   const shelterDir = join(gsdRoot(originalBasePath), ".milestone-shelter");
-  const shelteredDirs: string[] = [];
+  const shelteredDirs: Array<{ dirName: string; receipt: ManagedProjectionTreeShelterReceipt }> = [];
   const mergeDirNames = milestoneDirectoryNames(originalBasePath, milestoneId, milestoneTitle);
   let restored = false;
 
@@ -95,15 +97,13 @@ function shelterMilestoneDirectory(
   planningDir: string,
   shelterDir: string,
   dirName: string,
-  shelteredDirs: string[],
+  shelteredDirs: Array<{ dirName: string; receipt: ManagedProjectionTreeShelterReceipt }>,
 ): void {
   const srcDir = join(planningDir, dirName);
   const dstDir = join(shelterDir, dirName);
   try {
-    mkdirSync(shelterDir, { recursive: true });
-    cpSync(srcDir, dstDir, { recursive: true, force: true });
-    rmSync(srcDir, { recursive: true, force: true });
-    shelteredDirs.push(dirName);
+    const receipt = shelterManagedProjectionTreeSync(dirname(dirname(planningDir)), srcDir, dstDir);
+    shelteredDirs.push({ dirName, receipt });
   } catch (err) {
     // Non-fatal — if shelter fails, the merge may still succeed.
     logWarning("worktree", `milestone shelter failed (${dirName}): ${err instanceof Error ? err.message : String(err)}`);
@@ -113,12 +113,12 @@ function shelterMilestoneDirectory(
 function restoreShelteredDirectories(
   planningDir: string,
   shelterDir: string,
-  shelteredDirs: string[],
+  shelteredDirs: Array<{ dirName: string; receipt: ManagedProjectionTreeShelterReceipt }>,
 ): void {
   if (shelteredDirs.length === 0) return;
 
   let restoreFailed = false;
-  for (const dirName of shelteredDirs) {
+  for (const { dirName, receipt } of shelteredDirs) {
     const src = join(shelterDir, dirName);
     if (!existsSync(src)) {
       logWarning(
@@ -128,12 +128,11 @@ function restoreShelteredDirectories(
       continue;
     }
     try {
-      mkdirSync(planningDir, { recursive: true });
       const dest = join(planningDir, dirName);
       if (restoreEntryFn) {
         restoreEntryFn(src, dest);
       } else {
-        cpSync(src, dest, { recursive: true, force: true });
+        restoreManagedProjectionTreeSync(receipt);
       }
     } catch (err) {
       restoreFailed = true;
@@ -149,11 +148,5 @@ function restoreShelteredDirectories(
     return;
   }
 
-  if (existsSync(shelterDir)) {
-    try {
-      rmSync(shelterDir, { recursive: true, force: true });
-    } catch (err) {
-      logWarning("worktree", `shelter cleanup failed: ${err instanceof Error ? err.message : String(err)}`);
-    }
-  }
+  if (existsSync(shelterDir)) logWarning("worktree", `shelter cleanup incomplete at ${shelterDir}`);
 }

@@ -1,0 +1,739 @@
+{
+  "preview_schema_version": 1,
+  "preview_id": "planning-loss-surfaces",
+  "import_kind": "legacy-corpus",
+  "importer_version": "v1-test",
+  "base_project_revision": 0,
+  "base_authority_epoch": 0,
+  "base_database_schema_version": 45,
+  "source_set_hash": "sha256:497420809b5a4d58f91ccc338278d9897db51ccae6b6e5b06ba1a0b387e65aaf",
+  "change_set_hash": "sha256:c0f19cd5fd3b9805fe926cf8c6a4d508d6f95ae404cde6cf92b182573e51cd49",
+  "counts": {
+    "create": 3,
+    "update": 0,
+    "delete": 0,
+    "preserve": 9,
+    "unparsed": 1,
+    "unresolved": 4
+  },
+  "sources": [
+    {
+      "source_id": "source-archive-plan",
+      "path": ".planning/.archive/03-retired/03-01-PLAN.md",
+      "kind": "markdown",
+      "byte_size": 31,
+      "sha256": "sha256:227b3af2de747ccf401432f01babfdad21c301b3771d62e83991fbf448af2a7e",
+      "parser_id": "planning-supplemental-classifier",
+      "parser_version": "1",
+      "encoding": "utf-8",
+      "outcome": "ignored-with-reason"
+    },
+    {
+      "source_id": "source-roadmap",
+      "path": ".planning/ROADMAP.md",
+      "kind": "markdown",
+      "byte_size": 117,
+      "sha256": "sha256:46fe49daef423222c2ceb1c6220dc13456007cd1bee4cbf78dd741fed0f75325",
+      "parser_id": "planning-roadmap-parser",
+      "parser_version": "1",
+      "encoding": "utf-8",
+      "outcome": "mapped"
+    },
+    {
+      "source_id": "source-state",
+      "path": ".planning/STATE.md",
+      "kind": "markdown",
+      "byte_size": 49,
+      "sha256": "sha256:a0aba3d011607a937d06fffa5f63a158caee22b5c7f7971ed95047f77aeeb418",
+      "parser_id": "planning-parser",
+      "parser_version": "1",
+      "encoding": "utf-8",
+      "outcome": "preserved"
+    },
+    {
+      "source_id": "source-config",
+      "path": ".planning/config.json",
+      "kind": "json",
+      "byte_size": 37,
+      "sha256": "sha256:3927ba4912c6e7363354c64e0bf2a38ef8d022cb7982f00231656d5a57f7187a",
+      "parser_id": "planning-parser",
+      "parser_version": "1",
+      "encoding": "utf-8",
+      "outcome": "preserved"
+    },
+    {
+      "source_id": "source-decision",
+      "path": ".planning/decisions/D001-storage.md",
+      "kind": "markdown",
+      "byte_size": 39,
+      "sha256": "sha256:e24f15ecb4e5e2006d6e98c3ba3acd6bbc0cbf611c7b379098198a2269edfb49",
+      "parser_id": "planning-supplemental-classifier",
+      "parser_version": "1",
+      "encoding": "utf-8",
+      "outcome": "preserved"
+    },
+    {
+      "source_id": "source-skipped-plan",
+      "path": ".planning/phases/01-checked/01-01-PLAN.md",
+      "kind": "markdown",
+      "byte_size": 102,
+      "sha256": "sha256:100f5913d5272d849b3e6655e0507171d9be19ca659281766e46bdc9774dcc6f",
+      "parser_id": "planning-parser",
+      "parser_version": "1",
+      "encoding": "utf-8",
+      "outcome": "mapped"
+    },
+    {
+      "source_id": "source-placeholder-plan",
+      "path": ".planning/phases/01-checked/01-02-PLAN.md",
+      "kind": "markdown",
+      "byte_size": 68,
+      "sha256": "sha256:616a314f0c0f64daa81b544bff009d2e78de6342b7663338dc7c3ad3dcc96266",
+      "parser_id": "planning-parser",
+      "parser_version": "1",
+      "encoding": "utf-8",
+      "outcome": "unparsed"
+    },
+    {
+      "source_id": "source-phase-extra",
+      "path": ".planning/phases/01-checked/01-EXTRA.md",
+      "kind": "markdown",
+      "byte_size": 39,
+      "sha256": "sha256:2244c4f84bfc540b1d2856d190be58eb9984e17ad7ce76b14d2d68bfeb2ec0b0",
+      "parser_id": "planning-supplemental-classifier",
+      "parser_version": "1",
+      "encoding": "utf-8",
+      "outcome": "preserved"
+    },
+    {
+      "source_id": "source-phase-verification",
+      "path": ".planning/phases/01-checked/01-VERIFICATION.md",
+      "kind": "markdown",
+      "byte_size": 38,
+      "sha256": "sha256:6ca8924df9bf0e81b1d0154ea6b9798efadec0314b27abb21af7d96068a40c90",
+      "parser_id": "planning-supplemental-classifier",
+      "parser_version": "1",
+      "encoding": "utf-8",
+      "outcome": "preserved"
+    },
+    {
+      "source_id": "source-orphan-summary",
+      "path": ".planning/phases/02-unchecked/02-01-SUMMARY.md",
+      "kind": "markdown",
+      "byte_size": 76,
+      "sha256": "sha256:073ab3afb10513590d9a3ca90114bceb3d15b3607a23196752b83a175c53aabc",
+      "parser_id": "gsd-lifecycle-truth",
+      "parser_version": "1",
+      "encoding": "utf-8",
+      "outcome": "preserved"
+    },
+    {
+      "source_id": "source-quick-plan",
+      "path": ".planning/quick/001-fix/001-PLAN.md",
+      "kind": "markdown",
+      "byte_size": 32,
+      "sha256": "sha256:98e149c2bc170c331e89d024bfb01ec4986e8f6cbc9f2a7e9c3e3737f337d62a",
+      "parser_id": "planning-supplemental-classifier",
+      "parser_version": "1",
+      "encoding": "utf-8",
+      "outcome": "preserved"
+    },
+    {
+      "source_id": "source-research",
+      "path": ".planning/research/NOTES.md",
+      "kind": "markdown",
+      "byte_size": 31,
+      "sha256": "sha256:823e150801884c8c500b643cdfc42e41f5c35b17bd6f974b1277f2d0ab57cf23",
+      "parser_id": "planning-supplemental-classifier",
+      "parser_version": "1",
+      "encoding": "utf-8",
+      "outcome": "preserved"
+    },
+    {
+      "source_id": "source-seed",
+      "path": ".planning/seeds/idea.md",
+      "kind": "markdown",
+      "byte_size": 32,
+      "sha256": "sha256:b89746bf14696e2a3a3602fb351f4461ca5c3971809562b62b2bf0a39f1f668b",
+      "parser_id": "planning-supplemental-classifier",
+      "parser_version": "1",
+      "encoding": "utf-8",
+      "outcome": "preserved"
+    }
+  ],
+  "changes": [
+    {
+      "change_id": "change-config-preserve",
+      "action": "preserve",
+      "target": {
+        "kind": "legacy-artifact",
+        "key": ".planning/config.json"
+      },
+      "raw": {
+        "source_id": "source-config",
+        "locator": {
+          "start_byte": 0,
+          "end_byte": 37,
+          "line": 1
+        },
+        "value": "{\"mode\":\"guided\",\"depth\":\"standard\"}\n",
+        "sha256": "sha256:3927ba4912c6e7363354c64e0bf2a38ef8d022cb7982f00231656d5a57f7187a"
+      },
+      "normalized": {
+        "path": ".planning/config.json",
+        "preservation": "verbatim"
+      },
+      "provenance": {
+        "source_id": "source-config",
+        "parser_id": "planning-parser",
+        "parser_version": "1"
+      },
+      "reason_code": "planning-config-not-canonical"
+    },
+    {
+      "change_id": "change-decision-preserve",
+      "action": "preserve",
+      "target": {
+        "kind": "legacy-artifact",
+        "key": ".planning/decisions/D001-storage.md"
+      },
+      "raw": {
+        "source_id": "source-decision",
+        "locator": {
+          "start_byte": 0,
+          "end_byte": 39,
+          "line": 1
+        },
+        "value": "# Keep SQLite\n\nLegacy decision detail.\n",
+        "sha256": "sha256:e24f15ecb4e5e2006d6e98c3ba3acd6bbc0cbf611c7b379098198a2269edfb49"
+      },
+      "normalized": {
+        "path": ".planning/decisions/D001-storage.md",
+        "preservation": "verbatim"
+      },
+      "provenance": {
+        "source_id": "source-decision",
+        "parser_id": "planning-supplemental-classifier",
+        "parser_version": "1"
+      },
+      "reason_code": "planning-decision-not-modeled"
+    },
+    {
+      "change_id": "change-extra-preserve",
+      "action": "preserve",
+      "target": {
+        "kind": "legacy-artifact",
+        "key": ".planning/phases/01-checked/01-EXTRA.md"
+      },
+      "raw": {
+        "source_id": "source-phase-extra",
+        "locator": {
+          "start_byte": 0,
+          "end_byte": 39,
+          "line": 1
+        },
+        "value": "# Notes\n\nUnsupported phase attachment.\n",
+        "sha256": "sha256:2244c4f84bfc540b1d2856d190be58eb9984e17ad7ce76b14d2d68bfeb2ec0b0"
+      },
+      "normalized": {
+        "path": ".planning/phases/01-checked/01-EXTRA.md",
+        "preservation": "verbatim"
+      },
+      "provenance": {
+        "source_id": "source-phase-extra",
+        "parser_id": "planning-supplemental-classifier",
+        "parser_version": "1"
+      },
+      "reason_code": "planning-phase-extra-not-modeled"
+    },
+    {
+      "change_id": "change-quick-preserve",
+      "action": "preserve",
+      "target": {
+        "kind": "legacy-artifact",
+        "key": ".planning/quick/001-fix/001-PLAN.md"
+      },
+      "raw": {
+        "source_id": "source-quick-plan",
+        "locator": {
+          "start_byte": 0,
+          "end_byte": 32,
+          "line": 1
+        },
+        "value": "# Quick 001\n\nFix a legacy typo.\n",
+        "sha256": "sha256:98e149c2bc170c331e89d024bfb01ec4986e8f6cbc9f2a7e9c3e3737f337d62a"
+      },
+      "normalized": {
+        "path": ".planning/quick/001-fix/001-PLAN.md",
+        "preservation": "verbatim"
+      },
+      "provenance": {
+        "source_id": "source-quick-plan",
+        "parser_id": "planning-supplemental-classifier",
+        "parser_version": "1"
+      },
+      "reason_code": "planning-quick-not-modeled"
+    },
+    {
+      "change_id": "change-research-preserve",
+      "action": "preserve",
+      "target": {
+        "kind": "legacy-artifact",
+        "key": ".planning/research/NOTES.md"
+      },
+      "raw": {
+        "source_id": "source-research",
+        "locator": {
+          "start_byte": 0,
+          "end_byte": 31,
+          "line": 1
+        },
+        "value": "# Notes\n\nRetain this research.\n",
+        "sha256": "sha256:823e150801884c8c500b643cdfc42e41f5c35b17bd6f974b1277f2d0ab57cf23"
+      },
+      "normalized": {
+        "path": ".planning/research/NOTES.md",
+        "preservation": "verbatim"
+      },
+      "provenance": {
+        "source_id": "source-research",
+        "parser_id": "planning-supplemental-classifier",
+        "parser_version": "1"
+      },
+      "reason_code": "planning-research-not-modeled"
+    },
+    {
+      "change_id": "change-roadmap-phase-01",
+      "action": "create",
+      "target": {
+        "kind": "slice",
+        "key": "legacy-phase-01",
+        "field": "title"
+      },
+      "raw": {
+        "source_id": "source-roadmap",
+        "locator": {
+          "start_byte": 11,
+          "end_byte": 49,
+          "line": 3
+        },
+        "value": "- [x] Phase 1: Checked without summary",
+        "sha256": "sha256:6c5ec8d3f18a7aba367d00be8e18d574d86bf2dcb41583c6653af5bb7e6e42fc"
+      },
+      "normalized": "Checked without summary",
+      "provenance": {
+        "source_id": "source-roadmap",
+        "parser_id": "planning-roadmap-parser",
+        "parser_version": "1"
+      },
+      "reason_code": "planning-roadmap-phase-title"
+    },
+    {
+      "change_id": "change-roadmap-phase-02",
+      "action": "create",
+      "target": {
+        "kind": "slice",
+        "key": "legacy-phase-02",
+        "field": "title"
+      },
+      "raw": {
+        "source_id": "source-roadmap",
+        "locator": {
+          "start_byte": 50,
+          "end_byte": 87,
+          "line": 4
+        },
+        "value": "- [ ] Phase 2: Unchecked with summary",
+        "sha256": "sha256:963dd73572d849eaba05c6957ad2c2c5ef3ab6d8559d03a96bab4a8c53647e40"
+      },
+      "normalized": "Unchecked with summary",
+      "provenance": {
+        "source_id": "source-roadmap",
+        "parser_id": "planning-roadmap-parser",
+        "parser_version": "1"
+      },
+      "reason_code": "planning-roadmap-phase-title"
+    },
+    {
+      "change_id": "change-seed-preserve",
+      "action": "preserve",
+      "target": {
+        "kind": "legacy-artifact",
+        "key": ".planning/seeds/idea.md"
+      },
+      "raw": {
+        "source_id": "source-seed",
+        "locator": {
+          "start_byte": 0,
+          "end_byte": 32,
+          "line": 1
+        },
+        "value": "# Later idea\n\nRetain this seed.\n",
+        "sha256": "sha256:b89746bf14696e2a3a3602fb351f4461ca5c3971809562b62b2bf0a39f1f668b"
+      },
+      "normalized": {
+        "path": ".planning/seeds/idea.md",
+        "preservation": "verbatim"
+      },
+      "provenance": {
+        "source_id": "source-seed",
+        "parser_id": "planning-supplemental-classifier",
+        "parser_version": "1"
+      },
+      "reason_code": "planning-seed-not-modeled"
+    },
+    {
+      "change_id": "change-skipped-cancelled",
+      "action": "create",
+      "target": {
+        "kind": "task",
+        "key": "legacy-phase-01-plan-01",
+        "field": "status"
+      },
+      "raw": {
+        "source_id": "source-skipped-plan",
+        "locator": {
+          "start_byte": 35,
+          "end_byte": 50,
+          "line": 4
+        },
+        "value": "status: skipped",
+        "sha256": "sha256:8e97e2292b8bea8b1283f7a0164a95945cf3c08d2409913ac408012d23a224ba"
+      },
+      "normalized": "cancelled",
+      "provenance": {
+        "source_id": "source-skipped-plan",
+        "parser_id": "planning-parser",
+        "parser_version": "1"
+      },
+      "reason_code": "legacy-skipped-means-cancelled"
+    },
+    {
+      "change_id": "change-state-preserve",
+      "action": "preserve",
+      "target": {
+        "kind": "legacy-artifact",
+        "key": ".planning/STATE.md"
+      },
+      "raw": {
+        "source_id": "source-state",
+        "locator": {
+          "start_byte": 0,
+          "end_byte": 49,
+          "line": 1
+        },
+        "value": "# State\n\n**Current Phase:** 2\n**Status:** active\n",
+        "sha256": "sha256:a0aba3d011607a937d06fffa5f63a158caee22b5c7f7971ed95047f77aeeb418"
+      },
+      "normalized": {
+        "path": ".planning/STATE.md",
+        "preservation": "verbatim"
+      },
+      "provenance": {
+        "source_id": "source-state",
+        "parser_id": "planning-parser",
+        "parser_version": "1"
+      },
+      "reason_code": "planning-state-not-canonical"
+    },
+    {
+      "change_id": "change-summary-preserve",
+      "action": "preserve",
+      "target": {
+        "kind": "legacy-artifact",
+        "key": ".planning/phases/02-unchecked/02-01-SUMMARY.md"
+      },
+      "raw": {
+        "source_id": "source-orphan-summary",
+        "locator": {
+          "start_byte": 0,
+          "end_byte": 76,
+          "line": 1
+        },
+        "value": "---\nphase: \"02-unchecked\"\nplan: \"01\"\n---\n\n# Summary\n\nWork appears complete.\n",
+        "sha256": "sha256:073ab3afb10513590d9a3ca90114bceb3d15b3607a23196752b83a175c53aabc"
+      },
+      "normalized": {
+        "path": ".planning/phases/02-unchecked/02-01-SUMMARY.md",
+        "preservation": "verbatim"
+      },
+      "provenance": {
+        "source_id": "source-orphan-summary",
+        "parser_id": "gsd-lifecycle-truth",
+        "parser_version": "1"
+      },
+      "reason_code": "orphan-summary-preserved-verbatim"
+    },
+    {
+      "change_id": "change-verification-preserve",
+      "action": "preserve",
+      "target": {
+        "kind": "legacy-artifact",
+        "key": ".planning/phases/01-checked/01-VERIFICATION.md"
+      },
+      "raw": {
+        "source_id": "source-phase-verification",
+        "locator": {
+          "start_byte": 0,
+          "end_byte": 38,
+          "line": 1
+        },
+        "value": "# Verification\n\nManual check pending.\n",
+        "sha256": "sha256:6ca8924df9bf0e81b1d0154ea6b9798efadec0314b27abb21af7d96068a40c90"
+      },
+      "normalized": {
+        "path": ".planning/phases/01-checked/01-VERIFICATION.md",
+        "preservation": "verbatim"
+      },
+      "provenance": {
+        "source_id": "source-phase-verification",
+        "parser_id": "planning-supplemental-classifier",
+        "parser_version": "1"
+      },
+      "reason_code": "planning-verification-not-modeled"
+    }
+  ],
+  "diagnoses": [
+    {
+      "diagnosis_id": "diagnosis-archive-ignored",
+      "code": "archived-planning-input",
+      "severity": "info",
+      "source_id": "source-archive-plan",
+      "locator": {
+        "start_byte": 0,
+        "end_byte": 31,
+        "line": 1
+      },
+      "raw_value": "# Retired plan\n\nDo not import.\n",
+      "message": "Archived planning input is excluded from canonical work."
+    },
+    {
+      "diagnosis_id": "diagnosis-checked-without-summary",
+      "code": "conflicting-completion-evidence",
+      "severity": "blocker",
+      "source_id": "source-roadmap",
+      "locator": {
+        "start_byte": 11,
+        "end_byte": 49,
+        "line": 3
+      },
+      "raw_value": "- [x] Phase 1: Checked without summary",
+      "message": "Checked roadmap state lacks supporting summary evidence."
+    },
+    {
+      "diagnosis_id": "diagnosis-config-loss",
+      "code": "unmodeled-planning-config",
+      "severity": "warning",
+      "source_id": "source-config",
+      "locator": {
+        "start_byte": 0,
+        "end_byte": 37,
+        "line": 1
+      },
+      "raw_value": "{\"mode\":\"guided\",\"depth\":\"standard\"}\n",
+      "message": "Legacy configuration has no lossless canonical field."
+    },
+    {
+      "diagnosis_id": "diagnosis-decision-loss",
+      "code": "unmodeled-planning-decision",
+      "severity": "warning",
+      "source_id": "source-decision",
+      "locator": {
+        "start_byte": 0,
+        "end_byte": 39,
+        "line": 1
+      },
+      "raw_value": "# Keep SQLite\n\nLegacy decision detail.\n",
+      "message": "Legacy decision content requires verbatim preservation."
+    },
+    {
+      "diagnosis_id": "diagnosis-malformed-roadmap-row",
+      "code": "malformed-roadmap-row",
+      "severity": "blocker",
+      "source_id": "source-roadmap",
+      "locator": {
+        "start_byte": 88,
+        "end_byte": 116,
+        "line": 5
+      },
+      "raw_value": "- [~] Phase ?: malformed row",
+      "message": "Malformed roadmap membership cannot be inferred."
+    },
+    {
+      "diagnosis_id": "diagnosis-orphan-summary-conflict",
+      "code": "conflicting-completion-evidence",
+      "severity": "blocker",
+      "source_id": "source-orphan-summary",
+      "locator": {
+        "start_byte": 53,
+        "end_byte": 75,
+        "line": 8
+      },
+      "raw_value": "Work appears complete.",
+      "message": "An orphan summary conflicts with the unchecked roadmap state."
+    },
+    {
+      "diagnosis_id": "diagnosis-phase-extra-loss",
+      "code": "unmodeled-phase-extra",
+      "severity": "warning",
+      "source_id": "source-phase-extra",
+      "locator": {
+        "start_byte": 0,
+        "end_byte": 39,
+        "line": 1
+      },
+      "raw_value": "# Notes\n\nUnsupported phase attachment.\n",
+      "message": "Unsupported phase attachment requires verbatim preservation."
+    },
+    {
+      "diagnosis_id": "diagnosis-placeholder-plan",
+      "code": "placeholder-plan",
+      "severity": "blocker",
+      "source_id": "source-placeholder-plan",
+      "locator": {
+        "start_byte": 40,
+        "end_byte": 67,
+        "line": 6
+      },
+      "raw_value": "<objective>TODO</objective>",
+      "message": "Placeholder scaffolding cannot become a fabricated task."
+    },
+    {
+      "diagnosis_id": "diagnosis-quick-loss",
+      "code": "unmodeled-quick-work",
+      "severity": "warning",
+      "source_id": "source-quick-plan",
+      "locator": {
+        "start_byte": 0,
+        "end_byte": 32,
+        "line": 1
+      },
+      "raw_value": "# Quick 001\n\nFix a legacy typo.\n",
+      "message": "Quick work has no lossless canonical mapping in this contract."
+    },
+    {
+      "diagnosis_id": "diagnosis-research-loss",
+      "code": "unmodeled-planning-research",
+      "severity": "warning",
+      "source_id": "source-research",
+      "locator": {
+        "start_byte": 0,
+        "end_byte": 31,
+        "line": 1
+      },
+      "raw_value": "# Notes\n\nRetain this research.\n",
+      "message": "Legacy research requires verbatim preservation."
+    },
+    {
+      "diagnosis_id": "diagnosis-seed-loss",
+      "code": "unmodeled-planning-seed",
+      "severity": "warning",
+      "source_id": "source-seed",
+      "locator": {
+        "start_byte": 0,
+        "end_byte": 32,
+        "line": 1
+      },
+      "raw_value": "# Later idea\n\nRetain this seed.\n",
+      "message": "Legacy seed content requires verbatim preservation."
+    },
+    {
+      "diagnosis_id": "diagnosis-state-loss",
+      "code": "unmodeled-planning-state",
+      "severity": "warning",
+      "source_id": "source-state",
+      "locator": {
+        "start_byte": 0,
+        "end_byte": 49,
+        "line": 1
+      },
+      "raw_value": "# State\n\n**Current Phase:** 2\n**Status:** active\n",
+      "message": "Legacy state cannot override database authority."
+    },
+    {
+      "diagnosis_id": "diagnosis-verification-loss",
+      "code": "unmodeled-phase-verification",
+      "severity": "warning",
+      "source_id": "source-phase-verification",
+      "locator": {
+        "start_byte": 0,
+        "end_byte": 38,
+        "line": 1
+      },
+      "raw_value": "# Verification\n\nManual check pending.\n",
+      "message": "Legacy verification text is evidence, not canonical validation."
+    }
+  ],
+  "resolutions": [
+    {
+      "diagnosis_id": "diagnosis-archive-ignored",
+      "disposition": "preserved"
+    },
+    {
+      "diagnosis_id": "diagnosis-checked-without-summary",
+      "disposition": "requires-user",
+      "target": {
+        "kind": "slice",
+        "key": "legacy-phase-01",
+        "field": "status"
+      }
+    },
+    {
+      "diagnosis_id": "diagnosis-config-loss",
+      "disposition": "preserved"
+    },
+    {
+      "diagnosis_id": "diagnosis-decision-loss",
+      "disposition": "preserved"
+    },
+    {
+      "diagnosis_id": "diagnosis-malformed-roadmap-row",
+      "disposition": "requires-user",
+      "target": {
+        "kind": "roadmap-row",
+        "key": "malformed-phase"
+      }
+    },
+    {
+      "diagnosis_id": "diagnosis-orphan-summary-conflict",
+      "disposition": "requires-user",
+      "target": {
+        "kind": "slice",
+        "key": "legacy-phase-02",
+        "field": "status"
+      }
+    },
+    {
+      "diagnosis_id": "diagnosis-phase-extra-loss",
+      "disposition": "preserved"
+    },
+    {
+      "diagnosis_id": "diagnosis-placeholder-plan",
+      "disposition": "requires-user",
+      "target": {
+        "kind": "task",
+        "key": "legacy-phase-01-plan-02"
+      }
+    },
+    {
+      "diagnosis_id": "diagnosis-quick-loss",
+      "disposition": "preserved"
+    },
+    {
+      "diagnosis_id": "diagnosis-research-loss",
+      "disposition": "preserved"
+    },
+    {
+      "diagnosis_id": "diagnosis-seed-loss",
+      "disposition": "preserved"
+    },
+    {
+      "diagnosis_id": "diagnosis-state-loss",
+      "disposition": "preserved"
+    },
+    {
+      "diagnosis_id": "diagnosis-verification-loss",
+      "disposition": "preserved"
+    }
+  ]
+}

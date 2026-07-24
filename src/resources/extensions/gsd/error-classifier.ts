@@ -85,6 +85,14 @@ const TOOL_SURFACE_NOT_READY_RE = new RegExp(TOOL_SURFACE_NOT_READY, "i");
 // Context-window 400s stay in SERVER_RE (checked earlier).
 const MODEL_ERROR_RE =
   /\b400\b.*\binvalid argument\b|\binvalid argument\b.*\b400\b|grammar is too complex|\b400\b.*\binvalid params\b(?!.*context)|invalid json payload.*unknown name ["'](?:const|patternProperties)["']|input_schema: JSON schema is invalid/i;
+// Provider adapters throw "No API key for provider: X" at request time when a
+// stored credential is expired or unrefreshable — selection-time hasAuth()
+// passed, but no usable key materialized. This is exactly the condition
+// fallback chains exist for, so route it through the model-error (fallback-
+// attempting) branch instead of the terminal unknown pause (#1533).
+// Genuine auth rejections (401 unauthorized, forbidden, …) still classify as
+// permanent earlier and keep precedence.
+const NO_API_KEY_RE = /no api key (?:available )?(?:for|found)(?: provider)?:?/i;
 
 // Provider-side model entitlement rejection: the SDK accepted the model switch,
 // but the provider refused at request time because the current account/plan/tier
@@ -197,8 +205,10 @@ export function classifyError(errorMsg: string, retryAfterMs?: number): ErrorCla
     return { kind: "connection", retryAfterMs: retryAfterMs ?? 15_000 };
   }
 
-  // 7. Model/payload errors — wrong model or incompatible request for provider
-  if (MODEL_ERROR_RE.test(errorMsg)) {
+  // 7. Model/payload errors — wrong model or incompatible request for provider,
+  //    or a credential that failed to materialize at request time (#1533).
+  //    Both are fallback-eligible, not same-model transient.
+  if (MODEL_ERROR_RE.test(errorMsg) || NO_API_KEY_RE.test(errorMsg)) {
     return { kind: "model-error" };
   }
 

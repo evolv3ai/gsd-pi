@@ -55,7 +55,7 @@ import { createWorkspace, scopeMilestone } from "../workspace.js";
 import { supportsStructuredQuestions } from "../workflow-mcp.js";
 import { getRegisteredToolSnapshot, getToolBaselineSnapshot } from "../auto-model-selection.js";
 import { deriveState } from "../state.js";
-import { isClosedStatus } from "../status-guards.js";
+import { isSkippedForDispatch } from "../status-guards.js";
 import { getErrorMessage } from "../error-utils.js";
 import { logWarning } from "../workflow-logger.js";
 import { normalizeRealPath } from "../paths.js";
@@ -162,8 +162,15 @@ function shouldAdoptActiveMilestone(
     return false;
   }
 
+  // Adopt the active milestone whenever the session's current milestone is no
+  // longer a valid dispatch target per the canonical isSkippedForDispatch
+  // predicate (a derived milestone status is only complete/active/pending/parked,
+  // so in practice "closed or parked"), rather than the narrower isClosedStatus.
+  // This is the root-cause fix for the permanent dispatch-mismatch guard: a
+  // parked current milestone previously left currentMilestoneId stuck because
+  // isClosedStatus ignored it.
   const currentMilestone = state.registry.find((milestone) => milestone.id === currentMilestoneId);
-  return !!currentMilestone && isClosedStatus(currentMilestone.status);
+  return !!currentMilestone && isSkippedForDispatch(currentMilestone.status);
 }
 
 /**

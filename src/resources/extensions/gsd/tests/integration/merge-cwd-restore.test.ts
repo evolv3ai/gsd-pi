@@ -29,6 +29,7 @@ import { tmpdir } from "node:os";
 import { execSync } from "node:child_process";
 
 import { mergeMilestoneToMain } from "../../auto-worktree-merge.ts";
+import { closeDatabase } from "../../gsd-db.ts";
 import { MergeConflictError } from "../../git-service.ts";
 import { seedMergeReadyMilestone } from "../merge-ready-fixture.ts";
 
@@ -48,7 +49,7 @@ function createTempRepo(): string {
   run("git config user.email test@test.com", dir);
   run("git config user.name Test", dir);
   writeFileSync(join(dir, "README.md"), "# test\n");
-  writeFileSync(join(dir, ".gitignore"), ".gsd/worktrees/\n");
+  writeFileSync(join(dir, ".gitignore"), ".gsd/worktrees/\n.gsd/gsd.db*\n");
   mkdirSync(join(dir, ".gsd"), { recursive: true });
   writeFileSync(join(dir, ".gsd", "STATE.md"), "# State\n");
   run("git add .", dir);
@@ -76,6 +77,7 @@ describe("merge cwd restore (#2929)", () => {
 
   afterEach(() => {
     process.chdir(savedCwd);
+    closeDatabase();
     try { run("git reset --hard HEAD", repo); } catch { /* */ }
     rmSync(repo, { recursive: true, force: true });
   });

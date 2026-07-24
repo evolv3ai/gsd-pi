@@ -77,7 +77,7 @@ Setting `prefer_skills: []` does **not** disable skill discovery — it just mea
 
 Preference loading never throws. When a file is malformed or contains invalid settings, GSD falls back to safe defaults but attaches structured diagnostics (see `collectPreferenceDiagnostics()` in `preferences-diagnostics.ts`) so the problem is reported instead of silently ignored:
 
-- **Parse failures** (missing closing `---` delimiter, YAML syntax error, or an unrecognized file format) cause the whole file to be ignored. Loading continues to the next candidate — a valid global or legacy preferences file is still used, and a malformed project file never becomes the effective wrapper or blocks fallback.
+- **Parse failures** (missing closing `---` delimiter, YAML syntax error, or an unrecognized file format) cause the whole file to be ignored. Loading continues to the next candidate and a valid global or legacy preferences file is still used. The safety exception is a malformed project file that attempts to configure `runtime.contract`: GSD preserves an invalid-contract marker so runtime operations fail closed instead of falling back to a different contract.
 - **Validation problems** (unknown keys, type mismatches) are sanitized or dropped per-field; the remaining valid settings in the file still apply.
 
 Diagnostics record the file path, scope (global/project), severity (error/warning), kind (parse/validation), and — for YAML parse errors — the line and column. They surface through session-start notifications, `/gsd doctor`, and auto-mode preflight, with each surface deduping repeated diagnostics.
@@ -173,6 +173,12 @@ Diagnostics record the file path, scope (global/project), severity (error/warnin
     - `commit_policy`: optional `"auto"` or `"skip"` to include or skip commit actions per repo.
   - Planning tools consume repository IDs through `targetRepositories`: `gsd_plan_slice.targetRepositories` sets a slice-wide default, and `gsd_plan_task.targetRepositories` records the repositories an individual task touches. Values must be declared IDs or the implicit `project`; omit these fields in single-repo projects.
   - In parent mode with declared child repositories, `/gsd codebase generate` and automatic `.gsd/CODEBASE.md` refreshes enumerate `project` plus each child repository, render repo-labeled sections, and store repository IDs in map metadata.
+
+- `runtime.contract`: nominates a project-local runtime contract. When omitted, GSD discovers `script/local-runtime/AGENT.md`, `README.md`, and the first available `runtime.mjs`, `runtime.js`, `runtime.ts`, or `runtime.sh`. Keys:
+  - `path`: optional contract directory relative to the active project or worktree root. Default: `script/local-runtime`.
+  - `entry`: optional canonical entry point relative to the contract directory. When set, the nominated file must exist and validate.
+  - Both paths must remain inside the project. See [Project-local runtime contract](../../../../../docs/user-docs/local-runtime-contract.md).
+  - Configure this only in project preferences; global preferences do not activate or override runtime contracts. An invalid project override fails closed instead of falling back to the default convention.
 
 ## Workspace Example
 

@@ -187,6 +187,7 @@ export const KNOWN_PREFERENCE_KEYS = new Set<string>([
   "planning_depth",
   "claude_code_mcp",
   "workspace",
+  "runtime",
 ]);
 
 /**
@@ -473,6 +474,17 @@ export interface WorkspacePreferences {
   repositories?: Record<string, WorkspaceRepositoryPreference>;
 }
 
+export interface RuntimeContractPreferences {
+  /** Contract directory relative to the active project/worktree root. */
+  path?: string;
+  /** Canonical entry point relative to the contract directory. */
+  entry?: string;
+}
+
+export interface RuntimePreferences {
+  contract?: RuntimeContractPreferences;
+}
+
 export interface GSDPreferences {
   version?: number;
   mode?: WorkflowMode;
@@ -579,6 +591,8 @@ export interface GSDPreferences {
   codebase?: CodebaseMapPreferences;
   /** Multi-repository parent workspace configuration. */
   workspace?: WorkspacePreferences;
+  /** Project-local runtime startup and teardown contract. */
+  runtime?: RuntimePreferences;
   /** Slice-level parallelism within a milestone. Disabled by default. */
   slice_parallel?: { enabled?: boolean; max_workers?: number };
   /** LLM safety harness configuration. Monitors, validates, and constrains LLM behavior during auto-mode. Enabled by default with warn-and-continue policy. */
@@ -671,6 +685,7 @@ export interface LoadedGSDPreferences {
   path: string;
   scope: "global" | "project";
   preferences: GSDPreferences;
+  projectRuntimeContract?: "valid" | "invalid";
   /** True when the file exists but its contents were ignored before merging. */
   ignored?: boolean;
   /** Validation warnings (unknown keys, type mismatches, deprecations). Empty when preferences are clean. */

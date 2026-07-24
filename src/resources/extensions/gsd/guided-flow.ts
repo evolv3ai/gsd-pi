@@ -46,7 +46,8 @@ import {
   relMilestoneFile, relSliceFile, clearPathCache,
 } from "./paths.js";
 import { join } from "node:path";
-import { readFileSync, existsSync, mkdirSync, readdirSync, rmSync } from "node:fs";
+import { readFileSync, existsSync, mkdirSync, readdirSync } from "node:fs";
+import { removeProjectionTreeSync } from "./atomic-write.js";
 import { readSessionLockData, isSessionLockProcessAlive } from "./session-lock.js";
 import { nativeAddAll, nativeCommit, nativeHasCommittedHead, nativeIsRepo, nativeInit } from "./native-git-bridge.js";
 import { isInheritedRepo } from "./repo-identity.js";
@@ -428,7 +429,7 @@ function clearEmptyLegacyDeepSetupPseudoMilestones(basePath: string, entries: st
         remaining.push(entry);
         continue;
       }
-      rmSync(entryPath, { recursive: true, force: true });
+      removeProjectionTreeSync(entryPath);
       logWarning("guided", `Self-heal: removed empty legacy deep setup pseudo-milestone directory ${entry}`);
     } catch (err) {
       remaining.push(entry);
@@ -2086,7 +2087,7 @@ export async function showSmartEntry(
         } else {
           ctx.ui.notify(
             result.message ??
-              `Markdown planning artifacts do not match the authoritative DB. Run \`${result.recoveryCommand ?? "/gsd recover --confirm"}\` to import markdown explicitly.`,
+              `Markdown planning artifacts do not match the authoritative DB. Run \`${result.recoveryCommand ?? "/gsd recover"}\` to preview an explicit markdown import.`,
             "warning",
           );
         }

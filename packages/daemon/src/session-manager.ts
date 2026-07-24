@@ -53,7 +53,6 @@ function isTerminalNotification(event: Record<string, unknown>): boolean {
   if (TERMINAL_PREFIXES.some((prefix) => message.startsWith(prefix))) return true;
   return PAUSED_PREFIXES.some((prefix) => message.startsWith(prefix)) && isNonBlockingPauseNotice(message);
 }
-
 function isNonBlockingPauseNotice(message: string): boolean {
   return message.includes('idempotent advance: unit already active');
 }
@@ -553,4 +552,3 @@ function extractBlocker(event: SdkAgentEvent): PendingBlocker {
     event: uiEvent,
   };
 }
-

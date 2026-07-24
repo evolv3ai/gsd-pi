@@ -5,7 +5,7 @@
 
 import { describe, it, afterEach } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
@@ -55,6 +55,22 @@ describe("gsd_doctor orphan milestone directory check (#4996)", () => {
     assert.equal(orphan?.severity, "warning");
     assert.equal(orphan?.fixable, true);
     assert.ok(orphan?.message.includes("M003"), "message should name the milestone");
+  });
+
+  it("removes an empty stub orphan milestone dir safely when the fix is approved", async () => {
+    base = makeBase();
+    stubDir(base, "M003");
+    const issues: DoctorIssue[] = [];
+    const fixes: string[] = [];
+
+    await checkRuntimeHealth(base, issues, fixes, code => code === "orphan_milestone_dir");
+
+    assert.equal(
+      fixes.includes("removed orphan milestone directory: M003"),
+      true,
+      JSON.stringify({ issues, fixes }),
+    );
+    assert.equal(existsSync(join(base, ".gsd", "milestones", "M003")), false);
   });
 
   it("(b) populated milestone dir is NOT reported", async () => {
@@ -112,5 +128,57 @@ describe("gsd_doctor orphan milestone directory check (#4996)", () => {
     assert.ok(orphan, "missing milestone directory with DB row should be reported");
     assert.equal(orphan?.severity, "warning");
     assert.equal(orphan?.fixable, false);
+  });
+
+  it("(f) phantom queued DB row with no content files is reported as orphan_milestone_db (#1524)", async () => {
+    base = makeBase();
+    const dbPath = join(base, ".gsd", "gsd.db");
+    openDatabase(dbPath);
+    // Phantom: queued row, no directory, no CONTEXT/ROADMAP/SUMMARY on disk.
+    insertMilestone({ id: "M015", status: "queued" });
+
+    const issues: DoctorIssue[] = [];
+    const fixes: string[] = [];
+    await checkRuntimeHealth(base, issues, fixes, () => false);
+
+    const orphan = issues.find(i => i.code === "orphan_milestone_db" && i.unitId === "M015");
+    assert.ok(orphan, "phantom queued row with no content must be reported as orphan");
+    assert.equal(orphan?.severity, "warning");
+  });
+
+  it("(g) queued DB row WITH content files is NOT reported as orphan_milestone_db (#1524)", async () => {
+    base = makeBase();
+    populateDir(base, "M005");
+    const dbPath = join(base, ".gsd", "gsd.db");
+    openDatabase(dbPath);
+    // Legitimate in-flight planning: queued row with a CONTEXT file on disk.
+    insertMilestone({ id: "M005", status: "queued" });
+
+    const issues: DoctorIssue[] = [];
+    const fixes: string[] = [];
+    await checkRuntimeHealth(base, issues, fixes, () => false);
+
+    const orphan = issues.find(i => i.code === "orphan_milestone_db" && i.unitId === "M005");
+    assert.ok(!orphan, "queued row with content files is legitimate in-flight planning, not an orphan");
+  });
+
+  it("(h) queued DB row with an empty on-disk milestone dir is NOT reported as orphan_milestone_db (#1524)", async () => {
+    base = makeBase();
+    // Discuss/queue flows create the milestone dir (e.g. `mkdir -p
+    // .gsd/milestones/<ID>/slices`) before any CONTEXT/ROADMAP is written, so
+    // the dir exists but is not yet content-bearing. resolveMilestonePath
+    // returns null for such a legacy scaffold, so the check must use directory
+    // presence, not content, or it warns during normal in-flight planning.
+    stubDir(base, "M006");
+    const dbPath = join(base, ".gsd", "gsd.db");
+    openDatabase(dbPath);
+    insertMilestone({ id: "M006", status: "queued" });
+
+    const issues: DoctorIssue[] = [];
+    const fixes: string[] = [];
+    await checkRuntimeHealth(base, issues, fixes, () => false);
+
+    const orphan = issues.find(i => i.code === "orphan_milestone_db" && i.unitId === "M006");
+    assert.ok(!orphan, "queued row with an existing (empty) milestone dir must not be flagged as a missing-directory orphan");
   });
 });

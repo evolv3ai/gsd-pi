@@ -85,6 +85,14 @@ gsd --mode mcp
 
 Compatible with Claude Desktop, VS Code Copilot, and any MCP host.
 
+MCP mode also exposes the workflow adapter tools used by headless and cloud runtimes:
+
+- Session control tools: `gsd_execute`, `gsd_status`, `gsd_result`, `gsd_cancel`, `gsd_resolve_blocker`
+- Project state and read-only tools: `gsd_query`, `gsd_progress`, `gsd_roadmap`, `gsd_history`, `gsd_doctor`, `gsd_captures`, `gsd_knowledge`, `gsd_graph`
+- Interactive form tool: `ask_user_questions`
+
+Start auto-mode work with `gsd_execute`; it returns a `sessionId` that clients should pass to `gsd_status`, `gsd_result`, and `gsd_cancel`. If the client loses the `sessionId`, `gsd_status` can use `projectDir` as a fallback, or omit both fields only when this MCP server tracks exactly one session. The read-only project tools read `.gsd/` directly and do not need a running session.
+
 ## Auto-Restart
 
 In headless mode, crashes trigger automatic restart with exponential backoff (5s → 10s → 30s cap, default 3 attempts). SIGINT/SIGTERM bypasses restart. Combined with crash recovery, this enables true overnight unattended execution.

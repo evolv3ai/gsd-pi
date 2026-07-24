@@ -1,0 +1,12 @@
+version: 1
+name: legacy-alias
+description: Legacy definition using depends_on.
+steps:
+  - id: inspect
+    name: Inspect
+    prompt: Inspect the legacy input.
+  - id: report
+    name: Report
+    prompt: Report the findings.
+    depends_on:
+      - inspect

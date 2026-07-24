@@ -35,17 +35,17 @@ if (firstArg === '--help' || firstArg === '-h') {
 // package.json (already parsed above) and verifies git is available.
 // ---------------------------------------------------------------------------
 {
-  const { MIN_NODE_MAJOR, checkNodeVersion, gitAvailableOnPath } = await import('./runtime-checks.js')
+  const { MIN_NODE_MAJOR, MIN_NODE_VERSION, checkNodeVersion, gitAvailableOnPath } = await import('./runtime-checks.js')
   const red = '\x1b[31m'
   const bold = '\x1b[1m'
   const dim = '\x1b[2m'
   const reset = '\x1b[0m'
 
   // -- Node version --
-  const nodeCheck = checkNodeVersion(process.versions.node, MIN_NODE_MAJOR)
+  const nodeCheck = checkNodeVersion(process.versions.node, MIN_NODE_VERSION)
   if (!nodeCheck.ok) {
     process.stderr.write(
-      `\n${red}${bold}Error:${reset} GSD requires Node.js >= ${MIN_NODE_MAJOR}.0.0\n` +
+      `\n${red}${bold}Error:${reset} GSD requires Node.js >= ${MIN_NODE_VERSION}\n` +
       `       You are running Node.js ${process.versions.node}\n\n` +
       `${dim}Install a supported version:${reset}\n` +
       `  nvm install ${MIN_NODE_MAJOR}   ${dim}# if using nvm${reset}\n` +

@@ -1,0 +1,11 @@
+# Legacy import oracles fingerprint exact source bytes; keep text fixtures portable.
+src/resources/extensions/gsd/tests/__fixtures__/legacy-import-corpus/**/*.db binary
+src/resources/extensions/gsd/tests/__fixtures__/legacy-import-corpus/**/*.db-shm binary
+src/resources/extensions/gsd/tests/__fixtures__/legacy-import-corpus/**/*.db-wal binary
+src/resources/extensions/gsd/tests/__fixtures__/legacy-import-corpus/**/*.json text eol=lf
+src/resources/extensions/gsd/tests/__fixtures__/legacy-import-corpus/**/*.jsonl text eol=lf
+*.archived text eol=lf
+src/resources/extensions/gsd/tests/__fixtures__/legacy-import-corpus/**/*.md text eol=lf
+src/resources/extensions/gsd/tests/__fixtures__/legacy-import-corpus/**/*.txt text eol=lf
+src/resources/extensions/gsd/tests/__fixtures__/legacy-import-corpus/**/*.yaml text eol=lf
+src/resources/extensions/gsd/tests/__fixtures__/legacy-import-corpus/**/*.yml text eol=lf

@@ -53,6 +53,7 @@ function createTempRepo(): string {
   return createGsdIntegrationProject({
     prefix: "wt-ms-merge-test-",
     initialFiles: {
+      ".gitignore": ".gsd/worktrees/\n.gsd/gsd.db*\n",
       ".gsd/STATE.md": "# State\n",
     },
   }).root;
@@ -71,6 +72,7 @@ function createTempRepoWithExternalGsd(): { repo: string; externalState: string 
   symlinkSync(externalState, join(repo, ".gsd"));
 
   writeFileSync(join(repo, "README.md"), "# test\n");
+  writeFileSync(join(repo, ".gitignore"), ".gsd/worktrees/\n.gsd/gsd.db*\n");
   writeFileSync(join(externalState, "STATE.md"), "# State\n");
   run("git add .", repo);
   run("git commit -m init", repo);

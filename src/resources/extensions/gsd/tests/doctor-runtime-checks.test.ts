@@ -72,3 +72,35 @@ test("doctor fix resets run-uat counters at the dispatch cap", async (t) => {
   );
   assert.equal(existsSync(counterPath), false);
 });
+
+test("doctor surfaces unresolved projection evidence with recovery instructions", async (t) => {
+  const dir = createGitProject();
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+
+  const evidencePath = "notes/my notes/.gsd-projection-remove-00000000-0000-0000-0000-000000000001";
+  mkdirSync(join(dir, ".gsd", evidencePath), { recursive: true });
+  mkdirSync(join(dir, ".gsd", "migration"), { recursive: true });
+  writeFileSync(join(dir, ".gsd", evidencePath, "later.md"), "later accepted work\n");
+  writeFileSync(
+    join(dir, ".gsd", "migration", "unbound-projection-evidence.json"),
+    `${JSON.stringify([{
+      evidencePath,
+      evidenceIdentity: null,
+      kind: "quarantine",
+      logicalPath: "notes/my notes/result.md",
+      scope: "tree",
+      transition: "retained",
+    }])}\n`,
+  );
+
+  const report = await runGSDDoctor(dir);
+  const issue = report.issues.find(candidate => candidate.code === "unresolved_projection_evidence");
+  assert.ok(issue);
+  assert.match(issue.message, /notes\/my notes\/result\.md/);
+  assert.match(issue.message, /\.gsd\/notes\/my notes\/\.gsd-projection-remove/);
+  assert.match(issue.message, /\/gsd doctor resolve-evidence/u);
+  assert.match(issue.message, /evidence:sha256:[0-9a-f]+ --action=discard --consent=discard:sha256:/u);
+  assert.match(issue.message, /--action=preserve/u);
+  assert.match(issue.message, /--action=restore/u);
+  assert.equal(issue.fixable, false);
+});

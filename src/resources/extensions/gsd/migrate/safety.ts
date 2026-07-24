@@ -1,7 +1,7 @@
 // gsd-pi - /gsd migrate safety helpers.
-// File Purpose: Path resolution, target guards, backup, and restore support for v1 migration.
+// File Purpose: Path resolution, target guards, and backup support for v1 migration.
 
-import { cpSync, existsSync, mkdirSync, readdirSync, rmSync } from "node:fs";
+import { existsSync, readdirSync } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
 import { homedir } from "node:os";
 
@@ -12,6 +12,13 @@ import { readPausedSessionMetadata } from "../interrupted-session.js";
 import { gsdRoot } from "../paths.js";
 import { canonicalWorktreesDir } from "../worktree-placement.js";
 import type { MigrationPreview } from "./writer.js";
+import { acquireProjectionRootIdentityLock, type ProjectionRootIdentityLock } from "@gsd/native/file-identity";
+import {
+  assertMigrationProjectionRootIdentity,
+  proveMigrationProjectionRoot,
+  withMigrationProjectionRoot,
+  type MigrationProjectionRootIdentity,
+} from "./publication-store.js";
 
 export interface MigrationPaths {
   sourcePath: string;
@@ -64,39 +71,77 @@ function formatBackupTimestamp(date: Date): string {
   return `${year}${month}${day}-${hours}${minutes}${seconds}`;
 }
 
-function nextBackupPath(targetRoot: string, now: Date): string {
-  const backupRoot = join(targetRoot, ".gsd-backups");
+function nextBackupPath(handle: ProjectionRootIdentityLock, targetRoot: string, now: Date): {
+  absolutePath: string;
+  logicalPath: string;
+} {
   const baseName = `migrate-${formatBackupTimestamp(now)}`;
-  let candidate = join(backupRoot, baseName);
+  let name = baseName;
   let suffix = 2;
 
-  while (existsSync(candidate)) {
-    candidate = join(backupRoot, `${baseName}-${suffix}`);
+  if (handle.pathExists(".gsd-backups") && handle.pathKind(".gsd-backups") !== "directory") {
+    throw new Error("migration backup root is not an identity-stable directory");
+  }
+  while (handle.pathExists(`.gsd-backups/${name}`)) {
+    name = `${baseName}-${suffix}`;
     suffix++;
   }
 
-  return candidate;
+  return {
+    absolutePath: join(targetRoot, ".gsd-backups", name),
+    logicalPath: `.gsd-backups/${name}`,
+  };
 }
 
-export function prepareMigrationTarget(targetRoot: string, now: Date = new Date()): MigrationBackup {
+export function prepareMigrationTarget(
+  targetRoot: string,
+  now: Date = new Date(),
+  expectedProjectionRoot?: MigrationProjectionRootIdentity,
+): MigrationBackup {
+  const projectionRoot = proveMigrationProjectionRoot(targetRoot);
+  if (expectedProjectionRoot !== undefined) {
+    assertMigrationProjectionRootIdentity({
+      targetRoot,
+      projectionRootIdentity: expectedProjectionRoot,
+    });
+  }
   const targetGsdPath = gsdRoot(targetRoot);
   if (!existsSync(targetGsdPath)) {
     return { hadExistingGsd: false, backupPath: null, targetGsdPath };
   }
 
-  const backupPath = nextBackupPath(targetRoot, now);
-  mkdirSync(dirname(backupPath), { recursive: true });
-  cpSync(targetGsdPath, backupPath, { recursive: true });
-  rmSync(targetGsdPath, { recursive: true, force: true });
+  const targetHandle = acquireProjectionRootIdentityLock(
+    projectionRoot.targetPath,
+    projectionRoot.targetDevice,
+    projectionRoot.targetInode,
+  );
+  let backupPath: string;
+  try {
+    const backup = nextBackupPath(targetHandle, projectionRoot.targetPath, now);
+    backupPath = backup.absolutePath;
+    targetHandle.createDirectory(backup.logicalPath);
+    withMigrationProjectionRoot(targetRoot, projectionRoot, (_boundRoot, sourceHandle) => {
+      const copyDirectory = (relativePath: string, destination: string): void => {
+        for (const name of sourceHandle.listDirectory(relativePath)) {
+          if (/^gsd\.db(?:$|-)/u.test(name)) continue;
+          const source = relativePath.length === 0 ? name : `${relativePath}/${name}`;
+          const target = `${destination}/${name}`;
+          if (sourceHandle.pathKind(source) === "directory") copyDirectory(source, target);
+          else targetHandle.writeFile(target, sourceHandle.readFile(source));
+        }
+      };
+      copyDirectory("", backup.logicalPath);
+    });
+    targetHandle.syncRoot();
+  } finally {
+    targetHandle.close();
+  }
+  assertMigrationProjectionRootIdentity({
+    targetRoot,
+    projectionRootIdentity: projectionRoot,
+  });
 
   return { hadExistingGsd: true, backupPath, targetGsdPath };
-}
-
-export function restoreMigrationTarget(backup: MigrationBackup): void {
-  rmSync(backup.targetGsdPath, { recursive: true, force: true });
-  if (backup.backupPath && existsSync(backup.backupPath)) {
-    cpSync(backup.backupPath, backup.targetGsdPath, { recursive: true });
-  }
 }
 
 export function assertMigrationHasSlices(preview: MigrationPreview): void {

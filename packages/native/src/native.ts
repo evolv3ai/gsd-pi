@@ -9,6 +9,10 @@
  */
 
 import * as path from "node:path";
+// Type-only import (erased at compile time — no runtime cycle): the lock
+// class shapes are defined once in file-identity/index.ts and referenced here
+// so the two surfaces cannot drift apart.
+import type { ProjectionRootIdentityLock, SqliteFileIdentityLock } from "./file-identity/index.js";
 
 // __dirname and require are available in both execution contexts:
 //   - CJS (production build via tsc): provided natively by Node
@@ -120,6 +124,13 @@ export function isNativeAddonLoaded(): boolean {
 }
 
 export const native = loadNative() as {
+  SqliteFileIdentityLock: new (path: string, create: boolean) => SqliteFileIdentityLock;
+  ProjectionRootIdentityLock: new (
+    path: string,
+    expectedDevice: string,
+    expectedInode: string,
+  ) => ProjectionRootIdentityLock;
+  syncDirectoryEntry: (path: string) => void;
   search: (content: Buffer | Uint8Array, options: unknown) => unknown;
   grep: (options: unknown) => unknown;
   killTree: (pid: number, signal: number) => number;

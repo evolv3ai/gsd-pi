@@ -14,7 +14,7 @@
  * Manual: /gsd report --html
  */
 
-import { readFileSync, mkdirSync, existsSync } from 'node:fs';
+import { readFileSync, existsSync } from 'node:fs';
 import { join, basename } from 'node:path';
 import { atomicWriteSync } from './atomic-write.js';
 import { gsdRoot } from './paths.js';
@@ -82,8 +82,6 @@ export function loadReportsIndex(basePath: string): ReportsIndex | null {
 }
 
 function saveReportsIndex(basePath: string, index: ReportsIndex): void {
-  const dir = reportsDir(basePath);
-  mkdirSync(dir, { recursive: true });
   atomicWriteSync(reportsIndexPath(basePath), JSON.stringify(index, null, 2) + '\n', 'utf-8');
 }
 
@@ -115,8 +113,6 @@ export interface WriteReportSnapshotArgs {
  */
 export function writeReportSnapshot(args: WriteReportSnapshotArgs): string {
   const dir = reportsDir(args.basePath);
-  mkdirSync(dir, { recursive: true });
-
   const timestamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
   const prefix = args.milestoneId === 'final' ? 'final' : args.milestoneId;
   const filename = `${prefix}-${timestamp}.html`;

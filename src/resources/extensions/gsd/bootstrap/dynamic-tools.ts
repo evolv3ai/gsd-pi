@@ -19,6 +19,7 @@ import {
 import { getAutoWorktreePath } from "../auto-worktree-path-resolution.js";
 import { resolveWorktreeProjectRoot } from "../worktree-root.js";
 import { worktreesDirs } from "../worktree-placement.js";
+import { MIN_SQLITE_NODE_VERSION, supportsRequiredSqliteApi } from "../db-provider.js";
 
 export function safeWorkspaceCwd(): string {
   try {
@@ -116,17 +117,15 @@ type WorkflowDatabaseOpenFailure = Extract<WorkflowDatabaseOpenResult, { ok: fal
 function sqliteProviderHint(status: WorkflowDatabaseStatus, nodeVersion: string): string {
   if (status.provider) return `Provider: ${status.provider}.`;
 
-  const major = Number.parseInt(nodeVersion.split(".")[0] ?? "", 10);
-  if (Number.isFinite(major) && major < 22) {
+  if (!supportsRequiredSqliteApi(nodeVersion)) {
     return (
-      `No SQLite provider available. Upgrade Node to >= 22.0.0 (current: v${nodeVersion}), ` +
-      "use the packaged GSD runtime, or install/restore better-sqlite3 in this runtime."
+      `No SQLite provider available. Upgrade Node to >= ${MIN_SQLITE_NODE_VERSION} for node:sqlite ` +
+      `(current: v${nodeVersion}) or use the packaged GSD runtime.`
     );
   }
 
   return (
-    "No SQLite provider available. Use a Node build with node:sqlite enabled, " +
-    "run the packaged GSD runtime, or install/restore better-sqlite3 in this runtime."
+    "No SQLite provider available. Use a Node build with node:sqlite enabled or run the packaged GSD runtime."
   );
 }
 

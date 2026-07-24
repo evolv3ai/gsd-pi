@@ -67,13 +67,7 @@ export async function reconcileBeforeDispatch(
   const clearParseCache = deps.clearParseCache ?? defaultClearParseCache;
   const repaired: DriftRecord[] = [];
 
-  // Capture-on-first-read: infer .planning/ layout, import content into DB, and
-  // activate the compat marker. Skipped in dry-run mode to keep the reconcile
-  // pass fully read-only — no marker writes.
   if (!deps.dryRun) {
-    const { capturePlanningCompatIfNeeded } = await import("../compat/planning-compat.js");
-    await capturePlanningCompatIfNeeded(basePath);
-
     // Self-heal phantom projection entries (#1257): a renamed/removed phase
     // directory leaves stale `.compat.json` projection paths that no detector
     // ever prunes (they all skip missing files), so the marker drifts from disk
@@ -140,6 +134,7 @@ export async function reconcileBeforeDispatch(
     const repairedKindsThisPass = new Set<string>();
 
     for (const phase of repairPhases) {
+      let phaseBlocked = false;
       for (const record of drift) {
         const recordKey = `${record.kind}:${JSON.stringify(record)}`;
         if (repairedKindsThisPass.has(recordKey)) continue;
@@ -150,6 +145,7 @@ export async function reconcileBeforeDispatch(
         const blocker = handler.blocker ? await handler.blocker(record, ctx) : null;
         if (blocker) {
           blockers.push(blocker);
+          phaseBlocked = true;
           continue;
         }
         try {
@@ -161,6 +157,7 @@ export async function reconcileBeforeDispatch(
           failures.push({ drift: record, cause });
         }
       }
+      if (phase.stopOnBlocker && phaseBlocked) break;
     }
 
     if (repairedThisPass) {
@@ -241,7 +238,7 @@ function getRepairPhases(
     const phaseKinds = new Set(phase.handlers.map((handler) => handler.kind));
     const handlers = registry.filter((handler) => phaseKinds.has(handler.kind));
     for (const handler of handlers) assigned.add(handler);
-    return { name: phase.name, handlers };
+    return { name: phase.name, handlers, stopOnBlocker: phase.stopOnBlocker };
   }).filter((phase) => phase.handlers.length > 0);
 
   const unphasedHandlers = registry.filter((handler) => !assigned.has(handler));

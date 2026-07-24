@@ -14,9 +14,12 @@ import {
   getActiveAutoWorktreeContext,
   getAutoWorktreeOriginalBase,
   _resetAutoWorktreeOriginalBaseForTests,
+  setActiveWorkspace,
 } from "../auto-worktree-session-registry.ts";
 import { teardownAutoWorktree } from "../auto-worktree-teardown.ts";
 import { seedMergeReadyMilestone } from "./merge-ready-fixture.ts";
+import { createWorkspace } from "../workspace.ts";
+import { closeDatabase } from "../gsd-db.ts";
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -27,7 +30,10 @@ function git(subArgs: string[], cwd: string): void {
 
 function createTempRepo(t: { after: (fn: () => void) => void }): string {
   const dir = realpathSync(mkdtempSync(join(tmpdir(), "awreg-test-")));
-  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  t.after(() => {
+    closeDatabase();
+    rmSync(dir, { recursive: true, force: true });
+  });
   git(["init"], dir);
   git(["config", "user.email", "test@test.com"], dir);
   git(["config", "user.name", "Test"], dir);
@@ -174,6 +180,16 @@ describe("auto-worktree workspace registry", () => {
 
     teardownAutoWorktree(dir2, "M020");
     try { process.chdir(savedCwd); } catch { /* ignore */ }
+  });
+
+  test("active auto-worktree context rejects a foreign project worktree", (t) => {
+    const activeProject = createTempRepo(t);
+    const foreignProject = createTempRepo(t);
+    const foreignWorktree = join(foreignProject, ".gsd-worktrees", "M099");
+    git(["worktree", "add", "-b", "milestone/M099", foreignWorktree], foreignProject);
+    setActiveWorkspace(createWorkspace(activeProject));
+
+    assert.strictEqual(getActiveAutoWorktreeContext(foreignWorktree), null);
   });
 
   test("mergeMilestoneToMain cleans up when milestone branch was already regular-merged", (t) => {

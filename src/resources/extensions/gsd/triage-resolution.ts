@@ -10,8 +10,8 @@
  * Also provides detectFileOverlap() for surfacing downstream impact on quick tasks.
  */
 
-import { existsSync, mkdirSync, readFileSync, unlinkSync } from "node:fs";
-import { atomicWriteSync } from "./atomic-write.js";
+import { existsSync, mkdirSync, readFileSync } from "node:fs";
+import { atomicWriteSync, removeProjectionFileSync } from "./atomic-write.js";
 import { join } from "node:path";
 import { createRequire } from "node:module";
 import { gsdRoot, milestonesDir, legacyMilestonesDir, resolveMilestonePath } from "./paths.js";
@@ -251,7 +251,7 @@ export function clearBacktrackTrigger(basePath: string): void {
   const triggerPath = join(gsdRoot(basePath), "BACKTRACK-TRIGGER.md");
   try {
     if (existsSync(triggerPath)) {
-      unlinkSync(triggerPath);
+      removeProjectionFileSync(triggerPath);
     }
   } catch { /* best-effort */ }
 }

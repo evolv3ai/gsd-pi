@@ -20,8 +20,7 @@ The migration tool:
 - Maps phases → slices, plans → tasks, milestones → milestones
 - Treats an explicit path as the target project root, so `/gsd migrate ~/projects/my-old-project` writes to `~/projects/my-old-project/.gsd`
 - Blocks zero-slice migrations and refuses to run while active, paused, or worktree session state exists
-- Backs up any existing `.gsd/` to `.gsd-backups/migrate-YYYYMMDD-HHMMSS/`, deletes the old `.gsd/`, and restores the backup if migration fails
-- Keeps `.gsd-backups/` as local runtime data: GSD adds it to baseline `.gitignore` and runtime exclusions, and stale `.gsd-backups/migrate-*` snapshots are pruned after 30 days once the project has completed the flat-phase `.gsd/phases/` migration
+- Uses the verified backup, retained Import Application, and retry behavior defined by the [authoritative migration contract](../../docs/user-docs/migration.md#what-gets-migrated)
 - Writes the imported hierarchy into the GSD database, then renders markdown projections from that database
 - Preserves completion state (`[x]` phases stay done, summaries carry over)
 - Consolidates research files into the new structure and archives the full legacy `.planning` source under `.gsd/migration/legacy/`
@@ -56,10 +55,4 @@ After migrating, verify the output:
 
 This checks `.gsd/` integrity and flags any structural issues.
 
-Use `/gsd inspect` for database diagnostics. If a project has markdown artifacts but a missing or damaged database, start GSD once so the database opens, then run:
-
-```
-/gsd recover --confirm
-```
-
-`/gsd recover --confirm` reconstructs the milestone, slice, and task hierarchy from rendered markdown only when the open database contains no adopted canonical lifecycle history. If adoption exists, it fails before clearing anything because Markdown cannot restore that history; restore the database from a verified backup instead. It is an explicit recovery/import operation; normal runtime does not silently derive state from markdown.
+Use `/gsd inspect` for database diagnostics. For recovery or explicit legacy import, follow the [authoritative migration contract](../../docs/user-docs/migration.md#post-migration).

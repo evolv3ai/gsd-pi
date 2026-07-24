@@ -1,0 +1,171 @@
+{
+  "preview_schema_version": 1,
+  "preview_id": "planning-multi-milestone",
+  "import_kind": "legacy-corpus",
+  "importer_version": "v1-test",
+  "base_project_revision": 0,
+  "base_authority_epoch": 0,
+  "base_database_schema_version": 45,
+  "source_set_hash": "sha256:3091ddcd593238ca9fa13baff35c304bc1d8a0c866bc632ce7cff41a05332688",
+  "change_set_hash": "sha256:cabc053b5e172cc0f76b2c28a94e33fed0db44c796dd75c95037a25eb2fe0374",
+  "counts": {
+    "create": 0,
+    "update": 0,
+    "delete": 0,
+    "preserve": 4,
+    "unparsed": 1,
+    "unresolved": 1
+  },
+  "sources": [
+    {
+      "source_id": "source-planning-roadmap",
+      "path": ".planning/ROADMAP.md",
+      "kind": "markdown",
+      "byte_size": 536,
+      "sha256": "sha256:17f3ae348a991da44b11a2e0e34f9d5cd8658cef5e8a47d391d97e1a98efcf3a",
+      "parser_id": "planning-roadmap-parser",
+      "parser_version": "1",
+      "encoding": "utf-8",
+      "outcome": "unparsed"
+    }
+  ],
+  "changes": [
+    {
+      "change_id": "change-multi-details",
+      "action": "preserve",
+      "target": {
+        "kind": "legacy-roadmap-fragment",
+        "key": "details"
+      },
+      "raw": {
+        "source_id": "source-planning-roadmap",
+        "locator": {
+          "start_byte": 120,
+          "end_byte": 262,
+          "line": 8
+        },
+        "value": "<details>\n<summary>v2.0 Details Delivery (Phases 3-4) -- COMPLETED</summary>\n\n- [x] 03 — Implement core\n- [x] 04 — Verify core\n\n</details>",
+        "sha256": "sha256:432f271a070e85614fd2ef54a2c5ab318dabb100aa7e82eb3eadfdf08f93a663"
+      },
+      "normalized": {
+        "disposition": "preserved",
+        "grammar": "details"
+      },
+      "provenance": {
+        "source_id": "source-planning-roadmap",
+        "parser_id": "planning-roadmap-parser",
+        "parser_version": "1"
+      },
+      "reason_code": "roadmap-grammar-coexists-preserve"
+    },
+    {
+      "change_id": "change-multi-heading",
+      "action": "preserve",
+      "target": {
+        "kind": "legacy-roadmap-fragment",
+        "key": "heading"
+      },
+      "raw": {
+        "source_id": "source-planning-roadmap",
+        "locator": {
+          "start_byte": 19,
+          "end_byte": 120,
+          "line": 3
+        },
+        "value": "## v1.0 — Heading Foundation\n\n- [x] 01 — Initialize repository\n- [ ] 02 — Establish contracts\n\n",
+        "sha256": "sha256:6c735b4382cf970067657905e6608b15093b0c43c783a3274392b814b8a61338"
+      },
+      "normalized": {
+        "disposition": "preserved",
+        "grammar": "heading"
+      },
+      "provenance": {
+        "source_id": "source-planning-roadmap",
+        "parser_id": "planning-roadmap-parser",
+        "parser_version": "1"
+      },
+      "reason_code": "roadmap-grammar-coexists-preserve"
+    },
+    {
+      "change_id": "change-multi-ranges",
+      "action": "preserve",
+      "target": {
+        "kind": "legacy-roadmap-fragment",
+        "key": "ranges"
+      },
+      "raw": {
+        "source_id": "source-planning-roadmap",
+        "locator": {
+          "start_byte": 446,
+          "end_byte": 536,
+          "line": 25
+        },
+        "value": "## Completed Ranges\n\n- ✅ v4.0 Archive — Phases 7-8\n- 🚧 v5.0 Future — Phases 9-10\n",
+        "sha256": "sha256:1e65b5a7d9c9ef4598e0670a17ffb9a00d65655be5abbafa2a8cc93523347d64"
+      },
+      "normalized": {
+        "disposition": "preserved",
+        "grammar": "ranges"
+      },
+      "provenance": {
+        "source_id": "source-planning-roadmap",
+        "parser_id": "planning-roadmap-parser",
+        "parser_version": "1"
+      },
+      "reason_code": "roadmap-grammar-coexists-preserve"
+    },
+    {
+      "change_id": "change-multi-summary",
+      "action": "preserve",
+      "target": {
+        "kind": "legacy-roadmap-fragment",
+        "key": "summary"
+      },
+      "raw": {
+        "source_id": "source-planning-roadmap",
+        "locator": {
+          "start_byte": 264,
+          "end_byte": 446,
+          "line": 16
+        },
+        "value": "## Milestones\n\n- [x] Phase 1: v3.0 Summary Release — Phases 5-6 (completed)\n\n### v3.0 Summary Release (Phases 5-6)\n\n- [x] Phase 5: Package release\n- [x] Phase 6: Validate release\n\n",
+        "sha256": "sha256:f3f9aeebe0d45c008567a35d7ba7fa6bfaac558bc3eae0b6d9a29386df10151a"
+      },
+      "normalized": {
+        "disposition": "preserved",
+        "grammar": "summary"
+      },
+      "provenance": {
+        "source_id": "source-planning-roadmap",
+        "parser_id": "planning-roadmap-parser",
+        "parser_version": "1"
+      },
+      "reason_code": "roadmap-grammar-coexists-preserve"
+    }
+  ],
+  "diagnoses": [
+    {
+      "diagnosis_id": "diagnosis-competing-roadmap-grammars",
+      "code": "competing-roadmap-grammars",
+      "severity": "blocker",
+      "source_id": "source-planning-roadmap",
+      "locator": {
+        "start_byte": 0,
+        "end_byte": 17,
+        "line": 1
+      },
+      "raw_value": "# Project Roadmap",
+      "message": "Heading, details, summary-section, and range grammars coexist; parser precedence cannot choose milestone membership safely."
+    }
+  ],
+  "resolutions": [
+    {
+      "diagnosis_id": "diagnosis-competing-roadmap-grammars",
+      "disposition": "requires-user",
+      "target": {
+        "kind": "roadmap-layout",
+        "key": "project"
+      }
+    }
+  ]
+}

@@ -19,7 +19,10 @@ import { withCommandCwd } from "../commands/context.ts";
 
 test("#5194 forensics opens DB before computing completion counts", async (t) => {
   const base = mkdtempSync(join(tmpdir(), "gsd-forensics-db-open-"));
-  t.after(() => rmSync(base, { recursive: true, force: true }));
+  t.after(() => {
+    closeDatabase();
+    rmSync(base, { recursive: true, force: true });
+  });
 
   mkdirSync(join(base, ".gsd"), { recursive: true });
   closeDatabase();
@@ -93,7 +96,10 @@ test("#968 forensics completion counts do not re-query slices and tasks", () => 
 
 test("#5194 doctor command does not emit false db_unavailable when gsd.db exists", async (t) => {
   const base = mkdtempSync(join(tmpdir(), "gsd-doctor-db-open-"));
-  t.after(() => rmSync(base, { recursive: true, force: true }));
+  t.after(() => {
+    closeDatabase();
+    rmSync(base, { recursive: true, force: true });
+  });
 
   const gsdDir = join(base, ".gsd");
   mkdirSync(gsdDir, { recursive: true });

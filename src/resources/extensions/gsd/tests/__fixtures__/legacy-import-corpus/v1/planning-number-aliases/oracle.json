@@ -1,0 +1,251 @@
+{
+  "preview_schema_version": 1,
+  "preview_id": "planning-number-aliases",
+  "import_kind": "legacy-corpus",
+  "importer_version": "v1-test",
+  "base_project_revision": 0,
+  "base_authority_epoch": 0,
+  "base_database_schema_version": 45,
+  "source_set_hash": "sha256:48a7e53b18ef4e8a995eec0c77f71cc3bc64330e60220597ef783b50551ac5bf",
+  "change_set_hash": "sha256:c2f833bb5440af4a13daa243e6f6c13393d2c61fabbeb9a7b1891dbd426702f4",
+  "counts": {
+    "create": 4,
+    "update": 0,
+    "delete": 0,
+    "preserve": 0,
+    "unparsed": 1,
+    "unresolved": 1
+  },
+  "sources": [
+    {
+      "source_id": "planning-alias-roadmap",
+      "path": ".planning/ROADMAP.md",
+      "kind": "markdown",
+      "byte_size": 59,
+      "sha256": "sha256:405241c0acc7f7a838b555426ab03deac63880336b5033da208a26c0820b8a62",
+      "parser_id": "planning-roadmap-parser",
+      "parser_version": "1",
+      "encoding": "utf-8",
+      "outcome": "mapped"
+    },
+    {
+      "source_id": "planning-alias-plan-03",
+      "path": ".planning/phases/01.2-alias-ordering/01.2-03-PLAN.md",
+      "kind": "markdown",
+      "byte_size": 145,
+      "sha256": "sha256:2c131ded54750b0f21dc4a15efc1fcb0801716d2f9b34243d0e5a82c63b6dbbd",
+      "parser_id": "planning-parser",
+      "parser_version": "1",
+      "encoding": "utf-8",
+      "outcome": "mapped"
+    },
+    {
+      "source_id": "planning-alias-plan-03b",
+      "path": ".planning/phases/01.2-alias-ordering/01.2-03b-PLAN.md",
+      "kind": "markdown",
+      "byte_size": 143,
+      "sha256": "sha256:5ec4d279614d05327767300eaf4088602f8c2a4b0bbedbe6c32514879c045d63",
+      "parser_id": "planning-parser",
+      "parser_version": "1",
+      "encoding": "utf-8",
+      "outcome": "mapped"
+    },
+    {
+      "source_id": "planning-alias-plan-04",
+      "path": ".planning/phases/01.2-alias-ordering/01.2-04-PLAN.md",
+      "kind": "markdown",
+      "byte_size": 153,
+      "sha256": "sha256:284c9f9038f28db5e8e8914edf0e5b29917d092ba9a4564798532d6035a33de7",
+      "parser_id": "planning-parser",
+      "parser_version": "1",
+      "encoding": "utf-8",
+      "outcome": "mapped"
+    },
+    {
+      "source_id": "planning-alias-plan-conflict",
+      "path": ".planning/phases/01.2-alias-ordering/01.2-05-PLAN.md",
+      "kind": "markdown",
+      "byte_size": 154,
+      "sha256": "sha256:2d848923d8a4caa3334d47f064eb0a3bbe137e39027ff1ee91f857076bf0369b",
+      "parser_id": "planning-parser",
+      "parser_version": "1",
+      "encoding": "utf-8",
+      "outcome": "unparsed"
+    }
+  ],
+  "changes": [
+    {
+      "change_id": "change-alias-plan-03",
+      "action": "create",
+      "target": {
+        "kind": "task",
+        "key": "M001/S01/T01"
+      },
+      "raw": {
+        "source_id": "planning-alias-plan-03",
+        "locator": {
+          "start_byte": 0,
+          "end_byte": 145,
+          "line": 1
+        },
+        "value": "---\nphase: \"01.2-alias-ordering\"\nplan: \"03\"\n---\n\n# 01.2-03: First numeric alias\n\n<objective>Preserve the first legacy plan position.</objective>\n",
+        "sha256": "sha256:2c131ded54750b0f21dc4a15efc1fcb0801716d2f9b34243d0e5a82c63b6dbbd"
+      },
+      "normalized": {
+        "id": "T01",
+        "slice_id": "S01",
+        "title": "First numeric alias",
+        "canonical_sequence": 1,
+        "numbering_provenance": {
+          "legacy_phase": "1.2",
+          "legacy_plan": "03",
+          "canonical_task": "T01",
+          "ordering": [
+            "03",
+            "03b",
+            "04"
+          ]
+        }
+      },
+      "provenance": {
+        "source_id": "planning-alias-plan-03",
+        "parser_id": "planning-parser",
+        "parser_version": "1"
+      },
+      "reason_code": "planning-plan-number-alias"
+    },
+    {
+      "change_id": "change-alias-plan-03b",
+      "action": "create",
+      "target": {
+        "kind": "task",
+        "key": "M001/S01/T02"
+      },
+      "raw": {
+        "source_id": "planning-alias-plan-03b",
+        "locator": {
+          "start_byte": 0,
+          "end_byte": 143,
+          "line": 1
+        },
+        "value": "---\nphase: \"01.2-alias-ordering\"\nplan: \"03b\"\n---\n\n# 01.2-03b: Letter alias\n\n<objective>Preserve the inserted legacy plan position.</objective>\n",
+        "sha256": "sha256:5ec4d279614d05327767300eaf4088602f8c2a4b0bbedbe6c32514879c045d63"
+      },
+      "normalized": {
+        "id": "T02",
+        "slice_id": "S01",
+        "title": "Letter alias",
+        "canonical_sequence": 2,
+        "numbering_provenance": {
+          "legacy_phase": "1.2",
+          "legacy_plan": "03b",
+          "canonical_task": "T02",
+          "ordering": [
+            "03",
+            "03b",
+            "04"
+          ]
+        }
+      },
+      "provenance": {
+        "source_id": "planning-alias-plan-03b",
+        "parser_id": "planning-parser",
+        "parser_version": "1"
+      },
+      "reason_code": "planning-plan-number-alias"
+    },
+    {
+      "change_id": "change-alias-plan-04",
+      "action": "create",
+      "target": {
+        "kind": "task",
+        "key": "M001/S01/T03"
+      },
+      "raw": {
+        "source_id": "planning-alias-plan-04",
+        "locator": {
+          "start_byte": 0,
+          "end_byte": 153,
+          "line": 1
+        },
+        "value": "---\nphase: \"01.2-alias-ordering\"\nplan: \"04\"\n---\n\n# 01.2-04: Following numeric alias\n\n<objective>Preserve the following legacy plan position.</objective>\n",
+        "sha256": "sha256:284c9f9038f28db5e8e8914edf0e5b29917d092ba9a4564798532d6035a33de7"
+      },
+      "normalized": {
+        "id": "T03",
+        "slice_id": "S01",
+        "title": "Following numeric alias",
+        "canonical_sequence": 3,
+        "numbering_provenance": {
+          "legacy_phase": "1.2",
+          "legacy_plan": "04",
+          "canonical_task": "T03",
+          "ordering": [
+            "03",
+            "03b",
+            "04"
+          ]
+        }
+      },
+      "provenance": {
+        "source_id": "planning-alias-plan-04",
+        "parser_id": "planning-parser",
+        "parser_version": "1"
+      },
+      "reason_code": "planning-plan-number-alias"
+    },
+    {
+      "change_id": "change-alias-slice-1-2",
+      "action": "create",
+      "target": {
+        "kind": "slice",
+        "key": "M001/S01"
+      },
+      "raw": {
+        "source_id": "planning-alias-roadmap",
+        "locator": {
+          "start_byte": 30,
+          "end_byte": 58,
+          "line": 5
+        },
+        "value": "- [ ] 1.2 — Alias Ordering",
+        "sha256": "sha256:5ae8fef09a7dd0cbe688031cb4b55594ec179f7bdcc86436872567e38ae32406"
+      },
+      "normalized": {
+        "id": "S01",
+        "milestone_id": "M001",
+        "title": "Alias Ordering",
+        "canonical_sequence": 1,
+        "legacy_phase_number": "1.2",
+        "status": "pending"
+      },
+      "provenance": {
+        "source_id": "planning-alias-roadmap",
+        "parser_id": "planning-roadmap-parser",
+        "parser_version": "1"
+      },
+      "reason_code": "planning-decimal-phase-alias"
+    }
+  ],
+  "diagnoses": [
+    {
+      "diagnosis_id": "diagnosis-alias-filename-frontmatter-conflict",
+      "code": "plan-number-conflict",
+      "severity": "blocker",
+      "source_id": "planning-alias-plan-conflict",
+      "locator": {
+        "start_byte": 33,
+        "end_byte": 43,
+        "line": 3
+      },
+      "raw_value": "plan: \"04\"",
+      "message": "Filename and frontmatter identify different plan numbers; user choice is required."
+    }
+  ],
+  "resolutions": [
+    {
+      "diagnosis_id": "diagnosis-alias-filename-frontmatter-conflict",
+      "disposition": "requires-user"
+    }
+  ]
+}

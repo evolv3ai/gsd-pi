@@ -9,7 +9,6 @@
  * from the durable receipt. Projection failures never roll back authority.
  */
 
-import { unlink } from "node:fs/promises";
 import { join } from "node:path";
 
 import type { CompleteSliceParams } from "../types.js";
@@ -21,9 +20,10 @@ import { loadFile, saveFile, clearParseCache } from "../files.js";
 import { classifyUatContent, escalatesArtifactUatToBrowser } from "../uat-policy.js";
 import { invalidateStateCache } from "../state.js";
 import { renderMilestoneShellProjections } from "../workflow-projections.js";
-import { writeManifest } from "../workflow-manifest.js";
+import { writeManifestAndFlush } from "../workflow-manifest.js";
 import { appendEvent } from "../workflow-events.js";
 import { logWarning } from "../workflow-logger.js";
+import { removeProjectionFileSync } from "../atomic-write.js";
 import type { ExecutionInvocation } from "../execution-invocation.js";
 import {
   completeSlice,
@@ -58,7 +58,7 @@ function sliceSummaryPath(basePath: string, milestoneId: string, sliceId: string
 async function removeOwnedProjection(path: string, content: string): Promise<void> {
   if (await loadFile(path) !== content) return;
   try {
-    await unlink(path);
+    removeProjectionFileSync(path);
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
   }
@@ -461,7 +461,7 @@ export async function handleCompleteSlice(
   }
   if (!superseded) {
     try {
-      writeManifest(artifactBasePath);
+      await writeManifestAndFlush(artifactBasePath);
     } catch (mfErr) {
       logWarning("tool", `complete-slice manifest warning: ${(mfErr as Error).message}`);
     }

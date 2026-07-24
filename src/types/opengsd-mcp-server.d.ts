@@ -48,4 +48,24 @@ declare module "@opengsd/mcp-server" {
   export function graphStatus(projectDir: string): Promise<GraphStatusResult>;
   export function graphQuery(projectDir: string, term: string): Promise<GraphQueryResult>;
   export function graphDiff(projectDir: string): Promise<GraphDiffResult>;
+
+  export interface GenericMcpToolDef {
+    name: string;
+    label: string;
+    description: string;
+    parameters: Record<string, unknown>;
+    execute(
+      toolCallId: string,
+      params: Record<string, unknown>,
+      signal?: AbortSignal,
+      onUpdate?: unknown,
+    ): Promise<{
+      content: Array<{ type: string; text?: string; data?: string; mimeType?: string }>;
+      details?: Record<string, unknown>;
+      isError?: boolean;
+    }>;
+  }
+
+  export const GSD_MODE_MCP_WORKFLOW_ADAPTER_TOOL_NAMES: readonly string[];
+  export function createWorkflowMcpAdapterToolDefs(): Promise<GenericMcpToolDef[]>;
 }

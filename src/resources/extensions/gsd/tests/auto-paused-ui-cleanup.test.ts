@@ -63,6 +63,7 @@ test("cleanupAfterLoopExit preserves paused auto badge after provider pause", as
     assert.equal(autoSession.active, false);
     assert.equal(autoSession.paused, true);
   } finally {
+    closeDatabase();
     autoSession.reset();
     process.chdir(previousCwd);
     rmSync(base, { recursive: true, force: true });
@@ -473,6 +474,7 @@ test("cleanupAfterLoopExit preserves step-mode surface and worktree session afte
     assert.equal(autoSession.basePath, worktree);
     assert.equal(realpathSync(process.cwd()), realpathSync(worktree));
   } finally {
+    closeDatabase();
     autoSession.reset();
     process.chdir(previousCwd);
     rmSync(base, { recursive: true, force: true });
@@ -577,6 +579,7 @@ test("cleanupAfterLoopExit re-roots step-mode session at hard context threshold"
     assert.equal(autoSession.basePath, worktree);
     assert.equal(realpathSync(process.cwd()), realpathSync(worktree));
   } finally {
+    closeDatabase();
     autoSession.reset();
     process.chdir(previousCwd);
     rmSync(base, { recursive: true, force: true });
@@ -636,6 +639,7 @@ test("maybeRerootStepSessionForHighContext re-roots at the hard threshold even w
       "hard re-root notification must not cite the configured soft compaction threshold",
     );
   } finally {
+    closeDatabase();
     process.chdir(previousCwd);
     if (previousGsdHome === undefined) delete process.env.GSD_HOME;
     else process.env.GSD_HOME = previousGsdHome;
@@ -701,6 +705,7 @@ test("maybeRerootStepSessionForHighContext writes a compaction snapshot only at 
       "hard boundary must write the compaction snapshot",
     );
   } finally {
+    closeDatabase();
     process.chdir(previousCwd);
     if (previousGsdHome === undefined) delete process.env.GSD_HOME;
     else process.env.GSD_HOME = previousGsdHome;

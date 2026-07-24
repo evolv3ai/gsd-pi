@@ -263,7 +263,6 @@ import {
 import {
   bootstrapAutoSession,
   openProjectDbIfPresent,
-  reconcileMergedMilestonesFromJournal,
   type BootstrapDeps,
 } from "./auto-start.js";
 import { initHealthWidget } from "./health-widget.js";
@@ -339,6 +338,7 @@ import {
   isBlockedStopReason,
   stopNoticeDisplayReason,
 } from "./stop-notice.js";
+import { abortActiveUnitTurn } from "./auto/unit-turn-abort.js";
 
 // ── ENCAPSULATION INVARIANT ─────────────────────────────────────────────────
 // ALL mutable auto-mode state lives in the AutoSession class (auto/session.ts).
@@ -724,6 +724,8 @@ export {
 function closeOutSignalInterruptedUnit(currentBasePath: string): void {
   const currentUnit = s.currentUnit;
   if (!currentUnit) return;
+
+  abortActiveUnitTurn(s.cmdCtx);
 
   const reason = "Auto-mode process received a termination signal";
   const errorContext: ErrorContext = {
@@ -2818,7 +2820,6 @@ export async function startAuto(
     if (!getLedger()) initMetrics(base);
     if (s.currentMilestoneId) setActiveMilestoneId(base, s.currentMilestoneId);
     await openProjectDbIfPresent(base);
-    reconcileMergedMilestonesFromJournal(base);
     registerAutoWorkerForSession(s, base);
 
     // Re-register health level notification callback lost across process restart

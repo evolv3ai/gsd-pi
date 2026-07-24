@@ -1,0 +1,252 @@
+{
+  "preview_schema_version": 1,
+  "preview_id": "action-matrix",
+  "import_kind": "legacy-corpus",
+  "importer_version": "v1-test",
+  "base_project_revision": 17,
+  "base_authority_epoch": 2,
+  "base_database_schema_version": 45,
+  "source_set_hash": "sha256:6f645cd15496eb64888d60c6ce152c72f56a22c0f6ed0fc12bfa2711e11d2919",
+  "change_set_hash": "sha256:5ee816447ea03a7c8d1ffb391c2b49e7dc3e3cc6ec348c06c777a166c9f51099",
+  "counts": {
+    "create": 1,
+    "update": 1,
+    "delete": 1,
+    "preserve": 1,
+    "unparsed": 0,
+    "unresolved": 0
+  },
+  "sources": [
+    {
+      "source_id": "action-state-narrative",
+      "path": ".gsd/STATE.md",
+      "kind": "markdown",
+      "byte_size": 120,
+      "sha256": "sha256:a18b3dabd8cd879a550c341f86ab7ae716c9785f279a71042847e64b31e1d91f",
+      "parser_id": "gsd-lifecycle-truth",
+      "parser_version": "1",
+      "encoding": "utf-8",
+      "outcome": "preserved"
+    },
+    {
+      "source_id": "action-base-database",
+      "path": ".gsd/gsd.db",
+      "kind": "sqlite-database",
+      "byte_size": 61440,
+      "sha256": "sha256:613b8616e7e702f2b7a900896ad57633dde43aaade6f713427cf986790bec1ac",
+      "parser_id": "gsd-sqlite-target",
+      "parser_version": "1",
+      "encoding": "binary",
+      "outcome": "mapped"
+    },
+    {
+      "source_id": "action-manifest",
+      "path": ".gsd/state-manifest.json",
+      "kind": "json",
+      "byte_size": 1133,
+      "sha256": "sha256:e029a7666445a54369d7f60c72b25259006b3eab4efb17517eac5a3ebc607148",
+      "parser_id": "gsd-lifecycle-truth",
+      "parser_version": "1",
+      "encoding": "utf-8",
+      "outcome": "mapped"
+    }
+  ],
+  "changes": [
+    {
+      "change_id": "change-create-d001",
+      "action": "create",
+      "target": {
+        "kind": "decision",
+        "key": "D001"
+      },
+      "raw": {
+        "source_id": "action-manifest",
+        "locator": {
+          "start_byte": 171,
+          "end_byte": 460,
+          "line": 9,
+          "json_pointer": "/decisions/0"
+        },
+        "value": {
+          "seq": 1,
+          "id": "D001",
+          "when_context": "For user guidance",
+          "scope": "global",
+          "decision": "Recommend one option and explain why",
+          "choice": "guided recommendation",
+          "rationale": "Keeps the conversation natural.",
+          "revisable": "yes",
+          "made_by": "collaborative",
+          "source": "discussion",
+          "superseded_by": null
+        },
+        "sha256": "sha256:868b87422fdc3104a78c3749ea183fd75f82327818342ba9c329112fe1df167a"
+      },
+      "normalized": {
+        "seq": 1,
+        "id": "D001",
+        "when_context": "For user guidance",
+        "scope": "global",
+        "decision": "Recommend one option and explain why",
+        "choice": "guided recommendation",
+        "rationale": "Keeps the conversation natural.",
+        "revisable": "yes",
+        "made_by": "collaborative",
+        "source": "discussion",
+        "superseded_by": null
+      },
+      "provenance": {
+        "source_id": "action-manifest",
+        "parser_id": "gsd-lifecycle-truth",
+        "parser_version": "1"
+      },
+      "reason_code": "candidate-row-absent-from-base"
+    },
+    {
+      "change_id": "change-delete-d003",
+      "action": "delete",
+      "target": {
+        "kind": "decision",
+        "key": "D003"
+      },
+      "raw": {
+        "source_id": "action-manifest",
+        "locator": {
+          "start_byte": 170,
+          "end_byte": 992,
+          "line": 9,
+          "json_pointer": "/decisions"
+        },
+        "value": [
+          {
+            "seq": 1,
+            "id": "D001",
+            "when_context": "For user guidance",
+            "scope": "global",
+            "decision": "Recommend one option and explain why",
+            "choice": "guided recommendation",
+            "rationale": "Keeps the conversation natural.",
+            "revisable": "yes",
+            "made_by": "collaborative",
+            "source": "discussion",
+            "superseded_by": null
+          },
+          {
+            "seq": 2,
+            "id": "D002",
+            "when_context": "Before import",
+            "scope": "global",
+            "decision": "Use the database queue",
+            "choice": "database queue",
+            "rationale": "Keeps one source of truth.",
+            "revisable": "yes",
+            "made_by": "human",
+            "source": "discussion",
+            "superseded_by": null
+          },
+          {
+            "seq": 4,
+            "id": "D004",
+            "when_context": "For readable status",
+            "scope": "global",
+            "decision": "Project Markdown from database state",
+            "choice": "projection only",
+            "rationale": "Prevents authority drift.",
+            "revisable": "no",
+            "made_by": "collaborative",
+            "source": "discussion",
+            "superseded_by": null
+          }
+        ],
+        "sha256": "sha256:5dfb8ac7a567ffb1c94a3a142504754ea79554b65b42a1961451ae80beb2acba"
+      },
+      "normalized": null,
+      "provenance": {
+        "source_id": "action-manifest",
+        "parser_id": "gsd-lifecycle-truth",
+        "parser_version": "1"
+      },
+      "reason_code": "complete-snapshot-row-absent"
+    },
+    {
+      "change_id": "change-preserve-state-narrative",
+      "action": "preserve",
+      "target": {
+        "kind": "artifact",
+        "key": ".gsd/STATE.md"
+      },
+      "raw": {
+        "source_id": "action-state-narrative",
+        "locator": {
+          "start_byte": 0,
+          "end_byte": 120,
+          "line": 1
+        },
+        "value": "# Legacy State\n\nKeep this operator-authored narrative verbatim. It is useful context, but it is not database authority.\n",
+        "sha256": "sha256:a18b3dabd8cd879a550c341f86ab7ae716c9785f279a71042847e64b31e1d91f"
+      },
+      "normalized": {
+        "path": ".gsd/STATE.md",
+        "content": "# Legacy State\n\nKeep this operator-authored narrative verbatim. It is useful context, but it is not database authority.\n"
+      },
+      "provenance": {
+        "source_id": "action-state-narrative",
+        "parser_id": "gsd-lifecycle-truth",
+        "parser_version": "1"
+      },
+      "reason_code": "unmodeled-state-narrative-preserved"
+    },
+    {
+      "change_id": "change-update-d002",
+      "action": "update",
+      "target": {
+        "kind": "decision",
+        "key": "D002"
+      },
+      "raw": {
+        "source_id": "action-manifest",
+        "locator": {
+          "start_byte": 461,
+          "end_byte": 712,
+          "line": 9,
+          "json_pointer": "/decisions/1"
+        },
+        "value": {
+          "seq": 2,
+          "id": "D002",
+          "when_context": "Before import",
+          "scope": "global",
+          "decision": "Use the database queue",
+          "choice": "database queue",
+          "rationale": "Keeps one source of truth.",
+          "revisable": "yes",
+          "made_by": "human",
+          "source": "discussion",
+          "superseded_by": null
+        },
+        "sha256": "sha256:85a25f6e2ac201c46562296af88f1c2391f83009045c42f26aeb4d4e1f890bf6"
+      },
+      "normalized": {
+        "seq": 2,
+        "id": "D002",
+        "when_context": "Before import",
+        "scope": "global",
+        "decision": "Use the database queue",
+        "choice": "database queue",
+        "rationale": "Keeps one source of truth.",
+        "revisable": "yes",
+        "made_by": "human",
+        "source": "discussion",
+        "superseded_by": null
+      },
+      "provenance": {
+        "source_id": "action-manifest",
+        "parser_id": "gsd-lifecycle-truth",
+        "parser_version": "1"
+      },
+      "reason_code": "candidate-row-differs-from-base"
+    }
+  ],
+  "diagnoses": [],
+  "resolutions": []
+}

@@ -196,7 +196,7 @@ Replace the path with the exact global bin directory from your pnpm error messag
 **Fix:**
 - Make sure you are starting GSD from the project root and that `.gsd/gsd.db*`, `.gsd/`, and `.gsd-backups/` are readable and writable on local disk.
 - Close editors, shells, sync tools, antivirus/indexers, or other processes that may be locking `.gsd/milestones/`, `.gsd/milestones.migrating/`, `.gsd/phases/`, or `.gsd-backups/`.
-- If the database is damaged or missing, restore the database from backup when available. If the rendered markdown is the state you intentionally want to import, use `/gsd recover --confirm` after database access is restored; recovery refuses to replace any adopted canonical lifecycle history still present in that database.
+- If the database is damaged or missing and rendered markdown is the state you intentionally want to import, use `/gsd recover` after database access is restored, then approve its exact Preview hash. It preserves existing rows absent from markdown and retains a verified pre-import backup; see [Migration from v1](./migration.md#post-migration) for the recovery contract.
 - Start GSD again after fixing the underlying issue. The migration retries on the next startup and can resume an interrupted run from `.gsd/milestones.migrating/`; keep `.gsd-backups/migrate-*` snapshots until the project starts successfully and `/gsd doctor` passes.
 
 ### `command not found: gsd` after install
@@ -231,7 +231,7 @@ source ~/.zshrc
 **Common causes:**
 - Missing workspace packages — fixed in a recent release
 - `postinstall` hangs on Linux (Playwright `--with-deps` triggering sudo) — fixed in a recent release
-- Node.js version too old — requires ≥ 22.0.0
+- Node.js version too old — requires ≥ 22.18.0
 - `ETARGET: No matching version found` / `notarget` — the `@opengsd/gsd-pi` package has not been published to the npm registry yet for the requested version (see below)
 
 **If you see `ETARGET` or `notarget` (package not found on npm):**
@@ -255,7 +255,7 @@ Options:
    pnpm run build
    npm install -g .
    ```
-   Requires Node.js ≥ 22.0.0 and pnpm. If `pnpm` is not installed: `npm install -g pnpm`.
+   Requires Node.js ≥ 22.18.0 and pnpm. If `pnpm` is not installed: `npm install -g pnpm`.
 
 ### Provider errors during auto mode
 
@@ -293,7 +293,7 @@ For common provider setup issues (role errors, streaming errors, model ID mismat
 
 **Symptoms:** On session start, `/gsd doctor`, or when starting auto mode, GSD reports a warning or error like `GSD project preferences error: .gsd/PREFERENCES.md could not be parsed.` or `GSD global preferences warning: ~/.gsd/PREFERENCES.md contains invalid settings.` Settings from the file appear to have no effect.
 
-**Cause:** The preferences file has malformed YAML frontmatter (for example a missing closing `---` delimiter or a YAML syntax error) or contains invalid settings. Parse failures cause the whole file to be ignored — GSD falls back to a valid global or legacy preferences file. Invalid individual settings are sanitized or dropped while the rest of the file still applies. Preferences never throw; the diagnostics make the problem visible instead of failing silently.
+**Cause:** The preferences file has malformed YAML frontmatter (for example a missing closing `---` delimiter or a YAML syntax error) or contains invalid settings. Parse failures cause the whole file to be ignored — GSD normally falls back to a valid global or legacy preferences file. Invalid individual settings are sanitized or dropped while the rest of the file still applies. Preferences never throw; the diagnostics make the problem visible instead of failing silently. A malformed project file that attempts to configure `runtime.contract` is the safety exception: GSD preserves an invalid-contract marker so runtime operations fail closed rather than using another contract.
 
 **Fix:** Run `/gsd doctor` to see the file path, the parse/validation message, and (for YAML errors) the line and column. Fix the reported issue in the named file, then rerun the command. Auto-mode re-surfaces these diagnostics at preflight so they are visible before long-running automation proceeds.
 
@@ -387,7 +387,7 @@ In these states GSD does not auto-stash and does not auto-fix; it stops so you c
 
 **What it means:** The canonical database has an `artifacts` row for that path, but the rendered markdown file is missing from disk. In worktree mode, doctor checks both the active worktree-local `.gsd/` projection root and the project `.gsd/` root before reporting the issue, so the error usually means the artifact was deleted, skipped during a failed write, or left dangling by an interrupted migration/rebuild.
 
-**Fix:** If the database is still the source of truth, run `/gsd rebuild markdown` to re-render missing artifact projections from the DB, then rerun `/gsd doctor`. If the file represented work that should still exist but rebuild cannot recreate it, restore the file from git/backups or rerun the GSD workflow that generates that artifact. Use `/gsd recover --confirm` only when the database is lost or corrupt, contains no adopted canonical lifecycle history, and the markdown on disk is the source you intentionally want to import; it is not the normal fix for a dangling artifact reference.
+**Fix:** If the database is still the source of truth, run `/gsd rebuild markdown` to re-render missing artifact projections from the DB, then rerun `/gsd doctor`. If the file represented work that should still exist but rebuild cannot recreate it, restore the file from git/backups or rerun the GSD workflow that generates that artifact. Use `/gsd recover` and its exact Preview-hash approval only when the database is lost or corrupt and the markdown on disk is the source you intentionally want to import; it is not the normal fix for a dangling artifact reference. See [Migration from v1](./migration.md#post-migration) for the recovery contract.
 
 ### `/gsd doctor` reports `artifact_db_status_divergence`
 
@@ -599,12 +599,13 @@ Doctor checks the authoritative database, refreshes `STATE.md` from derived data
 Use this only when the database is missing, damaged, or known to be stale but the rendered milestone, slice, and task markdown on disk is the best available source:
 
 ```
-/gsd recover --confirm
+/gsd recover
+# Then re-run with the exact --preview=<sha256> printed by the command.
 ```
 
-`/gsd recover --confirm` first checks that the open database contains no adopted canonical lifecycle history. If adoption exists, recovery fails before clearing anything because Markdown cannot reconstruct that history; restore the database from a verified backup instead. Otherwise it clears the legacy hierarchy tables plus persisted validation/gate state from prior runs, including quality-gate rows and skipped-validation assessments, reconstructs the hierarchy from markdown, and derives state again to verify the result. Normal runtime does not silently import markdown projections, and worktree markdown is not synced back as authoritative state.
+`/gsd recover` prints a sealed legacy Preview; its `--preview=<sha256>` follow-up applies that unchanged preview through a verified, backed-up Import Application and preserves database rows absent from markdown. It then assesses whether the retained backup may still be restored or whether later canonical work requires Forward Repair. Follow the exact evidence-bound action printed by the command; see [Migration from v1](./migration.md#post-migration) for the authoritative recovery contract. Normal runtime does not silently import markdown projections, and worktree markdown is not synced back as authoritative state.
 
-For non-TTY environments (CI, cron, scripted automation), `gsd headless recover` — same semantics, no interactive prompt. Exits non-zero on failure.
+For non-TTY environments (CI, cron, scripted automation), `gsd headless recover` has the same semantics without an interactive prompt. See the [commands reference](./commands.md#gsd-headless-recover) for evidence-bound restore and Forward Repair flags.
 
 ## Getting Help
 
@@ -649,7 +650,7 @@ For non-TTY environments (CI, cron, scripted automation), `gsd headless recover`
 
 **Cause:** The SQLite database was not initialized or could not be opened. Runtime state derivation will not silently fall back to markdown projections.
 
-**Fix:** Upgrade to the latest version, then run a GSD command from the project root to initialize or open the database. Use `/gsd inspect` for database diagnostics. If the database was lost or corrupted, contains no adopted canonical lifecycle history, and markdown artifacts are the only usable state, run `/gsd recover --confirm` after GSD has opened the database. If adopted history remains, restore a verified database backup instead.
+**Fix:** Upgrade to the latest version, then run a GSD command from the project root to initialize or open the database. Use `/gsd inspect` for database diagnostics. If the database was lost or corrupted and markdown artifacts are the state you intentionally want to import, run `/gsd recover` after GSD has opened the database and approve its exact Preview hash. Follow its verified backup assessment and exact evidence-bound recovery action; see [Migration from v1](./migration.md#post-migration).
 
 ## Verification Issues
 

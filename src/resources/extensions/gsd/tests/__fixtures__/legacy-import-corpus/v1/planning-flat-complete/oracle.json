@@ -1,0 +1,233 @@
+{
+  "preview_schema_version": 1,
+  "preview_id": "planning-flat-complete",
+  "import_kind": "legacy-corpus",
+  "importer_version": "v1-test",
+  "base_project_revision": 0,
+  "base_authority_epoch": 0,
+  "base_database_schema_version": 45,
+  "source_set_hash": "sha256:14902c95bdeeb521ed395be51eb0672676c02bbb30f3598dcd5f638265769139",
+  "change_set_hash": "sha256:0d0cf130bd399c762e51656065267a6b08b5299d5e9fd890836bd6d770f4a1e4",
+  "counts": {
+    "create": 4,
+    "update": 1,
+    "delete": 0,
+    "preserve": 0,
+    "unparsed": 0,
+    "unresolved": 0
+  },
+  "sources": [
+    {
+      "source_id": "planning-flat-project",
+      "path": ".planning/PROJECT.md",
+      "kind": "markdown",
+      "byte_size": 69,
+      "sha256": "sha256:48c2d2d64ebe00e1c3058501b6397d81af1a4a9394579d3646782adeb8e3962f",
+      "parser_id": "planning-parser",
+      "parser_version": "1",
+      "encoding": "utf-8",
+      "outcome": "mapped"
+    },
+    {
+      "source_id": "planning-flat-requirements",
+      "path": ".planning/REQUIREMENTS.md",
+      "kind": "markdown",
+      "byte_size": 133,
+      "sha256": "sha256:1d3153e20c58edee4222e6bee1f7ecdf3f167e41ccba03c9a799769372bec405",
+      "parser_id": "planning-parser",
+      "parser_version": "1",
+      "encoding": "utf-8",
+      "outcome": "mapped"
+    },
+    {
+      "source_id": "planning-flat-roadmap",
+      "path": ".planning/ROADMAP.md",
+      "kind": "markdown",
+      "byte_size": 54,
+      "sha256": "sha256:de7209dbff64cdfc722d9a921f28477d1668a8665b105008b243c76cb120dab7",
+      "parser_id": "planning-roadmap-parser",
+      "parser_version": "1",
+      "encoding": "utf-8",
+      "outcome": "mapped"
+    },
+    {
+      "source_id": "planning-flat-plan-01-01",
+      "path": ".planning/phases/01-foundation/01-01-PLAN.md",
+      "kind": "markdown",
+      "byte_size": 348,
+      "sha256": "sha256:14b88a84441a6a0a7f0f91a36db05190aa7ba733985deb6c061816b06ba983b8",
+      "parser_id": "planning-parser",
+      "parser_version": "1",
+      "encoding": "utf-8",
+      "outcome": "mapped"
+    },
+    {
+      "source_id": "planning-flat-summary-01-01",
+      "path": ".planning/phases/01-foundation/01-01-SUMMARY.md",
+      "kind": "markdown",
+      "byte_size": 168,
+      "sha256": "sha256:59c4d55f63baf9f0f7e7de48b94feed80bc07992466a94df52a72915a7c48f76",
+      "parser_id": "planning-parser",
+      "parser_version": "1",
+      "encoding": "utf-8",
+      "outcome": "mapped"
+    }
+  ],
+  "changes": [
+    {
+      "change_id": "change-flat-milestone-m001",
+      "action": "create",
+      "target": {
+        "kind": "milestone",
+        "key": "M001"
+      },
+      "raw": {
+        "source_id": "planning-flat-project",
+        "locator": {
+          "start_byte": 0,
+          "end_byte": 69,
+          "line": 1
+        },
+        "value": "# Pocket Notes\n\nA private notes service with a dependable save flow.\n",
+        "sha256": "sha256:48c2d2d64ebe00e1c3058501b6397d81af1a4a9394579d3646782adeb8e3962f"
+      },
+      "normalized": {
+        "id": "M001",
+        "title": "Pocket Notes",
+        "vision": "A private notes service with a dependable save flow."
+      },
+      "provenance": {
+        "source_id": "planning-flat-project",
+        "parser_id": "planning-parser",
+        "parser_version": "1"
+      },
+      "reason_code": "planning-project-milestone"
+    },
+    {
+      "change_id": "change-flat-requirement-r001",
+      "action": "create",
+      "target": {
+        "kind": "requirement",
+        "key": "R001"
+      },
+      "raw": {
+        "source_id": "planning-flat-requirements",
+        "locator": {
+          "start_byte": 0,
+          "end_byte": 133,
+          "line": 1
+        },
+        "value": "# Requirements\n\n## Validated\n\n### R001 — Save Notes\n- Status: validated\n- Description: A note remains available after it is saved.\n",
+        "sha256": "sha256:1d3153e20c58edee4222e6bee1f7ecdf3f167e41ccba03c9a799769372bec405"
+      },
+      "normalized": {
+        "id": "R001",
+        "title": "Save Notes",
+        "description": "A note remains available after it is saved.",
+        "status": "validated"
+      },
+      "provenance": {
+        "source_id": "planning-flat-requirements",
+        "parser_id": "planning-parser",
+        "parser_version": "1"
+      },
+      "reason_code": "planning-requirement"
+    },
+    {
+      "change_id": "change-flat-slice-s01",
+      "action": "create",
+      "target": {
+        "kind": "slice",
+        "key": "M001/S01"
+      },
+      "raw": {
+        "source_id": "planning-flat-roadmap",
+        "locator": {
+          "start_byte": 30,
+          "end_byte": 53,
+          "line": 5
+        },
+        "value": "- [x] 01 — Foundation",
+        "sha256": "sha256:dfaa820de73dd374f5f3293850d7a923e9c9593cb66c94ab8efa335d4fa58437"
+      },
+      "normalized": {
+        "id": "S01",
+        "milestone_id": "M001",
+        "sequence": 1,
+        "status": "complete",
+        "title": "Foundation"
+      },
+      "provenance": {
+        "source_id": "planning-flat-roadmap",
+        "parser_id": "planning-roadmap-parser",
+        "parser_version": "1"
+      },
+      "reason_code": "planning-roadmap-phase"
+    },
+    {
+      "change_id": "change-flat-task-t01",
+      "action": "create",
+      "target": {
+        "kind": "task",
+        "key": "M001/S01/T01"
+      },
+      "raw": {
+        "source_id": "planning-flat-plan-01-01",
+        "locator": {
+          "start_byte": 0,
+          "end_byte": 348,
+          "line": 1
+        },
+        "value": "---\nphase: \"01-foundation\"\nplan: \"01\"\ntype: \"implementation\"\nwave: 1\ndepends_on: []\nfiles_modified: [src/notes.ts]\nautonomous: true\n---\n\n# 01-01: Persist notes\n\n<objective>\nStore a note and return it unchanged.\n</objective>\n\n<tasks>\n<task>Implement note persistence.</task>\n</tasks>\n\n<verification>\n- Save and reload the same note.\n</verification>\n",
+        "sha256": "sha256:14b88a84441a6a0a7f0f91a36db05190aa7ba733985deb6c061816b06ba983b8"
+      },
+      "normalized": {
+        "id": "T01",
+        "slice_id": "S01",
+        "sequence": 1,
+        "status": "planned",
+        "title": "Persist notes",
+        "objective": "Store a note and return it unchanged."
+      },
+      "provenance": {
+        "source_id": "planning-flat-plan-01-01",
+        "parser_id": "planning-parser",
+        "parser_version": "1"
+      },
+      "reason_code": "planning-plan-task"
+    },
+    {
+      "change_id": "change-flat-task-t01-status",
+      "action": "update",
+      "target": {
+        "kind": "task",
+        "key": "M001/S01/T01",
+        "field": "status"
+      },
+      "raw": {
+        "source_id": "planning-flat-summary-01-01",
+        "locator": {
+          "start_byte": 0,
+          "end_byte": 168,
+          "line": 1
+        },
+        "value": "---\nphase: \"01-foundation\"\nplan: \"01\"\nsubsystem: \"notes\"\nprovides:\n  - note-persistence\n---\n\n# 01-01 Summary\n\nThe note persistence task passed its stated verification.\n",
+        "sha256": "sha256:59c4d55f63baf9f0f7e7de48b94feed80bc07992466a94df52a72915a7c48f76"
+      },
+      "normalized": {
+        "id": "T01",
+        "slice_id": "S01",
+        "status": "complete",
+        "summary": "The note persistence task passed its stated verification."
+      },
+      "provenance": {
+        "source_id": "planning-flat-summary-01-01",
+        "parser_id": "planning-parser",
+        "parser_version": "1"
+      },
+      "reason_code": "planning-summary-completion"
+    }
+  ],
+  "diagnoses": [],
+  "resolutions": []
+}

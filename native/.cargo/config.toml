@@ -1,4 +1,10 @@
 # Optimize for the current machine's CPU features in development.
 # CI/release builds should override via RUSTFLAGS for portability.
-[target.'cfg(not(target_env = "msvc"))']
+[target.'cfg(all(not(target_env = "msvc"), not(target_os = "macos")))']
 rustflags = ["-C", "target-cpu=native"]
+
+# On macOS, test executables linking the napi crate must resolve Node-API
+# symbols at load time, the same way the Node.js runtime resolves them for
+# the addon. (The addon build sets RUSTFLAGS itself and is unaffected.)
+[target.'cfg(target_os = "macos")']
+rustflags = ["-C", "target-cpu=native", "-C", "link-args=-Wl,-undefined,dynamic_lookup"]

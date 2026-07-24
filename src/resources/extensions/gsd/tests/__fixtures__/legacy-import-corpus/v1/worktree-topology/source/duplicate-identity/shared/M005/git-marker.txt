@@ -1,0 +1,1 @@
+gitdir: ../../project/.git/worktrees/M005

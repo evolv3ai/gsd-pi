@@ -67,7 +67,13 @@ If `verify:pr` fails after running tests (e.g. `Cannot find module '@gsd/*'` err
 gsd-pi runs on macOS, Linux, and Windows:
 
 - **Git hooks** are executed by Git's bundled shell, so they work from any terminal (CMD, PowerShell, Git Bash).
-- **Shell scripts** in `scripts/` use `#!/usr/bin/env bash`. On Windows, Git may convert these to CRLF line endings, which breaks the shebang. If you hit shebang errors when running lint scripts locally, create a `.gitattributes` file in the repo root with `*.sh text eol=lf` to force LF checkout. Do not commit this file.
+- **Shell scripts** in `scripts/` use `#!/usr/bin/env bash`. On Windows, Git may convert these to CRLF line endings, which breaks the shebang. The repository's committed `.gitattributes` owns line-ending rules; if shell scripts need explicit protection, add `*.sh text eol=lf` there and include that change in your PR.
+
+### Native engine version lockstep
+
+Production installs load the native engine from the `@opengsd/engine-*` platform packages, pinned to an exact version in the root `package.json` `optionalDependencies`. Version bumps are release-time only: the release workflow runs `node scripts/bump-version.mjs <version>` and then publishes the `@opengsd/engine-*` binaries. **PRs must not bump version surfaces** (`package.json`, `native/Cargo.toml`, `native/npm/*/package.json`, workspace packages) — pinning an engine version that is not yet on npm breaks `pnpm install --frozen-lockfile` in CI and for every contributor.
+
+If a change adds or changes N-API exports (e.g. in `native/crates/`), the already-published engine binaries do not contain them, so until the next release publishes new binaries the new flows fail closed as "unavailable" at runtime and gsd-pi runs on its JS fallbacks (or the locally built addon with `GSD_NATIVE_PREFER_LOCAL=1`). This is intentional — never republish or mutate an already-released engine version, and never bump versions inside a feature PR to work around it.
 
 ## Branching and commits
 

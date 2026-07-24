@@ -1,0 +1,157 @@
+{
+  "preview_schema_version": 1,
+  "preview_id": "root-external-boundaries",
+  "import_kind": "legacy-corpus",
+  "importer_version": "v1-test",
+  "base_project_revision": 0,
+  "base_authority_epoch": 0,
+  "base_database_schema_version": 45,
+  "source_set_hash": "sha256:3c780c81bd0e6bb8315dbe3c2fdf4a42c29d395da5338851c9df30909882c03f",
+  "change_set_hash": "sha256:c1899dcc7657207a19e3144951252df4cecca4086617d9bb73516101c3512990",
+  "counts": {
+    "create": 0,
+    "update": 0,
+    "delete": 0,
+    "preserve": 3,
+    "unparsed": 0,
+    "unresolved": 0
+  },
+  "sources": [
+    {
+      "source_id": "boundary-external-database",
+      "path": "$GSD_STATE_DIR/projects/project-external/gsd.db",
+      "kind": "sqlite-database",
+      "byte_size": 10240,
+      "sha256": "sha256:37aa7617cfdb3c4f615633e386bd111c48adb66ce79bebd19364c4100082034a",
+      "parser_id": "gsd-sqlite-target",
+      "parser_version": "1",
+      "encoding": "binary",
+      "outcome": "mapped"
+    },
+    {
+      "source_id": "boundary-root-project",
+      "path": ".gsd/PROJECT.md",
+      "kind": "markdown",
+      "byte_size": 239,
+      "sha256": "sha256:39c769f5fb89a98d54c4628cd21ea4a4c0061d8372f1658c49094b0d35f3a377",
+      "parser_id": "gsd-artifact-classifier",
+      "parser_version": "1",
+      "encoding": "utf-8",
+      "outcome": "preserved"
+    },
+    {
+      "source_id": "boundary-root-queue",
+      "path": ".gsd/QUEUE.md",
+      "kind": "markdown",
+      "byte_size": 56,
+      "sha256": "sha256:79a254a673ff81ca5aa3a8c845fbb17c2706144fb2c60f99705eaa8b41bc131c",
+      "parser_id": "gsd-artifact-classifier",
+      "parser_version": "1",
+      "encoding": "utf-8",
+      "outcome": "preserved"
+    },
+    {
+      "source_id": "boundary-root-secrets-manifest",
+      "path": ".gsd/SECRETS-MANIFEST.md",
+      "kind": "markdown",
+      "byte_size": 107,
+      "sha256": "sha256:bf060b8af610d73fadc349dccb2611e8499c46dcb8e22025dbdd76d458ffa953",
+      "parser_id": "gsd-artifact-classifier",
+      "parser_version": "1",
+      "encoding": "utf-8",
+      "outcome": "preserved"
+    }
+  ],
+  "changes": [
+    {
+      "change_id": "change-preserve-project-root",
+      "action": "preserve",
+      "target": {
+        "kind": "artifact",
+        "key": ".gsd/PROJECT.md"
+      },
+      "raw": {
+        "source_id": "boundary-root-project",
+        "locator": {
+          "start_byte": 0,
+          "end_byte": 239,
+          "line": 1
+        },
+        "value": "# External Boundary Project\n\nReadable project status remains in the repository while database authority lives in external state.\n\n## Milestone Sequence\n\n- [ ] M901: Verify external authority — Classify root evidence without applying it.\n",
+        "sha256": "sha256:39c769f5fb89a98d54c4628cd21ea4a4c0061d8372f1658c49094b0d35f3a377"
+      },
+      "normalized": {
+        "path": ".gsd/PROJECT.md",
+        "preservation": "verbatim",
+        "role": "readable-status-projection"
+      },
+      "provenance": {
+        "source_id": "boundary-root-project",
+        "parser_id": "gsd-artifact-classifier",
+        "parser_version": "1"
+      },
+      "reason_code": "root-project-projection-preserved"
+    },
+    {
+      "change_id": "change-preserve-queue-root",
+      "action": "preserve",
+      "target": {
+        "kind": "artifact",
+        "key": ".gsd/QUEUE.md"
+      },
+      "raw": {
+        "source_id": "boundary-root-queue",
+        "locator": {
+          "start_byte": 0,
+          "end_byte": 56,
+          "line": 1
+        },
+        "value": "# Queue\n\n- M901 — Verify external authority (pending)\n",
+        "sha256": "sha256:79a254a673ff81ca5aa3a8c845fbb17c2706144fb2c60f99705eaa8b41bc131c"
+      },
+      "normalized": {
+        "path": ".gsd/QUEUE.md",
+        "preservation": "verbatim",
+        "role": "database-queue-projection"
+      },
+      "provenance": {
+        "source_id": "boundary-root-queue",
+        "parser_id": "gsd-artifact-classifier",
+        "parser_version": "1"
+      },
+      "reason_code": "root-queue-projection-preserved"
+    },
+    {
+      "change_id": "change-preserve-secrets-manifest-root",
+      "action": "preserve",
+      "target": {
+        "kind": "artifact",
+        "key": ".gsd/SECRETS-MANIFEST.md"
+      },
+      "raw": {
+        "source_id": "boundary-root-secrets-manifest",
+        "locator": {
+          "start_byte": 0,
+          "end_byte": 107,
+          "line": 1
+        },
+        "value": "# Secrets Manifest\n\nNo credential material is included in this fixture.\n\n- Required environment keys: none\n",
+        "sha256": "sha256:bf060b8af610d73fadc349dccb2611e8499c46dcb8e22025dbdd76d458ffa953"
+      },
+      "normalized": {
+        "contains_secrets": false,
+        "path": ".gsd/SECRETS-MANIFEST.md",
+        "preservation": "verbatim",
+        "role": "sanitized-manifest"
+      },
+      "provenance": {
+        "source_id": "boundary-root-secrets-manifest",
+        "parser_id": "gsd-artifact-classifier",
+        "parser_version": "1"
+      },
+      "reason_code": "sanitized-secrets-manifest-preserved"
+    }
+  ],
+  "diagnoses": [],
+  "resolutions": []
+}

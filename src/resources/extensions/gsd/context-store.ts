@@ -59,6 +59,7 @@ export function queryDecisions(opts?: DecisionQueryOpts): Decision[] {
       rationale: row['rationale'] as string,
       revisable: row['revisable'] as string,
       made_by: (row['made_by'] as string as import('./types.js').DecisionMadeBy) ?? 'agent',
+      source: (row['source'] as string) ?? 'discussion',
       superseded_by: null,
     }));
   } catch {
@@ -122,6 +123,7 @@ function readDecisionsFromMemories(
       }
       const sourceId = sf['sourceDecisionId'];
       if (typeof sourceId !== 'string' || sourceId.length === 0) continue;
+      if (sf['deleted'] === true) continue;
 
       // Decision-level superseded status lives in structured_fields.superseded_by
       // (written by mirrorDecisionToMemory / memory-backfill.ts). The top-level
@@ -140,6 +142,7 @@ function readDecisionsFromMemories(
         rationale: typeof sf['rationale'] === 'string' ? (sf['rationale'] as string) : '',
         revisable: typeof sf['revisable'] === 'string' ? (sf['revisable'] as string) : '',
         made_by: ((typeof sf['made_by'] === 'string' ? sf['made_by'] : 'agent') as DecisionMadeBy),
+        source: typeof sf['source'] === 'string' ? sf['source'] : 'discussion',
         superseded_by: supersededBy,
       });
     }
@@ -183,6 +186,34 @@ export function queryDecisionsFromMemories(opts?: DecisionQueryOpts): Decision[]
  */
 export function getAllDecisionsFromMemories(): Decision[] {
   return readDecisionsFromMemories(undefined, /* includeSuperseded */ true);
+}
+
+/** Decision IDs whose canonical memory authority is an explicit tombstone. */
+export function getDeletedDecisionIdsFromMemories(): ReadonlySet<string> {
+  if (!isDbAvailable()) return new Set();
+  const adapter = _getAdapter();
+  if (!adapter) return new Set();
+  const rows = adapter.prepare(`SELECT structured_fields
+    FROM memories
+    WHERE category = 'architecture'
+      AND instr(structured_fields, '"sourceDecisionId"') > 0`).all() as Array<Record<string, unknown>>;
+  const ids = new Set<string>();
+  for (const row of rows) {
+    const raw = row['structured_fields'];
+    if (typeof raw !== 'string') throw new Error('decision memory structured fields are invalid');
+    let fields: Record<string, unknown>;
+    try {
+      fields = JSON.parse(raw) as Record<string, unknown>;
+    } catch {
+      throw new Error('decision memory structured fields contain invalid JSON');
+    }
+    const id = fields['sourceDecisionId'];
+    if (typeof id !== 'string' || id.length === 0) {
+      throw new Error('decision memory source identity is invalid');
+    }
+    if (fields['deleted'] === true) ids.add(id);
+  }
+  return ids;
 }
 
 /**

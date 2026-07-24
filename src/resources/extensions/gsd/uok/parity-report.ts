@@ -1,7 +1,8 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 
 import { gsdRoot } from "../paths.js";
+import { atomicWriteSync } from "../atomic-write.js";
 
 export interface UokParityEvent {
   ts?: string;
@@ -79,6 +80,6 @@ export function writeParityReport(basePath: string): UokParityReport {
   const raw = existsSync(sourcePath) ? readFileSync(sourcePath, "utf-8") : "";
   const report = buildParityReport(parseParityEvents(raw), sourcePath);
   mkdirSync(join(gsdRoot(basePath), "runtime"), { recursive: true });
-  writeFileSync(reportPath(basePath), JSON.stringify(report, null, 2) + "\n", "utf-8");
+  atomicWriteSync(reportPath(basePath), JSON.stringify(report, null, 2) + "\n", "utf-8");
   return report;
 }

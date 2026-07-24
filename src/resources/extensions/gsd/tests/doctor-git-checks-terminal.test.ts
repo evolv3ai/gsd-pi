@@ -37,7 +37,10 @@ test.after(() => {
 
 test("doctor flags orphaned worktree for DB-complete milestone without SUMMARY", async (t) => {
   const base = makeRepo();
-  t.after(() => rmSync(base, { recursive: true, force: true }));
+  t.after(() => {
+    closeDatabase();
+    rmSync(base, { recursive: true, force: true });
+  });
 
   mkdirSync(join(base, ".gsd"), { recursive: true });
   openDatabase(join(base, ".gsd", "gsd.db"));

@@ -7,7 +7,7 @@
  */
 
 import type { ExtensionAPI, ExtensionCommandContext } from "@gsd/pi-coding-agent";
-import { existsSync, mkdirSync, writeFileSync, readFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { showNextAction } from "../shared/tui.js";
 import {
@@ -23,6 +23,7 @@ import { runSkillInstallStep } from "./skill-catalog.js";
 import { generateCodebaseMap, writeCodebaseMap } from "./codebase-generator.js";
 import { handlePrefsWizard, writePreferencesFile } from "./commands-prefs-wizard.js";
 import { loadEffectiveGSDPreferences } from "./preferences.js";
+import { atomicWriteSync, createProjectionDirectorySync } from "./atomic-write.js";
 
 // ─── Types ──────────────────────────────────────────────────────────────────────
 
@@ -562,13 +563,13 @@ function bootstrapGsdDirectoryStructure(basePath: string, signals: ProjectSignal
   assertSafeDirectory(basePath);
 
   const gsd = gsdRoot(basePath);
-  mkdirSync(join(gsd, "milestones"), { recursive: true });
+  createProjectionDirectorySync(join(gsd, "milestones"));
   mkdirSync(join(gsd, "runtime"), { recursive: true });
 
   // Seed CONTEXT.md with detected project signals
   const contextContent = buildContextSeed(signals);
   if (contextContent) {
-    writeFileSync(join(gsd, "CONTEXT.md"), contextContent, "utf-8");
+    atomicWriteSync(join(gsd, "CONTEXT.md"), contextContent, "utf-8");
   }
 }
 

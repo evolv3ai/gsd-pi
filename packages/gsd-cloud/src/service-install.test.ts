@@ -1,6 +1,6 @@
 // Project/App: Open GSD
 // File Purpose: Unit coverage for OS service unit rendering, platform dispatch, and failure paths.
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test, type TestContext } from "node:test";
@@ -35,6 +35,7 @@ function baseInstallOpts(home: string, overrides?: Partial<ServiceInstallOptions
     binaryPath: "/usr/local/lib/node_modules/@opengsd/gsd-cloud/bin/gsd-cloud.js",
     configPath: join(home, ".gsd", "daemon.yaml"),
     homeDir: home,
+    environment: {},
     ...overrides,
   };
 }
@@ -157,6 +158,106 @@ test("systemd unit quotes arguments containing spaces", (t) => {
   assert.ok(!unit.includes(`--config ${configPath}\n`));
 });
 
+test("service unit PATH appends the install-time PATH so interactive-only commands resolve", (t) => {
+  const home = tmpHome(t);
+  const opts = baseInstallOpts(home, {
+    nodePath: "/opt/node/bin/node",
+    environment: { PATH: `/home/user/.local/bin:/usr/bin:${join(home, "bin")}` },
+  });
+  // Node bin dir + system dirs stay first; interactive-only dirs are appended,
+  // and dirs already in the base (e.g. /usr/bin) are not duplicated. This lets a
+  // bare GSD_WORKFLOW_MCP_COMMAND on ~/.local/bin resolve under the service.
+  const expected =
+    `/opt/node/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:/home/user/.local/bin:${join(home, "bin")}`;
+
+  const xml = generateLaunchdPlist(opts);
+  assert.ok(xml.includes(`<key>PATH</key>\n\t\t<string>${expected}</string>`));
+
+  const unit = generateSystemdUnit(opts);
+  assert.ok(unit.includes(`Environment="PATH=${expected}"`));
+});
+
+test("service units preserve workflow MCP discovery overrides", (t) => {
+  const home = tmpHome(t);
+  const environment = {
+    GSD_BIN_PATH: "/opt/gsd/bin/gsd",
+    GSD_WORKFLOW_MCP_COMMAND: "/opt/workflow/bin/server",
+    GSD_WORKFLOW_MCP_ARGS: '["--label","one & two"]',
+    GSD_WORKFLOW_MCP_ENV: '{"TOKEN":"quote\\\" & percent%"}',
+    GSD_WORKFLOW_MCP_CWD: "/srv/workflow & projects",
+  };
+  const opts = baseInstallOpts(home, {
+    environment,
+  });
+
+  const plist = generateLaunchdPlist(opts);
+  const unit = generateSystemdUnit(opts);
+
+  for (const [key, value] of Object.entries(environment)) {
+    assert.ok(plist.includes(`<key>${key}</key>`), `launchd missing ${key}`);
+    assert.ok(plist.includes(`<string>${escapeXml(value)}</string>`), `launchd missing ${key} value`);
+    const escapedForSystemd = value
+      .replace(/%/g, "%%")
+      .replace(/\\/g, "\\\\")
+      .replace(/"/g, '\\"');
+    assert.ok(
+      unit.includes(`Environment="${key}=${escapedForSystemd}"`),
+      `systemd missing ${key}`,
+    );
+  }
+
+  const previousEnvironment = Object.fromEntries(
+    Object.keys(environment).map((key) => [key, process.env[key]]),
+  );
+  Object.assign(process.env, environment);
+  t.after(() => {
+    for (const [key, value] of Object.entries(previousEnvironment)) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  });
+
+  // installService with environment:undefined captures process.env at install
+  // time, and buildEnvPath now folds that env's PATH into the unit PATH. Render
+  // the expectation from the same process.env so the equality reflects the
+  // fallback path rather than the PATH-free opts used for the key assertions.
+  const expectedPlist = generateLaunchdPlist({ ...opts, environment: process.env });
+  const expectedUnit = generateSystemdUnit({ ...opts, environment: process.env });
+
+  for (const platform of ["darwin", "linux"] as const) {
+    const unitPath = join(home, `${platform}.service`);
+    installService(
+      { ...opts, platform, unitPath, environment: undefined },
+      mockRunCommand().run,
+    );
+    assert.equal(
+      readFileSync(unitPath, "utf8"),
+      platform === "darwin" ? expectedPlist : expectedUnit,
+    );
+  }
+});
+
+test("gsdCliPath pins GSD_CLI_PATH and GSD_BIN_PATH together, overriding a stale GSD_BIN_PATH", (t) => {
+  const home = tmpHome(t);
+  // A mismatched GSD_BIN_PATH in the captured environment must not survive: the
+  // two vars are equivalent CLI-path overrides downstream, so both must resolve
+  // to the freshly resolved binary rather than disagreeing.
+  const opts = baseInstallOpts(home, {
+    gsdCliPath: "/opt/homebrew/bin/gsd",
+    environment: { GSD_BIN_PATH: "/stale/daemon/gsd" },
+  });
+
+  const plist = generateLaunchdPlist(opts);
+  assert.ok(plist.includes("<key>GSD_CLI_PATH</key>\n\t\t<string>/opt/homebrew/bin/gsd</string>"));
+  assert.ok(plist.includes("<key>GSD_BIN_PATH</key>\n\t\t<string>/opt/homebrew/bin/gsd</string>"));
+  assert.ok(!plist.includes("/stale/daemon/gsd"));
+
+  const unit = generateSystemdUnit(opts);
+  assert.ok(unit.includes(`Environment="GSD_CLI_PATH=/opt/homebrew/bin/gsd"`));
+  assert.ok(unit.includes(`Environment="GSD_BIN_PATH=/opt/homebrew/bin/gsd"`));
+  assert.ok(!unit.includes("/stale/daemon/gsd"));
+});
+
 // --------------- install ---------------
 
 test("installService writes the launchd plist, loads it, and verifies registration", (t) => {
@@ -251,6 +352,21 @@ test("installService surfaces systemctl failures with user-session guidance", (t
     () => installService(opts, run),
     /Failed to connect to bus: No medium found.*loginctl enable-linger/s,
   );
+});
+
+test("installService writes unit files owner-only so persisted secrets stay private", (t) => {
+  const home = tmpHome(t);
+  // The unit files can embed GSD_WORKFLOW_MCP_ENV credentials, so they must not
+  // be readable by other local users.
+  const secretEnv = { GSD_WORKFLOW_MCP_ENV: '{"TOKEN":"s3cret"}' };
+
+  const darwin = baseInstallOpts(home, { platform: "darwin", environment: secretEnv });
+  installService(darwin, mockRunCommand().run);
+  assert.equal(statSync(launchdPlistPath(home)).mode & 0o777, 0o600);
+
+  const linux = baseInstallOpts(home, { platform: "linux", environment: secretEnv });
+  installService(linux, mockRunCommand().run);
+  assert.equal(statSync(systemdUnitPath(home)).mode & 0o777, 0o600);
 });
 
 // --------------- uninstall ---------------

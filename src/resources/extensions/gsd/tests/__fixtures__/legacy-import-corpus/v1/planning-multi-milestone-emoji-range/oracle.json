@@ -1,0 +1,131 @@
+{
+  "preview_schema_version": 1,
+  "preview_id": "planning-multi-milestone-emoji-range",
+  "import_kind": "legacy-corpus",
+  "importer_version": "v1-test",
+  "base_project_revision": 0,
+  "base_authority_epoch": 0,
+  "base_database_schema_version": 45,
+  "source_set_hash": "sha256:6d39a56753fab6cee57f673944db7cf2004e092f816b55021139af5082f417a1",
+  "change_set_hash": "sha256:19bf403fb61f5772c4a7203e9d2de959e859a2d7c2e349a0b63a75ee849f8f69",
+  "counts": {
+    "create": 3,
+    "update": 0,
+    "delete": 0,
+    "preserve": 0,
+    "unparsed": 0,
+    "unresolved": 0
+  },
+  "sources": [
+    {
+      "source_id": "source-planning-roadmap",
+      "path": ".planning/ROADMAP.md",
+      "kind": "markdown",
+      "byte_size": 121,
+      "sha256": "sha256:cfbc74e7640bb9785339bf3ce16de6b824ac1f19ce3a0950871c9b2eca1523ab",
+      "parser_id": "planning-roadmap-parser",
+      "parser_version": "1",
+      "encoding": "utf-8",
+      "outcome": "mapped"
+    }
+  ],
+  "changes": [
+    {
+      "change_id": "change-milestone-m001",
+      "action": "create",
+      "target": {
+        "kind": "milestone",
+        "key": "M001"
+      },
+      "raw": {
+        "source_id": "source-planning-roadmap",
+        "locator": {
+          "start_byte": 0,
+          "end_byte": 17,
+          "line": 1
+        },
+        "value": "# Project Roadmap",
+        "sha256": "sha256:3911ed89652d24896ea9811f1dd7c6b12e85e8c1fa4d44209f2ba4db47dd31b4"
+      },
+      "normalized": {
+        "grammar": "emoji-range",
+        "id": "M001",
+        "title": "Migration",
+        "status": "active",
+        "sequence": 1
+      },
+      "provenance": {
+        "source_id": "source-planning-roadmap",
+        "parser_id": "planning-roadmap-parser",
+        "parser_version": "1"
+      },
+      "reason_code": "emoji-range-milestone"
+    },
+    {
+      "change_id": "change-slice-m001-s01",
+      "action": "create",
+      "target": {
+        "kind": "slice",
+        "key": "M001/S01"
+      },
+      "raw": {
+        "source_id": "source-planning-roadmap",
+        "locator": {
+          "start_byte": 30,
+          "end_byte": 80,
+          "line": 5
+        },
+        "value": "- ✅ **v1.0 Foundation** — Phases 1-2 (shipped)",
+        "sha256": "sha256:df63af4b2977f1bed73ada0afbcdd00dcfcccdaa966555a0ffc01407ad1495f4"
+      },
+      "normalized": {
+        "grammar": "emoji-range",
+        "id": "S01",
+        "milestone_id": "M001",
+        "title": "Foundation",
+        "status": "complete",
+        "sequence": 1
+      },
+      "provenance": {
+        "source_id": "source-planning-roadmap",
+        "parser_id": "planning-roadmap-parser",
+        "parser_version": "1"
+      },
+      "reason_code": "emoji-range-slice"
+    },
+    {
+      "change_id": "change-slice-m001-s02",
+      "action": "create",
+      "target": {
+        "kind": "slice",
+        "key": "M001/S02"
+      },
+      "raw": {
+        "source_id": "source-planning-roadmap",
+        "locator": {
+          "start_byte": 81,
+          "end_byte": 120,
+          "line": 6
+        },
+        "value": "- 🚧 **v1.1 Delivery** — Phases 3-4",
+        "sha256": "sha256:789288ae8dca280ea2ad410b6541e3ec222d800bf64345cc938bec94e0c953d3"
+      },
+      "normalized": {
+        "grammar": "emoji-range",
+        "id": "S02",
+        "milestone_id": "M001",
+        "title": "Delivery",
+        "status": "pending",
+        "sequence": 2
+      },
+      "provenance": {
+        "source_id": "source-planning-roadmap",
+        "parser_id": "planning-roadmap-parser",
+        "parser_version": "1"
+      },
+      "reason_code": "emoji-range-slice"
+    }
+  ],
+  "diagnoses": [],
+  "resolutions": []
+}

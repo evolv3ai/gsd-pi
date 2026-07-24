@@ -159,7 +159,7 @@ export function showHelp(ctx: ExtensionCommandContext, args = ""): void {
     "  /gsd closeout       Recover failed git closeout actions  [status|retry|resolve] [unit-id]",
     "  /gsd rebuild markdown  Rebuild markdown projections from the canonical DB",
     "  /gsd rebuild database  Reserved for DB-native rebuilds; does not import markdown",
-    "  /gsd recover --confirm Import markdown into the DB after DB loss/corruption",
+    "  /gsd recover           Preview an evidence-bound DB import after loss/corruption",
     "  /gsd worktree       Manage worktrees from the TUI  [list|merge|clean|remove]",
     "  /gsd migrate        Migrate .planning/ (v1) to DB-backed .gsd/ with backup + audit",
     "  /gsd remote         Control remote auto-mode  [slack|discord|status|disconnect]",

@@ -69,6 +69,8 @@ Optional fields:
 
 Child processes are marked with `GSD_SUBAGENT_CHILD=1`, which suppresses recursive subagent registration inside the child.
 
+When a project has a [project-local runtime contract](./local-runtime-contract.md), a child launched into a nested repository inherits the owning project's runtime authority while its other preferences and context remain local to the child. The same authority is propagated to explicitly isolated children so a temporary checkout cannot silently replace the startup and teardown contract.
+
 ## Background Runs
 
 For a long single-agent task, launch in the background:

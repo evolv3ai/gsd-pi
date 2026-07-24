@@ -1,0 +1,80 @@
+{
+  "preview_schema_version": 1,
+  "preview_id": "synthetic-smoke",
+  "import_kind": "legacy-corpus",
+  "importer_version": "v1-test",
+  "base_project_revision": 0,
+  "base_authority_epoch": 0,
+  "base_database_schema_version": 45,
+  "source_set_hash": "sha256:4f5ab79655ebbc40d420f5e53f45a4a8ed5405a1ba80a79026e35d78919126d7",
+  "change_set_hash": "sha256:2178baa794d910a489e05bf1efd1c252b541ba2ca5820d0f18ab3b0f4fe6a816",
+  "counts": {
+    "create": 1,
+    "update": 0,
+    "delete": 0,
+    "preserve": 0,
+    "unparsed": 0,
+    "unresolved": 1
+  },
+  "sources": [
+    {
+      "source_id": "source-decisions",
+      "path": ".gsd/DECISIONS.md",
+      "kind": "markdown",
+      "byte_size": 5,
+      "sha256": "sha256:340ea1719585d4e0d6bf49d0add073143e3244ca426aad6089ae080d25c5337e",
+      "parser_id": "synthetic-decisions",
+      "parser_version": "1",
+      "encoding": "utf-8",
+      "outcome": "mapped"
+    },
+    {
+      "source_id": "source-state",
+      "path": ".gsd/STATE.md",
+      "kind": "json",
+      "byte_size": 21,
+      "sha256": "sha256:32159fd5e5693ac0663d5d7f0b4bf6a66c786f3de2781f9b043881b440233a87",
+      "parser_id": "synthetic-state",
+      "parser_version": "1",
+      "encoding": "utf-8",
+      "outcome": "preserved"
+    }
+  ],
+  "changes": [
+    {
+      "change_id": "change-decision-d001",
+      "action": "create",
+      "target": { "kind": "decision", "key": "D001" },
+      "raw": {
+        "source_id": "source-decisions",
+        "locator": { "start_byte": 0, "end_byte": 4, "line": 1 },
+        "value": "D001",
+        "sha256": "sha256:ca3130d3fa703a5cc66fe924c4baec13b00a78804d28f0513acbd35c22b70dc6"
+      },
+      "normalized": { "id": "D001" },
+      "provenance": {
+        "source_id": "source-decisions",
+        "parser_id": "synthetic-decisions",
+        "parser_version": "1"
+      },
+      "reason_code": "synthetic-decision"
+    }
+  ],
+  "diagnoses": [
+    {
+      "diagnosis_id": "diagnosis-blocked-state",
+      "code": "blocked-state",
+      "severity": "blocker",
+      "source_id": "source-state",
+      "locator": { "start_byte": 10, "end_byte": 19, "line": 1, "json_pointer": "/status" },
+      "raw_value": "blocked",
+      "message": "Synthetic state requires a resolution."
+    }
+  ],
+  "resolutions": [
+    {
+      "diagnosis_id": "diagnosis-blocked-state",
+      "disposition": "requires-user"
+    }
+  ]
+}

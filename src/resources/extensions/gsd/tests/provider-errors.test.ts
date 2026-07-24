@@ -9,7 +9,8 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, dirname } from "node:path";
+import { fileURLToPath } from "node:url";
 import { classifyError, isTransient, isTransientNetworkError } from "../error-classifier.ts";
 import { pauseAutoForProviderError } from "../provider-error-pause.ts";
 import { resumeAutoAfterProviderDelay } from "../bootstrap/provider-error-resume.ts";
@@ -1238,5 +1239,71 @@ test("exhausted retry errors are not deferred back to core retry handling", () =
       "Retry failed after 3 attempts: 500 empty_stream: upstream stream closed before first payload",
     ),
     false,
+  );
+});
+
+// ── no-api-key: request-time auth failure is fallback-eligible (#1533) ──────
+
+test("classifyError treats 'No API key for provider' as fallback-eligible model-error (#1533)", () => {
+  // Provider adapters throw this at request time when a stored credential is
+  // expired/unrefreshable — selection-time hasAuth() passed, but no usable key
+  // materialized. This must NOT classify as unknown (which bypasses the
+  // configured fallback chain and pauses indefinitely); model-error routes
+  // through the fallback-attempting branch in agent-end-recovery.ts.
+  const messages = [
+    "No API key for provider: openai-codex",
+    "No API key for provider: anthropic",
+    "No API key for provider: google",
+    "No API key available for provider: openrouter",
+    "No API key found for openai",
+    "No API key for openai-codex/gpt-5.4",
+  ];
+  for (const message of messages) {
+    const result = classifyError(message);
+    assert.equal(result.kind, "model-error", `${message} should classify as model-error`);
+    assert.ok(!isTransient(result), `${message} should not be same-model transient`);
+  }
+});
+
+test("classifyError keeps explicit auth failures permanent even with API-key phrasing (#1533)", () => {
+  // Genuine auth rejections must not become fallback-eligible just because the
+  // message also mentions an API key.
+  const result = classifyError("401 unauthorized: No API key for provider: openai-codex");
+  assert.equal(result.kind, "permanent");
+});
+
+test("model-error branch in agent-end-recovery attempts fallback before any terminal pause (#1533)", () => {
+  // Structural: the model-error handler must exist, must try fallbacks via
+  // pauseForProviderModelRejection without persistently blocking the model,
+  // and must precede the terminal unknown/permanent pause that bypasses
+  // fallback (pauseAutoForProviderError with isTransient: false).
+  const src = readFileSync(
+    join(dirname(fileURLToPath(import.meta.url)), "..", "bootstrap", "agent-end-recovery.ts"),
+    "utf-8",
+  );
+  const modelErrorMatch = /cls\.kind\s*===\s*["']model-error["']/.exec(src);
+  assert.ok(modelErrorMatch, "agent-end-recovery.ts must handle cls.kind model-error");
+  const modelErrorIdx = modelErrorMatch.index;
+  const rejectionCallIdx = src.indexOf("pauseForProviderModelRejection", modelErrorIdx);
+  assert.ok(rejectionCallIdx > 0, "model-error branch must call pauseForProviderModelRejection");
+  // Anchor on the terminal permanent/unknown pause section, not the first
+  // pauseAutoForProviderError after the model-error branch — that would match
+  // the intervening tool-schema pause and let the test pass even if the real
+  // terminal pause were reordered ahead of the model-error branch.
+  const terminalSectionIdx = src.search(/Permanent\s*\/\s*unknown/i);
+  assert.ok(terminalSectionIdx > 0, "terminal permanent/unknown pause section must exist");
+  const terminalPauseIdx = src.indexOf("pauseAutoForProviderError", terminalSectionIdx);
+  assert.ok(
+    terminalPauseIdx > 0,
+    "terminal provider-error pause must exist in the permanent/unknown section",
+  );
+  assert.ok(
+    rejectionCallIdx < terminalPauseIdx,
+    "model-error fallback branch must precede the terminal provider-error pause (#1533)",
+  );
+  const branch = src.slice(modelErrorIdx, rejectionCallIdx + 2000);
+  assert.ok(
+    branch.includes("shouldBlockModel: false"),
+    "model-error fallback must not persistently block the model (#1533)",
   );
 });

@@ -43,7 +43,6 @@ const BANNED_DECISION_PATHS = new Set([
 const ALLOWED_IMPORTERS = new Set([
   // migration/import: parses markdown to populate the DB
   "gsd/md-importer.ts",
-  "gsd/workflow-migration.ts",
   "gsd/migration-auto-check.ts",
   // drift detection: compares markdown projection against DB by design
   "gsd/state-reconciliation/drift/roadmap.ts",

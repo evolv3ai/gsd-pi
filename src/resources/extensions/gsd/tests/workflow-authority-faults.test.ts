@@ -32,6 +32,7 @@ import {
   type WorkflowFaultHarness,
   type WorkflowFaultPoint,
 } from "./workflow-fault-harness.js";
+import { discardProjectionEvidence } from "./projection-evidence-helpers.js";
 
 interface FaultScenario {
   point: WorkflowFaultPoint;
@@ -411,8 +412,9 @@ test("fresh-process exact replay repairs an obstructed Slice completion projecti
   const committedLineage = lifecycleLineageSnapshot(idempotencyKey);
   assertSingleLifecycleLineage(committedLineage);
 
+  discardProjectionEvidence(fixture.root);
+  rmSync(summaryPath, { recursive: true });
   closeDatabase();
-  rmSync(summaryPath, { recursive: true, force: true });
   const replay = runLifecycleReplayProcess(
     "complete",
     fixture.root,
@@ -456,8 +458,9 @@ test("fresh-process exact replay repairs an obstructed Slice cancellation projec
   const committedLineage = lifecycleLineageSnapshot(idempotencyKey);
   assertSingleLifecycleLineage(committedLineage);
 
+  discardProjectionEvidence(fixture.root);
+  rmSync(statePath, { recursive: true });
   closeDatabase();
-  rmSync(statePath, { recursive: true, force: true });
   const replay = runLifecycleReplayProcess(
     "cancel",
     fixture.root,

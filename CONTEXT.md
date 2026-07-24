@@ -46,8 +46,9 @@ completed.
 - **Compatibility Window**: the bounded period when legacy sources remain available through explicit import/export, never as competing runtime authority.
 - **Authority Epoch**: the durable per-Project version of the authority contract. Advancing it prevents normal runtime from downgrading to an earlier authority source.
 - **Shadow Comparison**: a read-only comparison of normalized decisions from old and replacement paths without changing lifecycle truth.
-- **Cutover**: the recorded advancement of a Project to a new Authority Epoch after migration evidence passes.
-- **Forward Repair**: correction of current canonical state while preserving accepted post-migration work, preferred over restoring an older snapshot.
+- **Restore Window**: the single bounded state after an Import Application while that Application remains the canonical operation head and before any later canonical operation or Cutover.
+- **Cutover**: the recorded advancement of a Project to a new Authority Epoch after migration evidence passes, permanently closing its Restore Window.
+- **Forward Repair**: correction of current canonical state while preserving accepted post-migration work, required after the Restore Window closes.
 - **Removal Gate**: an evidence requirement that must pass before a legacy runtime path can be deleted.
 
 ### Current runtime vocabulary

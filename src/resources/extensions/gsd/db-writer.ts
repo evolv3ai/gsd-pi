@@ -458,7 +458,7 @@ export function _resetDecisionSaveLock(): void {
  * Re-project root DECISIONS.md from the authoritative decision records, with no
  * new decision being added. Mirrors the projection saveDecisionToDb performs
  * after a save, but over the full set — so a DB → markdown re-projection
- * (recover, rebuild, reconcile) re-derives DECISIONS.md and never leaves it
+ * (rebuild or reconcile) re-derives DECISIONS.md and never leaves it
  * showing a stale subset (e.g. after a worktree merge that accepted one
  * branch's DECISIONS.md while the DB holds the union of both branches'
  * decisions). DB stays the single source of truth; this only writes markdown.

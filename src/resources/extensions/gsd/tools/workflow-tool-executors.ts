@@ -38,7 +38,7 @@ import { GATE_REGISTRY } from "../gate-registry.js";
 import { generateRequirementsMd, saveArtifactToDb } from "../db-writer.js";
 import { clearPathCache, normalizeRealPath, relMilestoneFile, relSliceFile, relSlicePath, resolveGsdPathContract, resolveMilestoneFile, resolveSliceFile } from "../paths.js";
 import { saveFile, clearParseCache } from "../files.js";
-import { unlinkSync } from "node:fs";
+import { removeProjectionFileSync } from "../atomic-write.js";
 import { hostname } from "node:os";
 import { join } from "node:path";
 import type { CompleteMilestoneParams } from "./complete-milestone.js";
@@ -109,6 +109,12 @@ export type {
   UatEvidenceRef,
   UatPresentationInput,
 } from "../uat-run.js";
+
+function removeContextDraftProjection(path: string): void {
+  removeProjectionFileSync(path);
+}
+
+export const _removeContextDraftProjectionForTest = removeContextDraftProjection;
 
 export const SUPPORTED_SUMMARY_ARTIFACT_TYPES = [
   "SUMMARY",
@@ -684,7 +690,7 @@ export async function executeSummarySave(
         const draftFile = params.slice_id
           ? resolveSliceFile(basePath, params.milestone_id!, params.slice_id, "CONTEXT-DRAFT")
           : resolveMilestoneFile(basePath, params.milestone_id!, "CONTEXT-DRAFT");
-        if (draftFile) unlinkSync(draftFile);
+        if (draftFile) removeContextDraftProjection(draftFile);
       } catch (e) {
         logWarning("tool", `CONTEXT-DRAFT.md unlink failed: ${(e as Error).message}`);
       }
@@ -869,7 +875,26 @@ export async function executeTaskComplete(
         throw new Error("Canonical Task completion requires private invocation identity");
       }
       if (params.escalation) {
-        throw new Error("Canonical Task completion escalation is not yet supported by the durable completion adapter");
+        // The durable completion adapter cannot yet record escalation
+        // artifacts. Rather than dead-ending the closeout, mirror the legacy
+        // escalation gating (see handleCompleteTask): escalation is only
+        // honored when phases.mid_execution_escalation is enabled. When it is
+        // disabled (the default), the legacy path drops a soft escalation
+        // (continueWithDefault !== false) with a warning and completes the
+        // task — so do the same here instead of throwing. Only cases the
+        // legacy path would actually honor (escalation enabled) or reject (a
+        // hard blocker with escalation disabled) have no canonical equivalent
+        // yet, so those still surface the unsupported error.
+        const escalationEnabled =
+          loadEffectiveGSDPreferences(basePath)?.preferences?.phases?.mid_execution_escalation === true;
+        const hardBlocker = params.escalation.continueWithDefault === false;
+        if (escalationEnabled || hardBlocker) {
+          throw new Error("Canonical Task completion escalation is not yet supported by the durable completion adapter");
+        }
+        logWarning(
+          "tool",
+          `complete_task received escalation payload but phases.mid_execution_escalation is not enabled; ignoring on the canonical completion path (${params.milestoneId}/${params.sliceId}/${params.taskId})`,
+        );
       }
       const staged = await stageTaskCompletion({
         invocation,

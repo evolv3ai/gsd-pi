@@ -43,6 +43,13 @@ function nodeOutput(dir: string, args: string[]): string {
 	return execFileSync(process.execPath, args, { cwd: dir, stdio: ["ignore", "pipe", "pipe"], encoding: "utf8" }).trim();
 }
 
+function recoverFixture(dir: string): ReturnType<typeof gsdSync> {
+	const preview = gsdSync(["headless", "recover"], { cwd: dir, timeoutMs: 30_000 });
+	const previewHash = /re-run with --preview=(sha256:[0-9a-f]{64})/u.exec(preview.stderrClean)?.[1];
+	assert.ok(previewHash, `expected recovery preview approval command, got:\n${preview.stderrClean.slice(0, 800)}`);
+	return gsdSync(["headless", "recover", `--preview=${previewHash}`], { cwd: dir, timeoutMs: 30_000 });
+}
+
 function writeRecoveredMilestone(dir: string): void {
 	const milestoneDir = join(dir, ".gsd", "milestones", "M001");
 	const sliceDir = join(milestoneDir, "slices", "S01");
@@ -119,6 +126,20 @@ function writeCompletedConflictMilestone(dir: string): void {
 	writeFileSync(join(milestoneDir, "M001-SUMMARY.md"), "# M001 Summary\n\nDone.\n");
 }
 
+async function markRecoveredMilestoneComplete(dir: string): Promise<void> {
+	const { closeAllWorkflowDatabases, openWorkflowDatabase } = await import(
+		"../../dist/resources/extensions/gsd/db-workspace.js"
+	);
+	const { updateMilestoneStatus } = await import("../../dist/resources/extensions/gsd/gsd-db.js");
+	try {
+		const opened = openWorkflowDatabase(dir);
+		assert.equal(opened.ok, true, "recovered fixture database should open");
+		updateMilestoneStatus("M001", "complete", "2026-01-01T00:00:00.000Z");
+	} finally {
+		closeAllWorkflowDatabases();
+	}
+}
+
 describe("headless auto pause e2e (fake LLM)", () => {
 	const avail = binaryAvailable();
 	const skipReason = avail.ok ? null : avail.reason;
@@ -146,10 +167,7 @@ describe("headless auto pause e2e (fake LLM)", () => {
 		commitFixture(project.dir);
 		writeRecoveredMilestone(project.dir);
 
-		const recover = gsdSync(["headless", "recover"], {
-			cwd: project.dir,
-			timeoutMs: 30_000,
-		});
+		const recover = recoverFixture(project.dir);
 		assert.equal(
 			recover.code,
 			0,
@@ -215,7 +233,7 @@ describe("headless auto pause e2e (fake LLM)", () => {
 		);
 	});
 
-	test("headless auto exits blocked when survivor milestone merge needs manual conflict resolution", { skip: skipReason ?? false }, (t) => {
+	test("headless auto exits blocked when survivor milestone merge needs manual conflict resolution", { skip: skipReason ?? false }, async (t) => {
 		const project = createTmpProject({
 			git: true,
 			files: {
@@ -228,15 +246,13 @@ describe("headless auto pause e2e (fake LLM)", () => {
 		commitPaths(project.dir, [".gitignore", "package.json", "src/conflict.js"], "test: seed merge conflict fixture");
 		writeCompletedConflictMilestone(project.dir);
 
-		const recover = gsdSync(["headless", "recover"], {
-			cwd: project.dir,
-			timeoutMs: 30_000,
-		});
+		const recover = recoverFixture(project.dir);
 		assert.equal(
 			recover.code,
 			0,
 			`expected recover exit 0, got ${recover.code}. stderr=${recover.stderrClean.slice(0, 800)}`,
 		);
+		await markRecoveredMilestoneComplete(project.dir);
 
 		git(project.dir, ["checkout", "-b", "milestone/M001"]);
 		writeFileSync(join(project.dir, "src/conflict.js"), "export const value = \"milestone\";\n");

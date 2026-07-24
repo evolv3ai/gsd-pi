@@ -1,0 +1,756 @@
+{
+  "preview_schema_version": 1,
+  "preview_id": "worktree-topology",
+  "import_kind": "legacy-corpus",
+  "importer_version": "v1-test",
+  "base_project_revision": 0,
+  "base_authority_epoch": 0,
+  "base_database_schema_version": 45,
+  "source_set_hash": "sha256:88642e5dc3ae5e526aae037b739720f4d88b8a17710d3e79112d3b0d10fe80d5",
+  "change_set_hash": "sha256:9da47ec6f3d6bf6302e57b0d0fe6402c59cd538b86da4d44dbd2ff01364e76d8",
+  "counts": {
+    "create": 0,
+    "update": 0,
+    "delete": 0,
+    "preserve": 14,
+    "unparsed": 1,
+    "unresolved": 2
+  },
+  "sources": [
+    {
+      "source_id": "worktree-active-guard-project-gsd-preferences-md",
+      "path": "active-guard/project/.gsd/PREFERENCES.md",
+      "kind": "topology-marker",
+      "byte_size": 29,
+      "sha256": "sha256:e930ad536db639f13cf0041a3972759d2725f08bb11fcab349d87ca482ed52a7",
+      "parser_id": "gsd-worktree-topology",
+      "parser_version": "1",
+      "encoding": "utf-8",
+      "outcome": "preserved"
+    },
+    {
+      "source_id": "worktree-active-guard-project-gsd-worktrees-m006-git-marker",
+      "path": "active-guard/project/.gsd/worktrees/M006/git-marker.txt",
+      "kind": "git-marker",
+      "byte_size": 40,
+      "sha256": "sha256:21b35152d9a598b894aaa900e2815fd48bc85ddc0d8a2c6c6936bea8fe2f97be",
+      "parser_id": "gsd-worktree-topology",
+      "parser_version": "1",
+      "encoding": "utf-8",
+      "outcome": "preserved"
+    },
+    {
+      "source_id": "worktree-canonical-project-gsd-worktrees-m001-git-marker",
+      "path": "canonical/project/.gsd-worktrees/M001/git-marker.txt",
+      "kind": "git-marker",
+      "byte_size": 37,
+      "sha256": "sha256:95d2facc58bdfe1f73be0bbefcfe26cf03e5a4a367e01c0fe8fd81b62d7c6ae6",
+      "parser_id": "gsd-worktree-topology",
+      "parser_version": "1",
+      "encoding": "utf-8",
+      "outcome": "preserved"
+    },
+    {
+      "source_id": "worktree-duplicate-identity-canonical-m005",
+      "path": "duplicate-identity/project/.gsd-worktrees/M005",
+      "kind": "symlink",
+      "byte_size": 17,
+      "sha256": "sha256:489726eefa892521563c1881f63bb7ef66261c2611ed1e328bd63feeda44f488",
+      "parser_id": "gsd-worktree-topology",
+      "parser_version": "1",
+      "encoding": "utf-8",
+      "outcome": "preserved"
+    },
+    {
+      "source_id": "worktree-duplicate-identity-legacy-m005",
+      "path": "duplicate-identity/project/.gsd/worktrees/M005",
+      "kind": "symlink",
+      "byte_size": 20,
+      "sha256": "sha256:6c29c571d8eb9ade2de40255d44587a260c33b6622e3e69e2aea3122df96060d",
+      "parser_id": "gsd-worktree-topology",
+      "parser_version": "1",
+      "encoding": "utf-8",
+      "outcome": "ignored-with-reason"
+    },
+    {
+      "source_id": "worktree-duplicate-identity-shared-m005-git-marker",
+      "path": "duplicate-identity/shared/M005/git-marker.txt",
+      "kind": "git-marker",
+      "byte_size": 42,
+      "sha256": "sha256:7fbd34c6b910d116f5fb5f05a3b6e47a8dacb520e8e3099fc2509345e11970fb",
+      "parser_id": "gsd-worktree-topology",
+      "parser_version": "1",
+      "encoding": "utf-8",
+      "outcome": "preserved"
+    },
+    {
+      "source_id": "worktree-external-project-gsd",
+      "path": "external/project/.gsd",
+      "kind": "symlink",
+      "byte_size": 30,
+      "sha256": "sha256:711ef1e39c1be32e601c40490a26ac50beead52072076dd4621324f0614e7802",
+      "parser_id": "gsd-worktree-topology",
+      "parser_version": "1",
+      "encoding": "utf-8",
+      "outcome": "preserved"
+    },
+    {
+      "source_id": "worktree-external-state-projects-project-hash-worktrees-m003-git-marker",
+      "path": "external/state/projects/project-hash/worktrees/M003/git-marker.txt",
+      "kind": "git-marker",
+      "byte_size": 54,
+      "sha256": "sha256:95f4c1768e56d4b7190b33a2c51e1c6fef5dd99c469914ef0f066fd25ba10934",
+      "parser_id": "gsd-worktree-topology",
+      "parser_version": "1",
+      "encoding": "utf-8",
+      "outcome": "preserved"
+    },
+    {
+      "source_id": "worktree-interrupted-conflict-project-gsd-migrating-preferences-md",
+      "path": "interrupted-conflict/project/.gsd.migrating/PREFERENCES.md",
+      "kind": "topology-marker",
+      "byte_size": 29,
+      "sha256": "sha256:e930ad536db639f13cf0041a3972759d2725f08bb11fcab349d87ca482ed52a7",
+      "parser_id": "gsd-worktree-topology",
+      "parser_version": "1",
+      "encoding": "utf-8",
+      "outcome": "preserved"
+    },
+    {
+      "source_id": "worktree-interrupted-conflict-project-gsd-preferences-md",
+      "path": "interrupted-conflict/project/.gsd/PREFERENCES.md",
+      "kind": "topology-marker",
+      "byte_size": 33,
+      "sha256": "sha256:0535ba333362dac89120ff89e0f0e1032340d67ff16f0f4a70f6a0c93b48f8f5",
+      "parser_id": "gsd-worktree-topology",
+      "parser_version": "1",
+      "encoding": "utf-8",
+      "outcome": "preserved"
+    },
+    {
+      "source_id": "worktree-interrupted-project-gsd-migrating-preferences-md",
+      "path": "interrupted/project/.gsd.migrating/PREFERENCES.md",
+      "kind": "topology-marker",
+      "byte_size": 29,
+      "sha256": "sha256:e930ad536db639f13cf0041a3972759d2725f08bb11fcab349d87ca482ed52a7",
+      "parser_id": "gsd-worktree-topology",
+      "parser_version": "1",
+      "encoding": "utf-8",
+      "outcome": "preserved"
+    },
+    {
+      "source_id": "worktree-legacy-project-gsd-worktrees-m002-git-marker",
+      "path": "legacy/project/.gsd/worktrees/M002/git-marker.txt",
+      "kind": "git-marker",
+      "byte_size": 40,
+      "sha256": "sha256:0a3cbcf917bf6b4621025652bf0f7bb1d87dd2752e042a30e6ea278e68f8805c",
+      "parser_id": "gsd-worktree-topology",
+      "parser_version": "1",
+      "encoding": "utf-8",
+      "outcome": "preserved"
+    },
+    {
+      "source_id": "worktree-malformed-project-gsd-worktrees-m008-git-marker",
+      "path": "malformed/project/.gsd-worktrees/M008/git-marker.txt",
+      "kind": "git-marker",
+      "byte_size": 26,
+      "sha256": "sha256:815307813a49683a5d76df7727a1e99941b4c1a243b9a6a53cfce8102d5e3fe4",
+      "parser_id": "gsd-worktree-topology",
+      "parser_version": "1",
+      "encoding": "utf-8",
+      "outcome": "unparsed"
+    },
+    {
+      "source_id": "worktree-root-conflict-canonical-m004-git-marker",
+      "path": "root-conflict/project/.gsd-worktrees/M004/git-marker.txt",
+      "kind": "git-marker",
+      "byte_size": 47,
+      "sha256": "sha256:229cf7482f3751562ada22f953fda187c045ec7014c593bd86602e4d1e0977ed",
+      "parser_id": "gsd-worktree-topology",
+      "parser_version": "1",
+      "encoding": "utf-8",
+      "outcome": "preserved"
+    },
+    {
+      "source_id": "worktree-root-conflict-legacy-m004-git-marker",
+      "path": "root-conflict/project/.gsd/worktrees/M004/git-marker.txt",
+      "kind": "git-marker",
+      "byte_size": 47,
+      "sha256": "sha256:db2cac25fbefb77e9449b514550b87c858ae969fc09d00934a95f7b6b6faa74f",
+      "parser_id": "gsd-worktree-topology",
+      "parser_version": "1",
+      "encoding": "utf-8",
+      "outcome": "preserved"
+    },
+    {
+      "source_id": "worktree-stale-canonical-project-gsd-worktrees-m007-readme-txt",
+      "path": "stale-canonical/project/.gsd-worktrees/M007/README.txt",
+      "kind": "topology-marker",
+      "byte_size": 41,
+      "sha256": "sha256:5c076ede36e6164f5d53494fdefdbabb33b5f7b474b4d98543f09bb49bc19a67",
+      "parser_id": "gsd-worktree-topology",
+      "parser_version": "1",
+      "encoding": "utf-8",
+      "outcome": "ignored-with-reason"
+    },
+    {
+      "source_id": "worktree-stale-canonical-project-gsd-worktrees-m007-git-marker",
+      "path": "stale-canonical/project/.gsd/worktrees/M007/git-marker.txt",
+      "kind": "git-marker",
+      "byte_size": 40,
+      "sha256": "sha256:efbf94de6db6d717c8d41d4780f72362dca3dc0f1e17facaf0458e5b6539be07",
+      "parser_id": "gsd-worktree-topology",
+      "parser_version": "1",
+      "encoding": "utf-8",
+      "outcome": "preserved"
+    }
+  ],
+  "changes": [
+    {
+      "change_id": "change-active-guard-project-state",
+      "action": "preserve",
+      "target": {
+        "kind": "legacy-worktree-topology",
+        "key": "active-guard/project-state"
+      },
+      "raw": {
+        "source_id": "worktree-active-guard-project-gsd-preferences-md",
+        "locator": {
+          "start_byte": 0,
+          "end_byte": 29,
+          "line": 1
+        },
+        "value": "---\nplanning_depth: deep\n---\n",
+        "sha256": "sha256:e930ad536db639f13cf0041a3972759d2725f08bb11fcab349d87ca482ed52a7"
+      },
+      "normalized": {
+        "scenario": "active-worktree-guard",
+        "role": "project-state"
+      },
+      "provenance": {
+        "source_id": "worktree-active-guard-project-gsd-preferences-md",
+        "parser_id": "gsd-worktree-topology",
+        "parser_version": "1"
+      },
+      "reason_code": "active-project-state-preserved"
+    },
+    {
+      "change_id": "change-active-guard-worktree",
+      "action": "preserve",
+      "target": {
+        "kind": "legacy-worktree-topology",
+        "key": "active-guard/M006"
+      },
+      "raw": {
+        "source_id": "worktree-active-guard-project-gsd-worktrees-m006-git-marker",
+        "locator": {
+          "start_byte": 0,
+          "end_byte": 40,
+          "line": 1
+        },
+        "value": "gitdir: ../../../../.git/worktrees/M006\n",
+        "sha256": "sha256:21b35152d9a598b894aaa900e2815fd48bc85ddc0d8a2c6c6936bea8fe2f97be"
+      },
+      "normalized": {
+        "scenario": "active-worktree-guard",
+        "id": "M006",
+        "layout": "legacy",
+        "active": true,
+        "evidence_kind": "portable-git-marker-descriptor"
+      },
+      "provenance": {
+        "source_id": "worktree-active-guard-project-gsd-worktrees-m006-git-marker",
+        "parser_id": "gsd-worktree-topology",
+        "parser_version": "1"
+      },
+      "reason_code": "active-worktree-preserved-without-migration"
+    },
+    {
+      "change_id": "change-canonical-m001",
+      "action": "preserve",
+      "target": {
+        "kind": "legacy-worktree-topology",
+        "key": "canonical/M001"
+      },
+      "raw": {
+        "source_id": "worktree-canonical-project-gsd-worktrees-m001-git-marker",
+        "locator": {
+          "start_byte": 0,
+          "end_byte": 37,
+          "line": 1
+        },
+        "value": "gitdir: ../../../.git/worktrees/M001\n",
+        "sha256": "sha256:95d2facc58bdfe1f73be0bbefcfe26cf03e5a4a367e01c0fe8fd81b62d7c6ae6"
+      },
+      "normalized": {
+        "scenario": "canonical",
+        "id": "M001",
+        "layout": "canonical",
+        "active": true,
+        "evidence_kind": "portable-git-marker-descriptor"
+      },
+      "provenance": {
+        "source_id": "worktree-canonical-project-gsd-worktrees-m001-git-marker",
+        "parser_id": "gsd-worktree-topology",
+        "parser_version": "1"
+      },
+      "reason_code": "canonical-worktree-preserved"
+    },
+    {
+      "change_id": "change-duplicate-canonical-m005",
+      "action": "preserve",
+      "target": {
+        "kind": "legacy-worktree-topology",
+        "key": "duplicate-identity/M005/canonical"
+      },
+      "raw": {
+        "source_id": "worktree-duplicate-identity-canonical-m005",
+        "locator": {
+          "start_byte": 0,
+          "end_byte": 17,
+          "line": 1
+        },
+        "value": "../../shared/M005",
+        "sha256": "sha256:489726eefa892521563c1881f63bb7ef66261c2611ed1e328bd63feeda44f488"
+      },
+      "normalized": {
+        "scenario": "duplicate-physical-identity",
+        "id": "M005",
+        "layout": "canonical",
+        "physical_identity": "shared-M005"
+      },
+      "provenance": {
+        "source_id": "worktree-duplicate-identity-canonical-m005",
+        "parser_id": "gsd-worktree-topology",
+        "parser_version": "1"
+      },
+      "reason_code": "canonical-physical-identity-preserved"
+    },
+    {
+      "change_id": "change-duplicate-physical-m005",
+      "action": "preserve",
+      "target": {
+        "kind": "legacy-worktree-topology",
+        "key": "duplicate-identity/M005/physical"
+      },
+      "raw": {
+        "source_id": "worktree-duplicate-identity-shared-m005-git-marker",
+        "locator": {
+          "start_byte": 0,
+          "end_byte": 42,
+          "line": 1
+        },
+        "value": "gitdir: ../../project/.git/worktrees/M005\n",
+        "sha256": "sha256:7fbd34c6b910d116f5fb5f05a3b6e47a8dacb520e8e3099fc2509345e11970fb"
+      },
+      "normalized": {
+        "scenario": "duplicate-physical-identity",
+        "id": "M005",
+        "role": "physical-backing",
+        "evidence_kind": "portable-git-marker-descriptor"
+      },
+      "provenance": {
+        "source_id": "worktree-duplicate-identity-shared-m005-git-marker",
+        "parser_id": "gsd-worktree-topology",
+        "parser_version": "1"
+      },
+      "reason_code": "physical-backing-preserved"
+    },
+    {
+      "change_id": "change-external-m003",
+      "action": "preserve",
+      "target": {
+        "kind": "legacy-worktree-topology",
+        "key": "external/M003"
+      },
+      "raw": {
+        "source_id": "worktree-external-state-projects-project-hash-worktrees-m003-git-marker",
+        "locator": {
+          "start_byte": 0,
+          "end_byte": 54,
+          "line": 1
+        },
+        "value": "gitdir: ../../../../../../project/.git/worktrees/M003\n",
+        "sha256": "sha256:95f4c1768e56d4b7190b33a2c51e1c6fef5dd99c469914ef0f066fd25ba10934"
+      },
+      "normalized": {
+        "scenario": "external",
+        "id": "M003",
+        "project_identity": "project-hash",
+        "evidence_kind": "portable-git-marker-descriptor"
+      },
+      "provenance": {
+        "source_id": "worktree-external-state-projects-project-hash-worktrees-m003-git-marker",
+        "parser_id": "gsd-worktree-topology",
+        "parser_version": "1"
+      },
+      "reason_code": "external-worktree-preserved"
+    },
+    {
+      "change_id": "change-external-project-symlink",
+      "action": "preserve",
+      "target": {
+        "kind": "legacy-worktree-topology",
+        "key": "external/project-state-link"
+      },
+      "raw": {
+        "source_id": "worktree-external-project-gsd",
+        "locator": {
+          "start_byte": 0,
+          "end_byte": 30,
+          "line": 1
+        },
+        "value": "../state/projects/project-hash",
+        "sha256": "sha256:711ef1e39c1be32e601c40490a26ac50beead52072076dd4621324f0614e7802"
+      },
+      "normalized": {
+        "scenario": "symlink",
+        "target": "../state/projects/project-hash"
+      },
+      "provenance": {
+        "source_id": "worktree-external-project-gsd",
+        "parser_id": "gsd-worktree-topology",
+        "parser_version": "1"
+      },
+      "reason_code": "external-state-symlink-preserved"
+    },
+    {
+      "change_id": "change-interrupted-conflict-current",
+      "action": "preserve",
+      "target": {
+        "kind": "legacy-worktree-topology",
+        "key": "interrupted-conflict/current"
+      },
+      "raw": {
+        "source_id": "worktree-interrupted-conflict-project-gsd-preferences-md",
+        "locator": {
+          "start_byte": 0,
+          "end_byte": 33,
+          "line": 1
+        },
+        "value": "---\nplanning_depth: standard\n---\n",
+        "sha256": "sha256:0535ba333362dac89120ff89e0f0e1032340d67ff16f0f4a70f6a0c93b48f8f5"
+      },
+      "normalized": {
+        "scenario": "interrupted-migration-root-conflict",
+        "role": "current-state"
+      },
+      "provenance": {
+        "source_id": "worktree-interrupted-conflict-project-gsd-preferences-md",
+        "parser_id": "gsd-worktree-topology",
+        "parser_version": "1"
+      },
+      "reason_code": "conflicting-current-state-preserved"
+    },
+    {
+      "change_id": "change-interrupted-conflict-staging",
+      "action": "preserve",
+      "target": {
+        "kind": "legacy-worktree-topology",
+        "key": "interrupted-conflict/staging"
+      },
+      "raw": {
+        "source_id": "worktree-interrupted-conflict-project-gsd-migrating-preferences-md",
+        "locator": {
+          "start_byte": 0,
+          "end_byte": 29,
+          "line": 1
+        },
+        "value": "---\nplanning_depth: deep\n---\n",
+        "sha256": "sha256:e930ad536db639f13cf0041a3972759d2725f08bb11fcab349d87ca482ed52a7"
+      },
+      "normalized": {
+        "scenario": "interrupted-migration-root-conflict",
+        "role": "migration-staging"
+      },
+      "provenance": {
+        "source_id": "worktree-interrupted-conflict-project-gsd-migrating-preferences-md",
+        "parser_id": "gsd-worktree-topology",
+        "parser_version": "1"
+      },
+      "reason_code": "conflicting-staging-state-preserved"
+    },
+    {
+      "change_id": "change-interrupted-staging",
+      "action": "preserve",
+      "target": {
+        "kind": "legacy-worktree-topology",
+        "key": "interrupted/staging"
+      },
+      "raw": {
+        "source_id": "worktree-interrupted-project-gsd-migrating-preferences-md",
+        "locator": {
+          "start_byte": 0,
+          "end_byte": 29,
+          "line": 1
+        },
+        "value": "---\nplanning_depth: deep\n---\n",
+        "sha256": "sha256:e930ad536db639f13cf0041a3972759d2725f08bb11fcab349d87ca482ed52a7"
+      },
+      "normalized": {
+        "scenario": "interrupted-migration",
+        "role": "migration-staging"
+      },
+      "provenance": {
+        "source_id": "worktree-interrupted-project-gsd-migrating-preferences-md",
+        "parser_id": "gsd-worktree-topology",
+        "parser_version": "1"
+      },
+      "reason_code": "interrupted-staging-preserved-without-recovery"
+    },
+    {
+      "change_id": "change-legacy-m002",
+      "action": "preserve",
+      "target": {
+        "kind": "legacy-worktree-topology",
+        "key": "legacy/M002"
+      },
+      "raw": {
+        "source_id": "worktree-legacy-project-gsd-worktrees-m002-git-marker",
+        "locator": {
+          "start_byte": 0,
+          "end_byte": 40,
+          "line": 1
+        },
+        "value": "gitdir: ../../../../.git/worktrees/M002\n",
+        "sha256": "sha256:0a3cbcf917bf6b4621025652bf0f7bb1d87dd2752e042a30e6ea278e68f8805c"
+      },
+      "normalized": {
+        "scenario": "legacy",
+        "id": "M002",
+        "layout": "legacy",
+        "active": true,
+        "evidence_kind": "portable-git-marker-descriptor"
+      },
+      "provenance": {
+        "source_id": "worktree-legacy-project-gsd-worktrees-m002-git-marker",
+        "parser_id": "gsd-worktree-topology",
+        "parser_version": "1"
+      },
+      "reason_code": "legacy-worktree-preserved"
+    },
+    {
+      "change_id": "change-root-conflict-canonical",
+      "action": "preserve",
+      "target": {
+        "kind": "legacy-worktree-topology",
+        "key": "root-conflict/M004/canonical"
+      },
+      "raw": {
+        "source_id": "worktree-root-conflict-canonical-m004-git-marker",
+        "locator": {
+          "start_byte": 0,
+          "end_byte": 47,
+          "line": 1
+        },
+        "value": "gitdir: ../../../.git/worktrees/M004-canonical\n",
+        "sha256": "sha256:229cf7482f3751562ada22f953fda187c045ec7014c593bd86602e4d1e0977ed"
+      },
+      "normalized": {
+        "scenario": "root-conflict",
+        "id": "M004",
+        "layout": "canonical",
+        "physical_identity": "M004-canonical",
+        "evidence_kind": "portable-git-marker-descriptor"
+      },
+      "provenance": {
+        "source_id": "worktree-root-conflict-canonical-m004-git-marker",
+        "parser_id": "gsd-worktree-topology",
+        "parser_version": "1"
+      },
+      "reason_code": "conflicting-canonical-root-preserved"
+    },
+    {
+      "change_id": "change-root-conflict-legacy",
+      "action": "preserve",
+      "target": {
+        "kind": "legacy-worktree-topology",
+        "key": "root-conflict/M004/legacy"
+      },
+      "raw": {
+        "source_id": "worktree-root-conflict-legacy-m004-git-marker",
+        "locator": {
+          "start_byte": 0,
+          "end_byte": 47,
+          "line": 1
+        },
+        "value": "gitdir: ../../../../.git/worktrees/M004-legacy\n",
+        "sha256": "sha256:db2cac25fbefb77e9449b514550b87c858ae969fc09d00934a95f7b6b6faa74f"
+      },
+      "normalized": {
+        "scenario": "root-conflict",
+        "id": "M004",
+        "layout": "legacy",
+        "physical_identity": "M004-legacy",
+        "evidence_kind": "portable-git-marker-descriptor"
+      },
+      "provenance": {
+        "source_id": "worktree-root-conflict-legacy-m004-git-marker",
+        "parser_id": "gsd-worktree-topology",
+        "parser_version": "1"
+      },
+      "reason_code": "conflicting-legacy-root-preserved"
+    },
+    {
+      "change_id": "change-stale-fallback-m007",
+      "action": "preserve",
+      "target": {
+        "kind": "legacy-worktree-topology",
+        "key": "stale-canonical/M007/legacy"
+      },
+      "raw": {
+        "source_id": "worktree-stale-canonical-project-gsd-worktrees-m007-git-marker",
+        "locator": {
+          "start_byte": 0,
+          "end_byte": 40,
+          "line": 1
+        },
+        "value": "gitdir: ../../../../.git/worktrees/M007\n",
+        "sha256": "sha256:efbf94de6db6d717c8d41d4780f72362dca3dc0f1e17facaf0458e5b6539be07"
+      },
+      "normalized": {
+        "scenario": "stale-canonical",
+        "id": "M007",
+        "selected_layout": "legacy",
+        "evidence_kind": "portable-git-marker-descriptor"
+      },
+      "provenance": {
+        "source_id": "worktree-stale-canonical-project-gsd-worktrees-m007-git-marker",
+        "parser_id": "gsd-worktree-topology",
+        "parser_version": "1"
+      },
+      "reason_code": "stale-canonical-does-not-shadow-legacy"
+    }
+  ],
+  "diagnoses": [
+    {
+      "diagnosis_id": "diagnosis-active-worktree-guard",
+      "code": "active-worktree-migration-guard",
+      "severity": "info",
+      "source_id": "worktree-active-guard-project-gsd-worktrees-m006-git-marker",
+      "locator": {
+        "start_byte": 0,
+        "end_byte": 40,
+        "line": 1
+      },
+      "raw_value": "gitdir: ../../../../.git/worktrees/M006\n",
+      "message": "Migration is skipped while a legacy worktree directory is active; the topology is preserved without mutation."
+    },
+    {
+      "diagnosis_id": "diagnosis-duplicate-physical-identity",
+      "code": "duplicate-physical-identity",
+      "severity": "info",
+      "source_id": "worktree-duplicate-identity-legacy-m005",
+      "locator": {
+        "start_byte": 0,
+        "end_byte": 20,
+        "line": 1
+      },
+      "raw_value": "../../../shared/M005",
+      "message": "Canonical and legacy paths resolve to one physical worktree; the legacy alias is ignored in favor of the canonical identity."
+    },
+    {
+      "diagnosis_id": "diagnosis-interrupted-migration",
+      "code": "interrupted-migration",
+      "severity": "warning",
+      "source_id": "worktree-interrupted-project-gsd-migrating-preferences-md",
+      "locator": {
+        "start_byte": 0,
+        "end_byte": 29,
+        "line": 1
+      },
+      "raw_value": "---\nplanning_depth: deep\n---\n",
+      "message": "Migration staging exists without current state and is preserved without automatic recovery during import."
+    },
+    {
+      "diagnosis_id": "diagnosis-interrupted-root-conflict",
+      "code": "interrupted-migration-root-conflict",
+      "severity": "blocker",
+      "source_id": "worktree-interrupted-conflict-project-gsd-migrating-preferences-md",
+      "locator": {
+        "start_byte": 0,
+        "end_byte": 29,
+        "line": 1
+      },
+      "raw_value": "---\nplanning_depth: deep\n---\n",
+      "message": "Current and migration-staging roots coexist; neither root is selected automatically."
+    },
+    {
+      "diagnosis_id": "diagnosis-malformed-git-marker",
+      "code": "malformed-git-marker",
+      "severity": "warning",
+      "source_id": "worktree-malformed-project-gsd-worktrees-m008-git-marker",
+      "locator": {
+        "start_byte": 0,
+        "end_byte": 26,
+        "line": 1
+      },
+      "raw_value": "not a git worktree marker\n",
+      "message": "The worktree marker is malformed and remains preserved as raw evidence."
+    },
+    {
+      "diagnosis_id": "diagnosis-root-conflict",
+      "code": "canonical-legacy-root-conflict",
+      "severity": "blocker",
+      "source_id": "worktree-root-conflict-legacy-m004-git-marker",
+      "locator": {
+        "start_byte": 0,
+        "end_byte": 47,
+        "line": 1
+      },
+      "raw_value": "gitdir: ../../../../.git/worktrees/M004-legacy\n",
+      "message": "Canonical and legacy paths for M004 have different physical identities; neither root is selected automatically."
+    },
+    {
+      "diagnosis_id": "diagnosis-stale-canonical",
+      "code": "stale-canonical-does-not-shadow-legacy",
+      "severity": "info",
+      "source_id": "worktree-stale-canonical-project-gsd-worktrees-m007-readme-txt",
+      "locator": {
+        "start_byte": 0,
+        "end_byte": 41,
+        "line": 1
+      },
+      "raw_value": "stale canonical directory; no git marker\n",
+      "message": "A canonical directory without a git marker is ignored while the live legacy worktree is preserved."
+    }
+  ],
+  "resolutions": [
+    {
+      "diagnosis_id": "diagnosis-active-worktree-guard",
+      "disposition": "preserved"
+    },
+    {
+      "diagnosis_id": "diagnosis-duplicate-physical-identity",
+      "disposition": "mapped",
+      "target": {
+        "kind": "legacy-worktree-topology",
+        "key": "duplicate-identity/M005/canonical"
+      }
+    },
+    {
+      "diagnosis_id": "diagnosis-interrupted-migration",
+      "disposition": "preserved"
+    },
+    {
+      "diagnosis_id": "diagnosis-interrupted-root-conflict",
+      "disposition": "requires-user"
+    },
+    {
+      "diagnosis_id": "diagnosis-malformed-git-marker",
+      "disposition": "preserved"
+    },
+    {
+      "diagnosis_id": "diagnosis-root-conflict",
+      "disposition": "requires-user"
+    },
+    {
+      "diagnosis_id": "diagnosis-stale-canonical",
+      "disposition": "mapped",
+      "target": {
+        "kind": "legacy-worktree-topology",
+        "key": "stale-canonical/M007/legacy"
+      }
+    }
+  ]
+}

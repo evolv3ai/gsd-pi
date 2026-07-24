@@ -1,0 +1,15 @@
+steps:
+  - id: collect
+    title: Collect
+    status: complete
+    prompt: Collect evidence.
+    finished_at: 2026-01-01T00:01:00.000Z
+  - id: iterate
+    title: Iterate
+    status: expanded
+    prompt: Iterate over evidence.
+    depends_on:
+      - collect
+metadata:
+  name: complete
+  created_at: 2026-01-01T00:00:00.000Z

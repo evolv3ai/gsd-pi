@@ -9,7 +9,7 @@
 import type { GitPreferences } from "./git-service.js";
 import type { PostUnitHookConfig, PreDispatchHookConfig, TokenProfile, PhaseSkipPreferences } from "./types.js";
 import type { DynamicRoutingConfig } from "./model-router.js";
-import { isAbsolute } from "node:path";
+import { isAbsolute, posix, win32 } from "node:path";
 import { VALID_BRANCH_NAME } from "./git-service.js";
 import { normalizeStringArray } from "../shared/format-utils.js";
 import { getGateIdsForTurn } from "./gate-registry.js";
@@ -195,6 +195,63 @@ export function validatePreferences(preferences: GSDPreferences): {
   validated.prefer_skills = normalizeStringArray(preferences.prefer_skills);
   validated.avoid_skills = normalizeStringArray(preferences.avoid_skills);
   validated.custom_instructions = normalizeStringArray(preferences.custom_instructions);
+
+  // ─── Project-local Runtime Contract ─────────────────────────────────
+  if (preferences.runtime !== undefined) {
+    if (typeof preferences.runtime === "object" && preferences.runtime !== null && !Array.isArray(preferences.runtime)) {
+      const runtime = preferences.runtime as Record<string, unknown>;
+      const rawContract = runtime.contract;
+
+      if (typeof rawContract === "object" && rawContract !== null && !Array.isArray(rawContract)) {
+        const contract = rawContract as Record<string, unknown>;
+        const validContract: NonNullable<NonNullable<GSDPreferences["runtime"]>["contract"]> = {};
+        let contractIsValid = true;
+
+        for (const key of ["path", "entry"] as const) {
+          const value = contract[key];
+          if (value === undefined) continue;
+          if (typeof value !== "string" || value.trim().length === 0) {
+            errors.push(`runtime.contract.${key} must be a non-empty relative path`);
+            contractIsValid = false;
+            continue;
+          }
+
+          const trimmed = value.trim();
+          const slashPath = trimmed.replaceAll("\\", "/");
+          const normalized = posix.normalize(slashPath);
+          if (
+            /[\u0000-\u001f\u007f]/.test(trimmed) ||
+            isAbsolute(trimmed) ||
+            win32.isAbsolute(trimmed) ||
+            normalized === "." ||
+            normalized === ".." ||
+            normalized.startsWith("../")
+          ) {
+            const boundary = key === "path" ? "project" : "runtime contract directory";
+            errors.push(`runtime.contract.${key} must stay within the ${boundary}`);
+            contractIsValid = false;
+            continue;
+          }
+          validContract[key] = normalized;
+        }
+
+        for (const key of Object.keys(contract)) {
+          if (key !== "path" && key !== "entry") {
+            warnings.push(`unknown runtime.contract key "${key}" — ignored`);
+          }
+        }
+        if (contractIsValid) validated.runtime = { contract: validContract };
+      } else {
+        errors.push("runtime.contract must be an object");
+      }
+
+      for (const key of Object.keys(runtime)) {
+        if (key !== "contract") warnings.push(`unknown runtime key "${key}" — ignored`);
+      }
+    } else {
+      errors.push("runtime must be an object");
+    }
+  }
 
   if (preferences.skill_rules) {
     const validRules: GSDSkillRule[] = [];

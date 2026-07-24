@@ -106,6 +106,22 @@ describe("db-migration-backup", () => {
     assert.deepEqual(copies, [["/tmp/gsd.db", "/tmp/gsd.db.backup-v12"]]);
   });
 
+  test("accepts a valid legacy backup without schema metadata", () => {
+    const db = new FakeAdapter();
+    const copies: Array<[string, string]> = [];
+
+    backupDatabaseBeforeMigration(db, "/tmp/legacy.db", 1, {
+      existsSync: () => true,
+      copyFileSync: (src, dest) => copies.push([src, dest]),
+      logWarning: () => assert.fail("should not warn"),
+      allowMissingSchemaVersion: true,
+    });
+
+    assert.deepEqual(copies, [["/tmp/legacy.db", "/tmp/legacy.db.backup-v1"]]);
+    assert.ok(db.prepareCalls.some((sql) => sql.includes("migration_backup.sqlite_master")));
+    assert.ok(!db.prepareCalls.some((sql) => sql.includes("MAX(version)")));
+  });
+
   test("throws and skips copying when checkpoint fails", () => {
     const db = new FakeAdapter();
     db.failCheckpoint = true;

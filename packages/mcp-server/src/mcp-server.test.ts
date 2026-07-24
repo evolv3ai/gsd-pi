@@ -28,6 +28,10 @@ import {
   isLocalElicitTimeoutError,
   withElicitTimeout,
 } from './server.js';
+import {
+  createWorkflowMcpAdapterToolDefs,
+  GSD_MODE_MCP_WORKFLOW_ADAPTER_TOOL_NAMES,
+} from './mcp-adapter-tools.js';
 import { MAX_EVENTS } from './types.js';
 import type { ManagedSession, CostAccumulator, PendingBlocker } from './types.js';
 import { WORKFLOW_TOOL_ALIAS_NAMES } from '@opengsd/contracts';
@@ -974,6 +978,26 @@ describe('createMcpServer tool registration', () => {
     assert.equal(payload.sessionId, sessionId);
     assert.equal(payload.projectDir, resolve('/tmp/tool-status-infer'));
     assert.equal(payload.status, 'running');
+  });
+
+  it('creates gsd --mode mcp workflow adapter tools from the workflow MCP surface', async () => {
+    const tools = await createWorkflowMcpAdapterToolDefs(sm);
+    const toolNames = new Set(tools.map((tool) => tool.name));
+
+    for (const expected of GSD_MODE_MCP_WORKFLOW_ADAPTER_TOOL_NAMES) {
+      assert.ok(toolNames.has(expected), `adapter surface missing ${expected}`);
+    }
+
+    const statusTool = tools.find((tool) => tool.name === 'gsd_status');
+    assert.ok(statusTool, 'gsd_status should be adapted');
+    assert.equal(statusTool.parameters.type, 'object');
+
+    const result = await statusTool.execute('mcp-mode-status-test', { projectDir: '/tmp/no-tracked-session' });
+    assert.equal(result.isError, true);
+    assert.match(
+      result.content.map((block) => block.text ?? '').join('\n'),
+      /No tracked GSD sessions/,
+    );
   });
 
   it('gsd_resolve_blocker flow returns error when no blocker', async () => {

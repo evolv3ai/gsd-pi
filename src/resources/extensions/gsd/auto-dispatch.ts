@@ -53,6 +53,7 @@ import {
 } from "./paths.js";
 import { validateArtifact } from "./schemas/validate.js";
 import { existsSync, mkdirSync, readFileSync, writeFileSync, unlinkSync } from "node:fs";
+import { atomicWriteSync, removeProjectionFileSync } from "./atomic-write.js";
 import { logWarning, logError } from "./workflow-logger.js";
 import { dirname, join, sep } from "node:path";
 import { hasImplementationArtifacts } from "./milestone-implementation-evidence.js";
@@ -422,6 +423,21 @@ function missingSliceStop(mid: string, phase: string): DispatchAction {
   };
 }
 
+/**
+ * True when the slice's tasks live inside the slice plan file itself —
+ * flat-phase phases/ layout with task checkboxes, or a renderPlanFromDb
+ * `<tasks>` block — rather than as per-task PLAN files under tasks/.
+ */
+function slicePlanHasEmbeddedTasks(basePath: string, mid: string, sid: string): boolean {
+  const slicePlanPath = resolveSliceFile(basePath, mid, sid, "PLAN");
+  if (!slicePlanPath || !existsSync(slicePlanPath)) return false;
+  const content = readFileSync(slicePlanPath, "utf-8");
+  const phasesRoot = join(gsdProjectionRoot(basePath), "phases");
+  const isPhasesSlicePlan = slicePlanPath.startsWith(`${phasesRoot}${sep}`);
+  const hasTaskCheckboxes = /^-\s+\[[ xX]\]\s+\*\*[\w.]+/m.test(content);
+  return content.includes("<tasks>") || (isPhasesSlicePlan && hasTaskCheckboxes);
+}
+
 function isRegistryMilestoneComplete(state: GSDState, mid: string): boolean {
   return state.registry.some((milestone) =>
     milestone.id === mid && milestone.status === "complete"
@@ -639,8 +655,7 @@ function backfillMissingAssessmentsFromSummaries(basePath: string, mid: string):
     }
 
     if (didCreateAssessment) {
-      mkdirSync(dirname(assessmentPath), { recursive: true });
-      writeFileSync(assessmentPath, content, "utf-8");
+      atomicWriteSync(assessmentPath, content, "utf-8");
     }
   }
 }
@@ -684,8 +699,7 @@ function recordAdoptedMilestoneValidationWaiver(
     "",
   ].join("\n");
   try {
-    mkdirSync(dirname(validationPath), { recursive: true });
-    writeFileSync(validationPath, content, "utf-8");
+    atomicWriteSync(validationPath, content, "utf-8");
   } catch (error) {
     logWarning(
       "projection",
@@ -1725,22 +1739,9 @@ export const DISPATCH_RULES: DispatchRule[] = [
       // issue #909. Flat-phase layout embeds tasks in the slice plan file, so
       // skip recovery when tasks are embedded (<tasks> block or task checkboxes in phases/ plan).
       const taskPlanPath = resolveTaskFile(artifactBasePath, mid, sid, tid, "PLAN");
-      const slicePlanPath = resolveSliceFile(artifactBasePath, mid, sid, "PLAN");
-      const phasesRoot = join(gsdProjectionRoot(artifactBasePath), "phases");
-      const slicePlanContent = slicePlanPath && existsSync(slicePlanPath)
-        ? readFileSync(slicePlanPath, "utf-8")
-        : "";
-      const isPhasesSlicePlan =
-        slicePlanPath !== null &&
-        (slicePlanPath === phasesRoot || slicePlanPath.startsWith(`${phasesRoot}${sep}`));
-      const hasTaskCheckboxes = /^-\s+\[[ xX]\]\s+\*\*[\w.]+/m.test(slicePlanContent);
-      const tasksEmbeddedInSlicePlan = Boolean(
-        slicePlanPath &&
-        existsSync(slicePlanPath) &&
-        (slicePlanContent.includes("<tasks>") || (isPhasesSlicePlan && hasTaskCheckboxes)),
-      );
       // tasksEmbeddedInSlicePlan is true when tasks live inside the slice plan
       // (flat-phase phases/ layout with task checkboxes or renderPlanFromDb <tasks> block).
+      const tasksEmbeddedInSlicePlan = slicePlanHasEmbeddedTasks(artifactBasePath, mid, sid);
       const projectionTaskPlanPath = join(
         gsdProjectionRoot(artifactBasePath),
         "milestones",
@@ -1755,6 +1756,26 @@ export const DISPATCH_RULES: DispatchRule[] = [
         !existsSync(projectionTaskPlanPath) &&
         !tasksEmbeddedInSlicePlan
       ) {
+        // #1520: if the slice plan with embedded tasks exists at the original
+        // project root but not in the active worktree, the root→worktree state
+        // projection is broken or stale. Re-planning the slice cannot repair a
+        // projection gap — it would burn both retries and then misreport the
+        // failure as "missing task plans". Stop immediately with an accurate
+        // diagnosis instead. When the root plan is also absent or carries no
+        // embedded tasks, the #909 replan recovery below still applies.
+        const originalRoot = session?.originalBasePath;
+        if (
+          originalRoot &&
+          originalRoot !== artifactBasePath &&
+          slicePlanHasEmbeddedTasks(originalRoot, mid, sid)
+        ) {
+          session?.missingTaskPlanRetryCount?.delete(unitId);
+          return {
+            action: "stop",
+            reason: `${unitId}: the slice plan with embedded tasks exists at the project root but is missing from the active worktree — the root→worktree state projection is broken or stale, and re-planning cannot fix that. Run /gsd doctor to repair the projection, then run /gsd auto to resume.`,
+            level: "error",
+          };
+        }
         const MAX_MISSING_TASK_PLAN_RETRIES = 2;
         const retryCount = session?.missingTaskPlanRetryCount?.get(unitId) ?? 0;
         if (retryCount >= MAX_MISSING_TASK_PLAN_RETRIES) {
@@ -1921,7 +1942,6 @@ export const DISPATCH_RULES: DispatchRule[] = [
             level: "warning",
           };
         }
-        if (!existsSync(mDir)) mkdirSync(mDir, { recursive: true });
         // Use relMilestoneFile for the layout-aware filename:
         //   legacy   → milestones/M001/M001-VALIDATION.md
         //   flat-phase → phases/01-slug/01-VALIDATION.md
@@ -1945,7 +1965,7 @@ export const DISPATCH_RULES: DispatchRule[] = [
           "",
           `Milestone validation was skipped via ${skipSource}.`,
         ].join("\n");
-        writeFileSync(validationPath, content, "utf-8");
+        atomicWriteSync(validationPath, content, "utf-8");
         try {
           // DB-backed state derivation keys off assessments, not only the file
           // projection. Persist the skipped validation there too so the next
@@ -1975,7 +1995,7 @@ export const DISPATCH_RULES: DispatchRule[] = [
           }
         } catch (err) {
           try {
-            unlinkSync(validationPath);
+            removeProjectionFileSync(validationPath);
           } catch (unlinkErr) {
             logWarning(
               "dispatch",

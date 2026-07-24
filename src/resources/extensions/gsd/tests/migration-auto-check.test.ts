@@ -102,8 +102,8 @@ test("migration auto-check preserves empty DB and reports explicit recovery", as
     assert.equal(result.action, "recovery-required");
     assert.equal(result.reason, "db-empty");
     assert.deepEqual(result.afterDb, { milestones: 0, slices: 0, tasks: 0 });
-    assert.equal(result.recoveryCommand, "/gsd recover --confirm");
-    assert.match(result.message ?? "", /run `\/gsd recover --confirm`/);
+    assert.equal(result.recoveryCommand, "/gsd recover");
+    assert.match(result.message ?? "", /run `\/gsd recover`/);
     assert.equal(getAllMilestones().length, 0);
     assert.equal(getSliceTasks("M001", "S01").length, 0);
   } finally {
@@ -125,7 +125,7 @@ test("migration auto-check preserves DB on hierarchy count mismatch", async () =
     assert.equal(result.reason, "count-mismatch");
     assert.deepEqual(result.beforeDb, { milestones: 1, slices: 1, tasks: 0 });
     assert.deepEqual(result.afterDb, { milestones: 1, slices: 1, tasks: 0 });
-    assert.equal(result.recoveryCommand, "/gsd recover --confirm");
+    assert.equal(result.recoveryCommand, "/gsd recover");
     assert.equal(getSliceTasks("M001", "S01").length, 0);
   } finally {
     cleanup(base);
@@ -201,23 +201,6 @@ test("migration auto-check detects identity drift even when counts match", async
     // at equal counts the safe recommendation must be rebuild, not recover.
     assert.equal(result.recoveryCommand, "/gsd rebuild markdown");
     assert.match(result.message ?? "", /Do NOT run/);
-  } finally {
-    cleanup(base);
-  }
-});
-
-test("recoverWouldDeleteDbRows flags identity drift the markdown lacks (even at equal counts)", async () => {
-  const base = makeBase();
-  try {
-    await writeGSDDirectory(projectFixture(), base); // markdown: M001 / S01 / T01
-    assert.equal(await ensureDbOpen(base), true);
-    // DB row identity (S99) differs from markdown (S01) at the same count.
-    insertMilestone({ id: "M001", title: "Legacy Milestone", status: "active" });
-    insertSlice({ id: "S99", milestoneId: "M001", title: "Other Slice", status: "pending", risk: "medium", depends: [], demo: "d", sequence: 1 });
-    insertTask({ id: "T01", sliceId: "S99", milestoneId: "M001", title: "Legacy Task", status: "pending" });
-
-    const { recoverWouldDeleteDbRows } = await import("../migration-auto-check.ts");
-    assert.equal(recoverWouldDeleteDbRows(base), true, "DB S99 is absent from markdown — recover would delete it");
   } finally {
     cleanup(base);
   }
@@ -412,7 +395,7 @@ test("migration auto-check still reports real drift with scratch dirs excluded f
     const result = await checkMarkdownHierarchyAgainstDb(base);
     assert.equal(result.action, "recovery-required");
     assert.equal(result.reason, "db-empty");
-    assert.equal(result.recoveryCommand, "/gsd recover --confirm");
+    assert.equal(result.recoveryCommand, "/gsd recover");
     // The scratch dir must not inflate the reported markdown count.
     assert.deepEqual(result.markdown, { milestones: 1, slices: 1, tasks: 1 });
   } finally {

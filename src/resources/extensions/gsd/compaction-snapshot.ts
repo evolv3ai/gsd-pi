@@ -5,11 +5,12 @@
 //
 // Inspired by mksglu/context-mode. Independent implementation.
 
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 
 import { getActiveMemoriesRanked, type Memory } from "./memory-store.js";
 import { listExecHistory, type ExecHistoryEntry } from "./exec-history.js";
+import { atomicWriteSync } from "./atomic-write.js";
 
 export const DEFAULT_SNAPSHOT_BYTES = 2048;
 export const SNAPSHOT_FILENAME = "last-snapshot.md";
@@ -129,7 +130,7 @@ export function writeCompactionSnapshot(
   if (!existsSync(gsdDir)) mkdirSync(gsdDir, { recursive: true });
   const path = resolve(gsdDir, SNAPSHOT_FILENAME);
   const finalContent = `${content}\n`;
-  writeFileSync(path, finalContent, "utf-8");
+  atomicWriteSync(path, finalContent, "utf-8");
   return {
     path,
     bytes: Buffer.byteLength(finalContent, "utf-8"),

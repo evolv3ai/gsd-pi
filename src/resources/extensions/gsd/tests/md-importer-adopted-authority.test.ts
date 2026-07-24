@@ -193,7 +193,7 @@ function milestone() {
   return getAllMilestones().find((row) => row.id === "M001");
 }
 
-test("external ROADMAP repair refreshes adopted PLAN and ROADMAP metadata without changing DB lifecycle state", async (t) => {
+test("external ROADMAP drift cannot update adopted metadata outside explicit import", async (t) => {
   const base = makeBase();
   t.after(() => cleanup(base));
   writeHierarchy(base, {
@@ -239,10 +239,15 @@ test("external ROADMAP repair refreshes adopted PLAN and ROADMAP metadata withou
   const ctx: DriftContext = { basePath: base, state: stubState };
   const drift = await externalMarkdownEditHandler.detect(stubState, ctx);
   assert.equal(drift.length, 1);
-  await externalMarkdownEditHandler.repair(drift[0]!, ctx);
+  const blocker = await externalMarkdownEditHandler.blocker?.(drift[0]!, ctx);
+  assert.match(blocker ?? "", /explicit Preview\/Application/);
+  assert.throws(
+    () => externalMarkdownEditHandler.repair(drift[0]!, ctx),
+    /modeled projection repair must remain blocked/,
+  );
 
-  assert.equal(getSlice("M001", "S01")?.title, "Edited slice metadata");
-  assert.equal(task()?.title, "Edited task metadata");
+  assert.equal(getSlice("M001", "S01")?.title, "Original slice");
+  assert.equal(task()?.title, "Original task");
   assert.equal(getSlice("M001", "S01")?.status, "pending");
   assert.equal(task()?.status, "pending");
   assert.equal(milestone()?.status, "active");

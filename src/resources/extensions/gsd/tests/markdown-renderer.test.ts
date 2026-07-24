@@ -1732,6 +1732,9 @@ test('── markdown-renderer: renderRoadmapFromDb renders a planned milestone 
       'content' in result && result.content.includes('S01'),
       'content includes the planned slice',
     );
+    assert.ok('content' in result && result.content.includes('**Vision:**\n'), 'empty vision has no trailing space');
+    assert.ok('content' in result && result.content.includes('  > After this:\n'), 'empty demo has no trailing space');
+    assert.ok('content' in result && !/[ \t]$/m.test(result.content), 'roadmap content has no trailing whitespace');
   } finally {
     closeDatabase();
     cleanupDir(tmpDir);

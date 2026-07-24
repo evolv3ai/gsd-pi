@@ -12,12 +12,13 @@
 
 import { invalidateStateCache } from "../state.js";
 import { flushWorkflowProjections } from "../projection-flush.js";
-import { writeManifest } from "../workflow-manifest.js";
+import { writeManifestAndFlush } from "../workflow-manifest.js";
 import { appendEvent } from "../workflow-events.js";
 import { logWarning } from "../workflow-logger.js";
 import { writeReopenReason } from "../reopen-reason.js";
-import { existsSync, unlinkSync } from "node:fs";
+import { existsSync } from "node:fs";
 import { join } from "node:path";
+import { removeProjectionFileSync } from "../atomic-write.js";
 import { reopenTask } from "../task-lifecycle-domain-operation.js";
 import type { ExecutionInvocation } from "../execution-invocation.js";
 import {
@@ -111,7 +112,7 @@ export async function handleReopenTask(
           join(milestonePath, buildTaskFileName(params.taskId, "SUMMARY")),
         ];
       for (const summaryPath of summaryPaths) {
-        if (existsSync(summaryPath)) unlinkSync(summaryPath);
+        if (existsSync(summaryPath)) removeProjectionFileSync(summaryPath);
       }
     }
   } catch (cleanupErr) {
@@ -136,7 +137,7 @@ export async function handleReopenTask(
   // ── Post-mutation hook ───────────────────────────────────────────────────
   try {
     await flushWorkflowProjections(basePath, { milestoneId: params.milestoneId });
-    writeManifest(basePath);
+    await writeManifestAndFlush(basePath);
     appendEvent(basePath, {
       cmd: "reopen-task",
       params: {

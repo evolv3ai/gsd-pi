@@ -10,11 +10,11 @@
 //   2. POST /pairing-codes (user bearer token) to mint a pairing code.
 //   3. Run the real gsd-cloud CLI `pair` against it (temp HOME + temp config).
 //   4. Run the real gsd-cloud CLI `connect --foreground` with GSD_CLOUD_PROJECTS
-//      pointing at a fixture project dir (minimal .gsd) and GSD_CLI_PATH pointing
-//      at a fixture MCP stdio server standing in for `gsd --mode mcp`.
+//      pointing at a fixture project dir (minimal .gsd) and the workflow MCP
+//      command pointing at a fixture stdio server.
 //   5. Assert the runtime registers (gateway registry lists the fixture project).
 //   6. Drive the /mcp endpoint (Streamable HTTP): initialize, tools/list,
-//      gsd_cloud_projects, and a forwarded gsd_query tool call.
+//      gsd_cloud_projects, and forwarded gsd_query + gsd_status tool calls.
 //   7. SIGTERM the runtime, assert clean exit and registry detach, tear down.
 //
 // This script is intentionally NOT part of `pnpm test` (which is unit-test only).
@@ -24,8 +24,8 @@
 // Environment:
 //   GSD_CLOUD_E2E=0|false        Skip (exit 0) — for CI jobs without a full build.
 //   GSD_CLOUD_E2E_TIMEOUT_MS     Global watchdog timeout (default 120000).
-//   GSD_CLOUD_E2E_GSD_CLI        Use a real gsd binary instead of the fixture
-//                                (fixture project must then satisfy gsd --mode mcp).
+//   GSD_CLOUD_E2E_GSD_CLI        Use a real gsd installation and its bundled
+//                                workflow MCP server instead of the fixture.
 //   GSD_CLOUD_E2E_KEEP_TMP=1     Keep the temp root for debugging (path is printed).
 
 import { randomBytes } from "node:crypto";
@@ -50,8 +50,9 @@ const REPO_ROOT = join(PKG_DIR, "..", "..");
 const CLI_BIN = join(PKG_DIR, "bin", "gsd-cloud.js");
 const CLI_DIST = join(PKG_DIR, "dist", "cli.js");
 const GATEWAY_DIST = join(REPO_ROOT, "packages", "cloud-mcp-gateway", "dist", "index.js");
-const FIXTURE_GSD_BIN = join(E2E_DIR, "fixture-gsd-mcp.mjs");
+const FIXTURE_WORKFLOW_SERVER = join(E2E_DIR, "fixture-gsd-mcp.mjs");
 const FIXTURE_MARKER = "GSD_CLOUD_E2E_FIXTURE";
+const REAL_GSD_CLI = process.env.GSD_CLOUD_E2E_GSD_CLI?.trim();
 
 const HTTP_TIMEOUT_MS = 10_000;
 const PAIR_TIMEOUT_MS = 30_000;
@@ -106,6 +107,7 @@ async function runAllSteps() {
   await step("MCP initialize + tools/list over /mcp", () => assertMcpHandshake(ctx));
   await step("MCP gsd_cloud_projects returns the fixture project", () => assertCloudProjects(ctx));
   await step("MCP gsd_query is forwarded to the runtime and back", () => assertForwardedQuery(ctx));
+  await step("MCP gsd_status reaches the workflow tool surface", () => assertForwardedStatus(ctx));
   await step("runtime shuts down cleanly and detaches from the registry", () => assertShutdown(ctx));
 }
 
@@ -131,7 +133,7 @@ function checkPrereqs() {
   writeFileSync(join(projectDir, ".gsd", "PROJECT.md"), "# Project\n\ngsd-cloud e2e fixture.\n");
 
   // The fixture must be executable regardless of how git materialized file modes.
-  chmodSync(FIXTURE_GSD_BIN, 0o755);
+  chmodSync(FIXTURE_WORKFLOW_SERVER, 0o755);
 }
 
 async function startGateway(ctx) {
@@ -308,12 +310,49 @@ async function assertForwardedQuery(ctx) {
     arguments: { query: "state", projectAlias: "fixture-project" },
   });
   const text = response.result?.content?.[0]?.text;
-  if (typeof text !== "string" || !text.includes(`${FIXTURE_MARKER} gsd_query ok`)) {
-    throw new Error(`forwarded gsd_query did not reach the fixture: ${JSON.stringify(response)}`);
-  }
   const expectedPath = realpathSync(join(tmpRoot, "fixture-project"));
+  if (typeof text !== "string") {
+    throw new Error(`forwarded gsd_query returned no text: ${JSON.stringify(response)}`);
+  }
+  if (REAL_GSD_CLI) {
+    const result = JSON.parse(text);
+    if (result.projectDir !== expectedPath || result.query !== "state" || !result.state?.includes("E2E fixture project")) {
+      throw new Error(`real workflow gsd_query response was unexpected: ${text}`);
+    }
+    return;
+  }
+  if (!text.includes(`${FIXTURE_MARKER} gsd_query ok`)) {
+    throw new Error(`forwarded gsd_query did not reach the fixture: ${text}`);
+  }
   if (!text.includes(`projectDir=${expectedPath}`) || !text.includes("query=state")) {
     throw new Error(`forwarded gsd_query args were not routed as expected: ${text}`);
+  }
+}
+
+async function assertForwardedStatus(ctx) {
+  const response = await mcpRpc(ctx, 5, "tools/call", {
+    name: "gsd_status",
+    arguments: { projectAlias: "fixture-project" },
+  });
+  const text = response.result?.content?.[0]?.text;
+  const expectedPath = realpathSync(join(tmpRoot, "fixture-project"));
+  if (typeof text !== "string") {
+    throw new Error(`forwarded gsd_status returned no text: ${JSON.stringify(response)}`);
+  }
+  if (REAL_GSD_CLI) {
+    // This asserts forwarding/wiring, so match the stable parts (error flag +
+    // "Session not found" prefix + routed projectDir) rather than the workflow
+    // server's exact wording, which can change harmlessly.
+    if (!response.result?.isError || !text.startsWith("Session not found") || !text.includes(expectedPath)) {
+      throw new Error(`real workflow gsd_status response was unexpected: ${JSON.stringify(response)}`);
+    }
+    return;
+  }
+  if (!text.includes(`${FIXTURE_MARKER} gsd_status ok`)) {
+    throw new Error(`forwarded gsd_status did not reach the fixture: ${text}`);
+  }
+  if (!text.includes(`projectDir=${expectedPath}`)) {
+    throw new Error(`forwarded gsd_status args were not routed as expected: ${text}`);
   }
 }
 
@@ -343,15 +382,24 @@ async function assertShutdown(ctx) {
 // ---------------------------------------------------------------------------
 
 function childEnv() {
-  return {
+  const env = {
     ...process.env,
     HOME: join(tmpRoot, "home"),
     // Deterministic device-token encryption key — pair and connect run as
     // separate processes and must derive the same key.
     GSD_CLOUD_TOKEN_KEY: "gsd-cloud-e2e-token-key",
     GSD_CLOUD_PROJECTS: join(tmpRoot, "fixture-project"),
-    GSD_CLI_PATH: process.env.GSD_CLOUD_E2E_GSD_CLI ?? FIXTURE_GSD_BIN,
   };
+  if (REAL_GSD_CLI) {
+    env.GSD_CLI_PATH = REAL_GSD_CLI;
+    delete env.GSD_WORKFLOW_MCP_COMMAND;
+    delete env.GSD_WORKFLOW_MCP_ARGS;
+  } else {
+    delete env.GSD_CLI_PATH;
+    env.GSD_WORKFLOW_MCP_COMMAND = process.execPath;
+    env.GSD_WORKFLOW_MCP_ARGS = JSON.stringify([FIXTURE_WORKFLOW_SERVER]);
+  }
+  return env;
 }
 
 function runProcess(command, args, { env, timeoutMs }) {

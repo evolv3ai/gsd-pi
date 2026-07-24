@@ -1,0 +1,6 @@
+version: 1
+name: malformed-run
+steps:
+  - id: inspect
+    name: Inspect
+    prompt: Inspect malformed state.

@@ -1,0 +1,14 @@
+{
+  "version": 1,
+  "exported_at": "2026-01-01T00:00:00.000Z",
+  "milestones": [
+    {"id":"M702","title":"Clean database adoption","status":"active","depends_on":[],"created_at":"2026-01-01T00:00:00.000Z","completed_at":null,"vision":"Classify legacy evidence without mutation.","success_criteria":[],"key_risks":[],"proof_strategy":[],"verification_contract":"","verification_integration":"","verification_operational":"","verification_uat":"","definition_of_done":[],"requirement_coverage":"","boundary_map_markdown":"","sequence":702}
+  ],
+  "slices": [],
+  "tasks": [],
+  "decisions": [],
+  "assessments": [
+    {"path":"milestones/M702/slices/S01/S01-ASSESSMENT.md","milestone_id":"M702","slice_id":"S01","task_id":null,"status":"pass","scope":"run-uat","full_content":"**Verdict:** PASS\n\nComposite classification passed.","created_at":"2026-01-01T00:00:00.000Z"}
+  ],
+  "verification_evidence": []
+}

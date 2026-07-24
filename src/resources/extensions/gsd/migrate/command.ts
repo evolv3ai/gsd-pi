@@ -16,10 +16,61 @@ import {
   notifyMigrateNeedsInteractiveMenu,
   requiresInteractiveMenu,
 } from "../command-feedback.js";
-import { executeMigrationWrite, type MigrationExecutionResult } from "./execution.js";
+import { executeMigrationWrite, migrationFailureMessage, type MigrationExecutionResult } from "./execution.js";
 import { createMigrationPlan } from "./plan.js";
 import { buildMigrationPreviewSummary, buildReviewPrompt } from "./presentation.js";
 import type { MigrationPreview } from "./writer.js";
+import type { LegacyImportForwardRepairChoice } from "../legacy-import-forward-repair-plan.js";
+
+/**
+ * `/gsd migrate` Forward Repair choice tokens intentionally differ from the
+ * `gsd recover --choice=i:kind:key:decision:hash` form: the migrate resume
+ * command embeds each token inside one free-form slash-command string next to
+ * a quoted legacy path, so the evidence payload is opaque base64url JSON with
+ * a visible `.decision` suffix. Both parsers are strict — a malformed token
+ * throws instead of being silently dropped.
+ */
+export function parseMigrationRecoveryArgs(args: string): {
+  sourceArgs: string;
+  choices: LegacyImportForwardRepairChoice[];
+} {
+  const pattern = /(?:^|\s)--forward-choice=([A-Za-z0-9_-]+)\.(preserve-later|restore-backup)(?=\s|$)/gu;
+  const choices: LegacyImportForwardRepairChoice[] = [];
+  const identities = new Set<string>();
+  for (const match of args.matchAll(pattern)) {
+    let evidence: unknown;
+    try {
+      evidence = JSON.parse(Buffer.from(match[1]!, "base64url").toString("utf8"));
+    } catch {
+      throw new Error("migration Forward Repair choice token is invalid");
+    }
+    if (evidence === null
+      || typeof evidence !== "object"
+      || Object.keys(evidence).sort().join(",") !== "instructionIndex,reviewHash,targetKey,targetKind"
+      || !Number.isSafeInteger((evidence as LegacyImportForwardRepairChoice).instructionIndex)
+      || (evidence as LegacyImportForwardRepairChoice).instructionIndex < 0
+      || typeof (evidence as LegacyImportForwardRepairChoice).targetKind !== "string"
+      || (evidence as LegacyImportForwardRepairChoice).targetKind.length === 0
+      || typeof (evidence as LegacyImportForwardRepairChoice).targetKey !== "string"
+      || (evidence as LegacyImportForwardRepairChoice).targetKey.length === 0
+      || !/^sha256:[0-9a-f]{64}$/u.test((evidence as LegacyImportForwardRepairChoice).reviewHash)) {
+      throw new Error("migration Forward Repair choice token is invalid");
+    }
+    const choice = {
+      ...(evidence as Omit<LegacyImportForwardRepairChoice, "decision">),
+      decision: match[2] as LegacyImportForwardRepairChoice["decision"],
+    };
+    const identity = `${choice.instructionIndex}\0${choice.targetKind}\0${choice.targetKey}`;
+    if (identities.has(identity)) throw new Error("migration Forward Repair choice target is duplicated");
+    identities.add(identity);
+    choices.push(choice);
+  }
+  const sourceArgs = args.replace(pattern, " ").trim().replace(/^"(.*)"$/u, "$1");
+  if (sourceArgs.includes("--forward-choice=")) {
+    throw new Error("migration Forward Repair choice token is invalid");
+  }
+  return { sourceArgs, choices };
+}
 
 function dispatchReview(
   pi: ExtensionAPI,
@@ -44,7 +95,14 @@ export async function handleMigrate(
   ctx: ExtensionCommandContext,
   pi: ExtensionAPI,
 ): Promise<void> {
-  const plan = await createMigrationPlan(args);
+  let recovery;
+  try {
+    recovery = parseMigrationRecoveryArgs(args);
+  } catch (error) {
+    ctx.ui.notify(error instanceof Error ? error.message : String(error), "error");
+    return;
+  }
+  const plan = await createMigrationPlan(recovery.sourceArgs);
   const { sourcePath, targetRoot } = plan;
 
   if (plan.status === "missing-source") {
@@ -118,10 +176,10 @@ export async function handleMigrate(
 
   let execution: MigrationExecutionResult;
   try {
-    execution = await executeMigrationWrite(sourcePath, targetRoot, project, preview);
+    execution = await executeMigrationWrite(sourcePath, targetRoot, project, preview, undefined, recovery.choices);
   } catch (err) {
     ctx.ui.notify(
-      `Migration failed and the previous .gsd state was restored: ${(err as Error).message}`,
+      migrationFailureMessage(err),
       "error",
     );
     return;

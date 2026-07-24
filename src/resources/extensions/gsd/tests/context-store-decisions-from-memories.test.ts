@@ -20,6 +20,7 @@ import { tmpdir } from "node:os";
 import {
   closeDatabase,
   insertDecision,
+  insertMemoryRow,
   openDatabase,
 } from "../gsd-db.ts";
 import { saveDecisionToDb } from "../db-writer.ts";
@@ -95,6 +96,49 @@ test("queryDecisionsFromMemories returns empty when no decisions exist", () => {
   try {
     assert.deepEqual(queryDecisionsFromMemories(), []);
     assert.deepEqual(queryDecisionsFromMemories({ milestoneId: "M001" }), []);
+  } finally {
+    cleanup(base);
+  }
+});
+
+test("memory decision source round-trips and tombstones stay hidden", () => {
+  const base = makeTmpBase();
+  try {
+    const now = "2026-07-17T00:00:00.000Z";
+    for (const [id, source, deleted] of [
+      ["D901", "planning", false],
+      ["D902", "discussion", true],
+    ] as const) {
+      insertMemoryRow({
+        id: `MEM-${id}`,
+        category: "architecture",
+        content: `Decision ${id}`,
+        confidence: 0.85,
+        sourceUnitType: null,
+        sourceUnitId: null,
+        createdAt: now,
+        updatedAt: now,
+        scope: "project",
+        tags: [],
+        structuredFields: {
+          sourceDecisionId: id,
+          when_context: "During import",
+          scope: "project",
+          decision: `Choose ${id}`,
+          choice: "SQLite",
+          rationale: "Keep one authority",
+          revisable: "yes",
+          made_by: "agent",
+          source,
+          superseded_by: null,
+          deleted,
+        },
+      });
+    }
+
+    const active = queryDecisionsFromMemories();
+    assert.deepEqual(active.map((decision) => decision.id), ["D901"]);
+    assert.equal(active[0]?.source, "planning");
   } finally {
     cleanup(base);
   }

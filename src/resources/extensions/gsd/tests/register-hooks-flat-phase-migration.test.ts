@@ -1,5 +1,5 @@
 // Project/App: gsd-pi
-// File Purpose: Verifies session bootstrap fails closed when flat-phase migration cannot complete.
+// File Purpose: Verifies session bootstrap fails closed on unrepresented legacy Markdown.
 
 import test from "node:test";
 import assert from "node:assert/strict";
@@ -48,7 +48,7 @@ function makeContext(basePath: string) {
   };
 }
 
-test("session_start rejects when required flat-phase migration fails", async (t) => {
+test("session_start rejects unrepresented legacy Markdown with explicit recovery guidance", async (t) => {
   const base = mkdtempSync(join(tmpdir(), "gsd-bootstrap-flat-migration-"));
   t.after(() => {
     closeDatabase();
@@ -67,7 +67,7 @@ test("session_start rejects when required flat-phase migration fails", async (t)
 
   await assert.rejects(
     () => Promise.resolve(sessionStart({}, makeContext(base))),
-    /flat-phase migration/,
+    /flat-phase migration.*\/gsd recover/,
   );
   assert.ok(existsSync(join(base, ".gsd", "milestones", "M001")), "legacy layout should remain for recovery");
 });
