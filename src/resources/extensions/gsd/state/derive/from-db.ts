@@ -3,13 +3,15 @@
 
 import type { ActiveRef, GSDState, MilestoneRegistryEntry, Phase } from '../../types.js';
 import { join } from 'node:path';
-import { existsSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { isClosedStatus, isDeferredStatus } from '../../status-guards.js';
 import {
   buildMilestoneFileName,
   resolveFile,
+  resolveGsdRootFile,
   resolveMilestonePath,
 } from '../../paths.js';
+import { parseProject } from '../../schemas/parsers.js';
 import {
   getAllMilestones,
   getPendingGateCountForTurn,
@@ -129,6 +131,26 @@ function milestoneArtifactExistsInResolvedDir(
   return existsSync(flatPath) || resolveFile(milestoneDir, milestoneId, suffix) !== null;
 }
 
+// The IDs the user actually committed to as their roadmap, read from the
+// PROJECT.md "Milestone Sequence". A content-less queued milestone that appears
+// here is a real, not-yet-planned roadmap stage (e.g. the first milestone right
+// after deep-project setup) and is safe to promote to active. A content-less
+// queued row that is NOT listed here is a phantom left by
+// gsd_milestone_generate_id that was never made part of the roadmap (#1524) and
+// must not be promoted. Returns an empty set when PROJECT.md is absent or
+// unparsable, which keeps phantom-only repos out of the promotion path.
+function loadProjectSequenceIds(basePath: string): Set<string> {
+  const projectPath = resolveGsdRootFile(basePath, 'PROJECT');
+  if (!existsSync(projectPath)) return new Set<string>();
+  try {
+    const parsed = parseProject(readFileSync(projectPath, 'utf-8'));
+    return new Set(parsed.milestones.map((m) => m.id));
+  } catch (e) {
+    logWarning('state', `failed to parse PROJECT.md milestone sequence: ${(e as Error).message}`);
+    return new Set<string>();
+  }
+}
+
 async function buildRegistryAndFindActive(
   basePath: string,
   milestones: MilestoneRow[],
@@ -140,7 +162,9 @@ async function buildRegistryAndFindActive(
   let activeMilestoneSlices: SliceRow[] = [];
   let activeMilestoneFound = false;
   let activeMilestoneHasDraft = false;
-  let firstDeferredQueuedShell: { id: string; title: string; deps: string[]; hasDraftContext: boolean } | null = null;
+  let firstPromotableQueuedShell: { id: string; title: string; deps: string[]; hasDraftContext: boolean } | null = null;
+
+  const projectSequenceIds = loadProjectSequenceIds(basePath);
 
   const activeMilestoneIds = milestones
     .filter((m) => !parkedMilestoneIds.has(m.id))
@@ -187,8 +211,17 @@ async function buildRegistryAndFindActive(
       }
 
       if (readiness.kind === 'queued-shell') {
-        if (!firstDeferredQueuedShell) {
-          firstDeferredQueuedShell = { id: m.id, title, deps, hasDraftContext: readiness.hasDraftContext };
+        // Only a *promotable* queued-shell may become active in the fallback
+        // below: one that carries draft context (discuss-milestone was started)
+        // or is listed in the PROJECT.md roadmap sequence (a real, not-yet-
+        // planned stage). A content-less shell that is neither is a phantom left
+        // by gsd_milestone_generate_id that was never planned; promoting it
+        // strands the user on an empty milestone (#1524), so we record it only
+        // as 'pending' and never promote it. Storing just the first promotable
+        // shell also means an earlier phantom can't mask a later resumable one.
+        const promotable = readiness.hasDraftContext || projectSequenceIds.has(m.id);
+        if (promotable && !firstPromotableQueuedShell) {
+          firstPromotableQueuedShell = { id: m.id, title, deps, hasDraftContext: readiness.hasDraftContext };
         }
         registry.push({ id: m.id, title, status: 'pending', ...(deps.length > 0 ? { dependsOn: deps } : {}) });
         continue;
@@ -214,8 +247,16 @@ async function buildRegistryAndFindActive(
     }
   }
 
-  if (!activeMilestoneFound && firstDeferredQueuedShell) {
-    const shell = firstDeferredQueuedShell;
+  // Promote the first promotable queued-shell as a fallback when no other
+  // milestone became active. "Promotable" (tracked above) means it either
+  // carries draft context or is part of the PROJECT.md roadmap sequence.
+  // Content-less phantom rows never reach here, so state falls through to
+  // handleNoActiveMilestone and the doctor can flag them as orphans (#1524).
+  // A draft-bearing shell resumes discussion (needs-discussion); an in-sequence
+  // shell with no draft goes to pre-planning, so only carry the draft flag
+  // when the shell actually has draft context.
+  if (!activeMilestoneFound && firstPromotableQueuedShell) {
+    const shell = firstPromotableQueuedShell;
     activeMilestone = { id: shell.id, title: shell.title };
     activeMilestoneSlices = [];
     activeMilestoneFound = true;
@@ -246,11 +287,27 @@ function handleNoActiveMilestone(
     const blockerDetails = pendingEntries
       .filter(e => e.dependsOn && e.dependsOn.length > 0)
       .map(e => `${e.id} is waiting on unmet deps: ${e.dependsOn!.join(', ')}`);
-    return buildDerivedState(context, 'blocked', 'Resolve milestone dependencies before proceeding.', {
-      blockers: blockerDetails.length > 0
-        ? blockerDetails
-        : ['All remaining milestones are dep-blocked but no deps listed — check CONTEXT.md files'],
-    });
+
+    // Genuine dependency block: at least one pending milestone is waiting on an
+    // unmet dependency, so directing the user at those deps is accurate.
+    if (blockerDetails.length > 0) {
+      return buildDerivedState(context, 'blocked', 'Resolve milestone dependencies before proceeding.', {
+        blockers: blockerDetails,
+      });
+    }
+
+    // No pending milestone has unmet deps, yet none could be promoted to
+    // active. These are content-less queued shells — phantom rows left by
+    // gsd_milestone_generate_id with no CONTEXT/CONTEXT-DRAFT/slices — so the
+    // old "resolve dependencies" blocker was misleading and offered no recovery
+    // path (#1524). Point the user at the doctor (which now flags these as
+    // orphan milestone rows) or at planning a real milestone.
+    const phantomIds = pendingEntries.map(e => e.id).join(', ');
+    return buildDerivedState(
+      context,
+      'pre-planning',
+      `Found queued milestone(s) with no planning content and no dependencies (${phantomIds}) — likely orphaned rows. Run /gsd doctor fix to repair them, or /gsd to plan a milestone.`,
+    );
   }
 
   if (parkedEntries.length > 0) {

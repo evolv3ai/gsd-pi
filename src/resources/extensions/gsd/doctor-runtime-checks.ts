@@ -3,7 +3,7 @@ import { basename, dirname, join } from "node:path";
 
 import type { DoctorIssue, DoctorIssueCode } from "./doctor-types.js";
 import { cleanNumberedGsdVariants } from "./repo-identity.js";
-import { milestonesDir, gsdRoot, resolveGsdRootFile, resolveMilestonePath } from "./paths.js";
+import { milestonesDir, gsdRoot, resolveGsdRootFile, milestoneDirExists } from "./paths.js";
 import { deriveState, isGhostMilestone, isReusableGhostMilestone } from "./state.js";
 import { saveFile } from "./files.js";
 import { nativeIsRepo, nativeForEachRef, nativeUpdateRef } from "./native-git-bridge.js";
@@ -778,8 +778,18 @@ export async function checkRuntimeHealth(
   try {
     if (isDbAvailable()) {
       for (const milestone of getAllMilestones()) {
-        if (milestone.status === "queued") continue;
-        if (!resolveMilestonePath(basePath, milestone.id)) {
+        // Every milestone status, including `queued`, is subject to the
+        // missing-directory orphan check below. This is a directory-PRESENCE
+        // check (milestoneDirExists), not a content-bearing one: the workflow
+        // prompts create the milestone directory early (often before any
+        // CONTEXT/ROADMAP is written), so a legitimate in-flight queued
+        // milestone with only a scaffold directory (e.g. an empty slices/)
+        // must not be flagged. resolveMilestonePath alone would return null for
+        // such a legacy scaffold dir and produce a false positive during normal
+        // planning. A `queued` phantom left by gsd_milestone_generate_id (no
+        // directory at all) is correctly reported as an orphan to clean up
+        // (#1524).
+        if (!milestoneDirExists(basePath, milestone.id)) {
           issues.push({
             severity: "warning",
             code: "orphan_milestone_db",
