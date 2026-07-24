@@ -82,6 +82,7 @@ import {
   settleDispatchFailed,
   settleDispatchIfNeeded,
 } from "./workflow-dispatch-ledger.js";
+import { abortActiveUnitTurn } from "./unit-turn-abort.js";
 import { emitOpenUnitEndForUnit } from "../crash-recovery.js";
 import { writeUnitRuntimeRecord } from "../unit-runtime.js";
 import { ensureDispatchLease, openDispatchClaim } from "./workflow-dispatch-claim.js";
@@ -436,6 +437,7 @@ async function closeOutCrashedUnit(
   err: unknown,
 ): Promise<void> {
   const summary = formatDispatchExceptionSummary({ error: err });
+  abortActiveUnitTurn(ctx);
   try {
     emitOpenUnitEndForUnit(
       s.basePath,
@@ -1713,6 +1715,7 @@ export async function autoLoop(
         break;
       }
       if (finalizeDecision.action === "retry") {
+        abortActiveUnitTurn(ctx);
         dispatchSettled = settleDispatchIfNeeded(dispatchSettled, () =>
           settleDispatchFailed(dispatchId, finalizeDecision.ledgerErrorSummary, {
             markFailed: markDispatchFailed,

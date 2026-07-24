@@ -287,8 +287,8 @@ export interface CompleteOpts {
 }
 
 /** Transition a dispatch into `completed`. */
-export function markCompleted(dispatchId: number, opts?: CompleteOpts): void {
-  if (!isDbAvailable()) return;
+export function markCompleted(dispatchId: number, opts?: CompleteOpts): boolean {
+  if (!isDbAvailable()) return false;
   const now = new Date().toISOString();
   const db = _getAdapter()!;
   let changes = 0;
@@ -311,7 +311,7 @@ export function markCompleted(dispatchId: number, opts?: CompleteOpts): void {
         ? (result as { changes: number }).changes
         : 0;
   });
-  if (changes < 1) return;
+  if (changes < 1) return false;
   insertAuditEvent({
     eventId: randomUUID(),
     traceId: dispatchId.toString(),
@@ -320,6 +320,7 @@ export function markCompleted(dispatchId: number, opts?: CompleteOpts): void {
     ts: now,
     payload: { dispatchId },
   });
+  return true;
 }
 
 export interface FailureOpts {
@@ -377,8 +378,8 @@ export function markFailed(dispatchId: number, opts: FailureOpts): boolean {
 }
 
 /** Transition a dispatch into `stuck`. */
-export function markStuck(dispatchId: number, reason: string): void {
-  if (!isDbAvailable()) return;
+export function markStuck(dispatchId: number, reason: string): boolean {
+  if (!isDbAvailable()) return false;
   const now = new Date().toISOString();
   const db = _getAdapter()!;
   const result = transaction(() => {
@@ -393,7 +394,7 @@ export function markStuck(dispatchId: number, reason: string): void {
     typeof (result as { changes?: unknown }).changes === "number"
       ? (result as { changes: number }).changes
       : 0;
-  if (changes <= 0) return;
+  if (changes <= 0) return false;
   insertAuditEvent({
     eventId: randomUUID(),
     traceId: dispatchId.toString(),
@@ -402,34 +403,45 @@ export function markStuck(dispatchId: number, reason: string): void {
     ts: now,
     payload: { dispatchId, reason },
   });
+  return true;
 }
 
 /** Transition a dispatch into `paused`. */
-export function markPaused(dispatchId: number): void {
-  if (!isDbAvailable()) return;
+export function markPaused(dispatchId: number): boolean {
+  if (!isDbAvailable()) return false;
   const now = new Date().toISOString();
   const db = _getAdapter()!;
-  transaction(() => {
-    db.prepare(
+  const result = transaction(() => {
+    return db.prepare(
       `UPDATE unit_dispatches
        SET status = 'paused', ended_at = :ended_at
        WHERE id = :id AND status IN ('claimed','running')`,
     ).run({ ":id": dispatchId, ":ended_at": now });
   });
+  const changes =
+    typeof (result as { changes?: unknown }).changes === "number"
+      ? (result as { changes: number }).changes
+      : 0;
+  return changes > 0;
 }
 
 /** Transition a dispatch into `canceled`. */
-export function markCanceled(dispatchId: number, reason: string): void {
-  if (!isDbAvailable()) return;
+export function markCanceled(dispatchId: number, reason: string): boolean {
+  if (!isDbAvailable()) return false;
   const now = new Date().toISOString();
   const db = _getAdapter()!;
-  transaction(() => {
-    db.prepare(
+  const result = transaction(() => {
+    return db.prepare(
       `UPDATE unit_dispatches
        SET status = 'canceled', ended_at = :ended_at, exit_reason = :reason
        WHERE id = :id AND status IN ('pending','claimed','running')`,
     ).run({ ":id": dispatchId, ":ended_at": now, ":reason": reason });
   });
+  const changes =
+    typeof (result as { changes?: unknown }).changes === "number"
+      ? (result as { changes: number }).changes
+      : 0;
+  return changes > 0;
 }
 
 /**

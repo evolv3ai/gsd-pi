@@ -77,12 +77,24 @@ test("settleDispatchCompleted writes completion and reports settled state", () =
   const calls: number[] = [];
 
   const settled = settleDispatchCompleted(42, {
-    markCompleted: dispatchId => calls.push(dispatchId),
+    markCompleted: dispatchId => {
+      calls.push(dispatchId);
+      return true;
+    },
     logWriteFailure: () => assert.fail("logWriteFailure should not be called"),
   });
 
   assert.equal(settled, true);
   assert.deepEqual(calls, [42]);
+});
+
+test("settleDispatchCompleted reports a no-op completion write as unsettled", () => {
+  const settled = settleDispatchCompleted(42, {
+    markCompleted: () => false,
+    logWriteFailure: () => assert.fail("logWriteFailure should not be called"),
+  });
+
+  assert.equal(settled, false);
 });
 
 test("settleDispatchCompleted skips null dispatch ids", () => {
