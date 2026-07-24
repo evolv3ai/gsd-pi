@@ -232,7 +232,7 @@ function renderRoadmapMarkdown(milestone: MilestoneRow, slices: SliceRow[]): str
 
   lines.push(`# ${milestone.id}: ${milestone.title || milestone.id}`);
   lines.push("");
-  lines.push(`**Vision:** ${milestone.vision}`);
+  lines.push(milestone.vision ? `**Vision:** ${milestone.vision}` : "**Vision:**");
   lines.push("");
 
   if (milestone.success_criteria.length > 0) {
@@ -258,7 +258,7 @@ function renderRoadmapMarkdown(milestone: MilestoneRow, slices: SliceRow[]): str
     // truncate the line.
     const sketchBadge = slice.is_sketch === 1 ? "`[sketch]` " : "";
     lines.push(`- [${done}] **${slice.id}: ${safeTitle}** ${sketchBadge}\`risk:${safeRisk}\` \`depends:${depends}\``);
-    lines.push(`  > After this: ${slice.demo}`);
+    lines.push(slice.demo ? `  > After this: ${slice.demo}` : "  > After this:");
     lines.push("");
   }
 
