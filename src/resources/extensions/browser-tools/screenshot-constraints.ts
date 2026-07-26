@@ -4,8 +4,14 @@ import type { Page } from "playwright";
 // emitters still work on platforms where sharp is unavailable (e.g. bunx on
 // Raspberry Pi). constrainScreenshot falls back to returning the raw buffer
 // when sharp is not installed.
-let _sharp: typeof import("sharp") | null | undefined;
-async function getSharp(): Promise<typeof import("sharp") | null> {
+//
+// sharp's ESM build exposes the callable constructor as its default export, so
+// the cached value is `(await import("sharp")).default`. Type it as that default
+// export (the factory), not the module namespace, otherwise `sharp(buffer)`
+// is seen as non-callable.
+type SharpFactory = (typeof import("sharp"))["default"];
+let _sharp: SharpFactory | null | undefined;
+async function getSharp(): Promise<SharpFactory | null> {
 	if (_sharp !== undefined) return _sharp;
 	try {
 		_sharp = (await import("sharp")).default;
@@ -16,13 +22,13 @@ async function getSharp(): Promise<typeof import("sharp") | null> {
 }
 
 /**
- * Test-only seam: override the cached sharp module. Pass `null` to simulate
- * an environment where the sharp native dep is unavailable; pass `undefined`
- * to clear the cache and let the next getSharp() call re-import. See
- * tests/capture-sharp-optional.test.cjs.
+ * Test-only seam: override the cached sharp factory (the callable default
+ * export, `SharpFactory`). Pass `null` to simulate an environment where the
+ * sharp native dep is unavailable; pass `undefined` to clear the cache and let
+ * the next getSharp() call re-import. See tests/capture-sharp-optional.test.cjs.
  */
 export function __setSharpForTesting(
-	value: typeof import("sharp") | null | undefined,
+	value: SharpFactory | null | undefined,
 ): void {
 	_sharp = value;
 }

@@ -151,6 +151,33 @@ test("migration auto-check leaves matching DB hierarchy alone", async () => {
   }
 });
 
+test("migration auto-check ignores unplanned DB milestones deliberately omitted from markdown (#1549)", async (t) => {
+  const base = makeBase();
+  t.after(() => cleanup(base));
+  await writeGSDDirectory(projectFixture(), base);
+  assert.equal(await ensureDbOpen(base), true);
+  insertMilestone({ id: "M001", title: "Legacy Milestone", status: "active" });
+  insertSlice({ id: "S01", milestoneId: "M001", title: "Legacy Slice", status: "pending", risk: "medium", depends: [], demo: "Legacy slice demo", sequence: 1 });
+  insertTask({ id: "T01", sliceId: "S01", milestoneId: "M001", title: "Legacy Task", status: "pending" });
+
+  // A newly admitted milestone has no vision or slices. The renderer
+  // deliberately refuses to create a stub ROADMAP for it, so that expected
+  // absence must not count as projection drift.
+  insertMilestone({ id: "M002", title: "Next Milestone", status: "queued" });
+
+  // The renderer applies the same guard when every existing slice is skipped.
+  // Ensure those hidden descendants do not keep the DB scan out of parity.
+  insertMilestone({ id: "M003", title: "Skipped Milestone", status: "queued" });
+  insertSlice({ id: "S01", milestoneId: "M003", title: "Skipped Slice", status: "skipped", risk: "low", depends: [], demo: "", sequence: 1 });
+  insertTask({ id: "T01", sliceId: "S01", milestoneId: "M003", title: "Skipped Task", status: "skipped" });
+
+  const result = await checkMarkdownHierarchyAgainstDb(base);
+  assert.equal(result.action, "none");
+  assert.equal(result.reason, "in-sync");
+  assert.deepEqual(result.markdown, { milestones: 1, slices: 1, tasks: 1 });
+  assert.deepEqual(result.beforeDb, { milestones: 1, slices: 1, tasks: 1 });
+});
+
 test("migration auto-check flags a populated DB with missing markdown and points at rebuild (not recover)", async () => {
   const base = makeBase();
   try {

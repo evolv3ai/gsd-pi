@@ -2036,6 +2036,42 @@ async function generateModels() {
 		});
 	}
 
+	// Add missing ZAI Coding Plan models until models.dev includes them.
+	// The models.dev "zai-coding-plan" provider only lists a subset of what the
+	// live https://api.z.ai/api/coding/paas/v4/models endpoint exposes, so pin
+	// the known-available GLM models here to keep the /model picker complete.
+	const ZAI_SUPPLEMENT_MODELS: { id: string; name: string; contextWindow: number; maxTokens: number }[] = [
+		{ id: "glm-4.5", name: "GLM-4.5", contextWindow: 131072, maxTokens: 98304 },
+		{ id: "glm-4.6", name: "GLM-4.6", contextWindow: 204800, maxTokens: 131072 },
+		{ id: "glm-5", name: "GLM-5", contextWindow: 200000, maxTokens: 131072 },
+		{ id: "glm-5.2", name: "GLM-5.2", contextWindow: 200000, maxTokens: 131072 },
+	];
+	for (const zaiModel of ZAI_SUPPLEMENT_MODELS) {
+		if (allModels.some(m => m.provider === "zai" && m.id === zaiModel.id)) continue;
+		allModels.push({
+			id: zaiModel.id,
+			name: zaiModel.name,
+			api: "openai-completions",
+			provider: "zai",
+			baseUrl: "https://api.z.ai/api/coding/paas/v4",
+			reasoning: true,
+			input: ["text"],
+			cost: {
+				input: 0,
+				output: 0,
+				cacheRead: 0,
+				cacheWrite: 0,
+			},
+			compat: {
+				supportsDeveloperRole: false,
+				thinkingFormat: "zai",
+				...(!ZAI_TOOL_STREAM_UNSUPPORTED_MODELS.has(zaiModel.id) ? { zaiToolStream: true } : {}),
+			},
+			contextWindow: zaiModel.contextWindow,
+			maxTokens: zaiModel.maxTokens,
+		});
+	}
+
 	// Add "auto" alias for openrouter/auto
 	if (!allModels.some(m => m.provider === "openrouter" && m.id === "auto")) {
 		allModels.push({

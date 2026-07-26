@@ -234,4 +234,47 @@ describe("models.generated.ts", () => {
 			expect(model.maxTokens).toBe(32000);
 		}
 	});
+
+	test("supplements the ZAI catalog with the GLM models missing from models.dev", () => {
+		// models.dev's "zai-coding-plan" provider lags the live z.ai endpoint, so
+		// the generator pins these known-available GLM models. Guard that they stay
+		// in the catalog with the expected shape. Token limits are asserted as lower
+		// bounds only: if models.dev later ships these IDs with different limits the
+		// upstream entry wins, and the catalog is still complete.
+		const cases = [
+			// glm-4.5 is in ZAI_TOOL_STREAM_UNSUPPORTED_MODELS, so no zaiToolStream flag.
+			["glm-4.5", "GLM-4.5", false],
+			["glm-4.6", "GLM-4.6", true],
+			["glm-5", "GLM-5", true],
+			["glm-5.2", "GLM-5.2", true],
+		] as const;
+
+		for (const [id, name, zaiToolStream] of cases) {
+			const model = MODELS.zai[id];
+
+			expect(model).toBeDefined();
+			expect(model).toMatchObject({
+				id,
+				name,
+				api: "openai-completions",
+				provider: "zai",
+				baseUrl: "https://api.z.ai/api/coding/paas/v4",
+				reasoning: true,
+				input: ["text"],
+			});
+			expect(model.contextWindow).toBeGreaterThanOrEqual(131072);
+			expect(model.maxTokens).toBeGreaterThanOrEqual(98304);
+			expect(model.compat).toMatchObject({ supportsDeveloperRole: false, thinkingFormat: "zai" });
+			expect((model.compat as { zaiToolStream?: boolean }).zaiToolStream ?? false).toBe(zaiToolStream);
+		}
+	});
+
+	test("keeps the ZAI catalog keys in deterministic sorted order", () => {
+		// The generator writes ZAI models via Object.keys(models).sort(), and the
+		// provider carries no curated ordering, so the keys must stay
+		// lexicographically sorted. Guards against hand-edited insertions landing
+		// out of order (e.g. glm-4.6 after glm-4.7), which produced noisy diffs.
+		const ids = Object.keys(MODELS.zai);
+		expect(ids).toEqual([...ids].sort());
+	});
 });

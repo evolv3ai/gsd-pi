@@ -35,6 +35,9 @@ bun.lock
 .gsd
 .gsd-id
 
+# Memtrace runtime store and generated Tantivy FTS index artifacts
+.memtrace/
+
 # Exception: committed test fixtures that legitimately contain a .gsd/ tree
 # (round-trip property tests for gsd-core ↔ gsd-pi compatibility).
 !src/resources/extensions/gsd/tests/__fixtures__/**/.gsd/
@@ -107,3 +110,6 @@ AGENTS.md
 # opencode local config
 .opencode/
 test-results/
+
+# Memtrace local search index / decision-memory state (machine-local, regenerable)
+.memtrace/

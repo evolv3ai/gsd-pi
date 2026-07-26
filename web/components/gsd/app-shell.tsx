@@ -6,6 +6,7 @@ import { useState, useEffect, useCallback, useRef, useSyncExternalStore } from "
 import { Menu, X } from "lucide-react"
 import { AnimatePresence, motion } from "motion/react"
 import { Sidebar, MilestoneExplorer, CollapsedMilestoneSidebar } from "@/components/gsd/sidebar"
+import type { NavItem } from "@/lib/workspace-nav"
 import { ShellTerminal } from "@/components/gsd/shell-terminal"
 import { Dashboard } from "@/components/gsd/dashboard"
 import { StatusBar } from "@/components/gsd/status-bar"
@@ -70,7 +71,16 @@ function viewStorageKey(projectCwd: string): string {
   return `gsd-active-view:${projectCwd}`
 }
 
-function WorkspaceChrome() {
+interface WorkspaceNavProps {
+  /**
+   * Nav entries supplied by the host app, rendered after the built-in
+   * workspace views. The SaaS host uses this for surfaces that only exist
+   * there, so nothing cloud-specific has to be edited into this file.
+   */
+  extraItems?: NavItem[]
+}
+
+function WorkspaceChrome({ extraItems }: WorkspaceNavProps) {
   const [activeView, setActiveView] = useState("dashboard")
   const [isTerminalExpanded, setIsTerminalExpanded] = useState(false)
   const [terminalHeight, setTerminalHeight] = useState(300)
@@ -422,7 +432,7 @@ function WorkspaceChrome() {
         )}
         data-testid="mobile-nav-drawer"
       >
-        <Sidebar activeView={activeView} onViewChange={isConnecting ? () => {} : handleViewChange} isConnecting={isConnecting} mobile />
+        <Sidebar activeView={activeView} onViewChange={isConnecting ? () => {} : handleViewChange} isConnecting={isConnecting} extraItems={extraItems} mobile />
       </div>
 
       {/* Mobile milestone drawer */}
@@ -452,7 +462,7 @@ function WorkspaceChrome() {
       <div className="flex flex-1 overflow-hidden">
         {/* Desktop sidebar — hidden on mobile */}
         <div className="hidden md:flex">
-          <Sidebar activeView={activeView} onViewChange={isConnecting ? () => {} : handleViewChange} isConnecting={isConnecting} />
+          <Sidebar activeView={activeView} onViewChange={isConnecting ? () => {} : handleViewChange} isConnecting={isConnecting} extraItems={extraItems} />
         </div>
 
         <div className="flex flex-1 flex-col overflow-hidden">
@@ -590,19 +600,19 @@ function WorkspaceChrome() {
   )
 }
 
-export function GSDAppShell() {
+export function GSDAppShell({ extraItems }: WorkspaceNavProps) {
   // Extract the auth token from the URL fragment on first render.
   // Must happen before any API calls fire.
   getAuthToken()
 
   return (
     <ProjectStoreManagerProvider>
-      <ProjectAwareWorkspace />
+      <ProjectAwareWorkspace extraItems={extraItems} />
     </ProjectStoreManagerProvider>
   )
 }
 
-function ProjectAwareWorkspace() {
+function ProjectAwareWorkspace({ extraItems }: WorkspaceNavProps) {
   const manager = useProjectStoreManager()
   const activeProjectCwd = useSyncExternalStore(manager.subscribe, manager.getSnapshot, manager.getSnapshot)
   const activeStore = activeProjectCwd ? manager.getActiveStore() : null
@@ -671,7 +681,7 @@ function ProjectAwareWorkspace() {
   return (
     <GSDWorkspaceProvider store={activeStore}>
       <DevOverridesProvider>
-        <WorkspaceChrome />
+        <WorkspaceChrome extraItems={extraItems} />
       </DevOverridesProvider>
     </GSDWorkspaceProvider>
   )

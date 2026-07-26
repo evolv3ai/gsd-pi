@@ -169,6 +169,47 @@ describe('registerMcpInstance', () => {
     assert.equal(readOwnEntry(registryPath, tmp)?.pid, process.pid);
   });
 
+  // Regression for #1516: a daemon-spawned workflow server runs in non-exclusive
+  // (client-managed) mode and never registers, so it is absent from the registry.
+  // When an extension-owned server registers/restarts, exclusivity cleanup must
+  // target ONLY the recorded registry entry — never a live, unregistered daemon
+  // child — so the two owners do not kill each other over one registry slot.
+  //
+  // This is the registry-layer half of the invariant: exclusivity acts strictly
+  // on what the registry records (here, PID 5555). The complementary CLI-layer
+  // guarantee — that client-managed sessions skip sweep/register/unregister
+  // entirely — is covered by cli-runner.test.ts
+  // ('client-managed servers do not mutate the singleton PID registry').
+  test('only signals the recorded registry PID, never an unregistered daemon-spawned child', () => {
+    // Registry holds only the previous extension-owned server's entry. A
+    // concurrently running client-managed daemon child is deliberately absent
+    // from the registry, so it can never be a signal target here.
+    writeFileSync(registryPath, JSON.stringify({
+      [tmp]: { pid: 5555, projectDir: tmp, startedAt: '2026-01-01T00:00:00.000Z' },
+    }));
+
+    const signals: Array<{ pid: number; signal: NodeJS.Signals | 0 | undefined }> = [];
+    registerMcpInstance(tmp, registryPath, {
+      kill(pid, signal) {
+        signals.push({ pid, signal });
+      },
+      getProcessCommand() {
+        return 'node /workspace/packages/mcp-server/dist/cli.js';
+      },
+      getProcessCwd() {
+        return tmp;
+      },
+      getProcessStartTime() {
+        return Date.parse('2025-12-31T23:59:59.000Z');
+      },
+      waitForExit() {},
+    });
+
+    // Exactly the recorded stale extension PID is signalled — nothing else.
+    assert.deepEqual(new Set(signals.map((s) => s.pid)), new Set([5555]));
+    assert.equal(readOwnEntry(registryPath, tmp)?.pid, process.pid);
+  });
+
   test('does not terminate a recycled PID that started after the entry was recorded', () => {
     writeFileSync(registryPath, JSON.stringify({
       [tmp]: { pid: 6666, projectDir: tmp, startedAt: '2026-01-01T00:00:00.000Z' },

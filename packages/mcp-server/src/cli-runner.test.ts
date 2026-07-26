@@ -490,6 +490,100 @@ describe('runMcpServerCli', () => {
     ]);
   });
 
+  test('extension-owned server starts and coexists with a concurrent client-managed daemon child (#1516)', async () => {
+    // #1516 acceptance: an extension-owned server and a daemon-spawned
+    // (client-managed) server for the same project must run concurrently
+    // without either refusing to start or killing the other. The daemon child
+    // is client-managed, so it never writes a registry entry (previous test).
+    // This exercises the other owner: the extension-owned server still sweeps
+    // orphans and registers, and must (a) register successfully rather than
+    // refuse to start, and (b) not signal the live, non-orphan daemon child
+    // during that sweep.
+    const calls: string[] = [];
+    const stdin = new PassThrough();
+    let resolveExit!: (code: number) => void;
+    const exited = new Promise<number>((resolve) => { resolveExit = resolve; });
+
+    await runMcpServerCli({
+      cwd: () => '/workspace/project',
+      env: {},
+      exit(code) {
+        calls.push(`exit:${code}`);
+        resolveExit(code);
+        return undefined as never;
+      },
+      loadStoredCredentialEnvKeys() {
+        calls.push('load-env');
+      },
+      // The daemon child is client-managed and unregistered, so the registry
+      // slot is free: registration is verified (returns true) and the server
+      // proceeds instead of hitting the "refusing to start" path.
+      registerMcpInstance(projectDir) {
+        calls.push(`register:${projectDir}`);
+        return true;
+      },
+      // The live daemon child is not orphaned (its daemon parent is alive), so
+      // the orphan sweep has nothing of its to signal.
+      sweepProjectOrphanMcpServers(projectDir) {
+        calls.push(`sweep:${projectDir}`);
+      },
+      unregisterMcpInstance(projectDir) {
+        calls.push(`unregister:${projectDir}`);
+      },
+      createSessionManager() {
+        calls.push('create-session-manager');
+        return {
+          async cleanup() {
+            calls.push('cleanup-session-manager');
+          },
+        };
+      },
+      async createMcpServer() {
+        calls.push('create-server');
+        return {
+          server: {
+            async connect() {
+              calls.push('connect');
+            },
+            async close() {
+              calls.push('close-server');
+            },
+          },
+        };
+      },
+      async importStdioServerTransport() {
+        return { StdioServerTransport: class {} };
+      },
+      warmWorkflowToolBridges() {},
+      stdin,
+      stdout: new PassThrough(),
+      stderr: new PassThrough(),
+      onSignal() {},
+      now: () => 0,
+      setInterval() {
+        return { unref() {} } as ReturnType<typeof setInterval>;
+      },
+      clearInterval() {},
+      isOrphaned: () => false,
+    });
+
+    // It swept, registered, and connected without refusing to start.
+    assert.deepEqual(calls, [
+      'load-env',
+      'sweep:/workspace/project',
+      'register:/workspace/project',
+      'create-session-manager',
+      'create-server',
+      'connect',
+    ]);
+
+    // Closing stdin shuts it down and rolls back only its own registration.
+    stdin.emit('close');
+    assert.equal(await exited, 0);
+    assert.ok(calls.includes('unregister:/workspace/project'));
+    assert.ok(calls.includes('close-server'));
+  });
+
   test('fails before PID mutation when observation-token authority is unavailable', async () => {
     const calls: string[] = [];
     const stderr = new Writable({ write(_chunk, _encoding, callback) { callback(); } });

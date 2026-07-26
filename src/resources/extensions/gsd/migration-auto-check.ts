@@ -90,6 +90,40 @@ function scanHasExtraIdentities(a: HierarchyScan, b: HierarchyScan): boolean {
   );
 }
 
+function excludeUnplannedMilestonesFromDbScan(
+  markdownScan: HierarchyScan,
+  dbScan: HierarchyScan,
+): void {
+  const excludedMilestoneIds = new Set<string>();
+  for (const milestone of getAllMilestones()) {
+    if (markdownScan.milestones.has(milestone.id)) continue;
+    const slices = getMilestoneSlices(milestone.id);
+    if (milestone.vision.trim() || slices.some((slice) => slice.status !== "skipped")) continue;
+    excludedMilestoneIds.add(milestone.id);
+  }
+  if (excludedMilestoneIds.size === 0) return;
+
+  // Identities are `${milestoneId}/…`, so the milestone is the leading segment.
+  const milestoneOf = (identity: string): string => {
+    const slash = identity.indexOf("/");
+    return slash === -1 ? identity : identity.slice(0, slash);
+  };
+
+  for (const id of excludedMilestoneIds) {
+    if (dbScan.milestones.delete(id)) dbScan.counts.milestones--;
+  }
+  // Single pass over each set. Deleting the current element during Set
+  // iteration is well-defined, so no intermediate array copy is needed.
+  for (const identity of dbScan.slices) {
+    if (excludedMilestoneIds.has(milestoneOf(identity)) && dbScan.slices.delete(identity))
+      dbScan.counts.slices--;
+  }
+  for (const identity of dbScan.tasks) {
+    if (excludedMilestoneIds.has(milestoneOf(identity)) && dbScan.tasks.delete(identity))
+      dbScan.counts.tasks--;
+  }
+}
+
 function paddedMilestoneId(id: string): string | null {
   return /^\d+$/.test(id) ? `M${id.padStart(3, "0")}` : null;
 }
@@ -226,9 +260,15 @@ export async function checkMarkdownHierarchyAgainstDb(
   refreshWorkflowDatabaseFromDisk();
 
   const dbScan = scanDbHierarchy();
-  const beforeDb = dbScan.counts;
   alignNumericMarkdownIdsWithDb(markdownScan, dbScan);
   alignBareMarkdownIdsWithSuffixedDb(markdownScan, dbScan);
+
+  // renderRoadmapFromDb deliberately skips milestones with no non-skipped
+  // slices and no vision, refusing to create a misleading stub ROADMAP (#852).
+  // Exclude the same hierarchy branches from projection parity so a newly
+  // admitted, not-yet-planned milestone is not reported as repairable drift.
+  excludeUnplannedMilestonesFromDbScan(markdownScan, dbScan);
+  const beforeDb = dbScan.counts;
 
   // Discussion-phase scratch: a milestone dir with no ROADMAP and no DB row is
   // a pre-registration discussion artifact (CONTEXT/CONTEXT-DRAFT only — the

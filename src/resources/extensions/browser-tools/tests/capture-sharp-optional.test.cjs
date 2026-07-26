@@ -89,3 +89,40 @@ describe("constrainScreenshot — sharp available", () => {
 		assert.ok(meta.height <= 1568, `height ${meta.height} must be <= 1568`);
 	});
 });
+
+describe("constrainScreenshot — cached sharp value is a callable factory", () => {
+	afterEach(() => {
+		__setSharpForTesting(undefined);
+	});
+
+	// Regression guard for the sharp typing contract: getSharp() caches
+	// `(await import("sharp")).default` — the callable constructor — not the
+	// module namespace. If the cached value were the namespace (as it was typed
+	// before sharp 0.35.x's ESM types were adopted), `sharp(buffer)` would not be
+	// callable. This test injects a plain function factory and asserts the code
+	// invokes it as a function, without needing the native sharp binary.
+	it("invokes the injected sharp factory as a function on the resize path", async () => {
+		const calls = [];
+		const makeInstance = () => ({
+			metadata: async () => ({ width: 3000, height: 2000 }),
+			resize: () => makeInstance(),
+			png: () => makeInstance(),
+			jpeg: () => makeInstance(),
+			toBuffer: async () => Buffer.from([0x01, 0x02, 0x03]),
+		});
+		const sharpFactory = (buffer) => {
+			calls.push(buffer);
+			return makeInstance();
+		};
+		__setSharpForTesting(sharpFactory);
+
+		const raw = Buffer.from([0xff, 0xd8, 0xff, 0xe0]); // JPEG magic bytes
+		const result = await constrainScreenshot(null, raw, "image/jpeg", 80);
+
+		assert.ok(
+			calls.length >= 1,
+			"the cached sharp value must be invoked as a callable factory",
+		);
+		assert.ok(Buffer.isBuffer(result), "resize path must return a Buffer");
+	});
+});

@@ -10,16 +10,9 @@ import {
   CheckCircle2,
   Circle,
   Play,
-  Folder,
   FileText,
   GitBranch,
   Settings,
-  LayoutDashboard,
-  Map as MapIcon,
-  Activity,
-  BarChart3,
-  Columns2,
-  MessagesSquare,
   LifeBuoy,
   LogOut,
   FolderKanban,
@@ -58,6 +51,7 @@ import { executeWorkflowActionInPowerMode } from "@/lib/workflow-action-executio
 import { useProjectStoreManager } from "@/lib/project-store-manager"
 import { Skeleton } from "@/components/ui/skeleton"
 import { authFetch } from "@/lib/auth"
+import { resolveNavItems, selectNavItem, type NavItem } from "@/lib/workspace-nav"
 
 const StatusIcon = ({ status }: { status: ItemStatus }) => {
   if (status === "done") {
@@ -78,9 +72,10 @@ interface NavRailProps {
   activeView: string
   onViewChange: (view: string) => void
   isConnecting?: boolean
+  extraItems?: NavItem[]
 }
 
-export function NavRail({ activeView, onViewChange, isConnecting = false }: NavRailProps) {
+export function NavRail({ activeView, onViewChange, isConnecting = false, extraItems }: NavRailProps) {
   const { openCommandSurface } = useGSDWorkspaceActions()
   const manager = useProjectStoreManager()
   const activeProjectCwd = useSyncExternalStore(manager.subscribe, manager.getSnapshot, manager.getSnapshot)
@@ -97,22 +92,14 @@ export function NavRail({ activeView, onViewChange, isConnecting = false }: NavR
   const themeLabel = theme === "light" ? "Light" : theme === "dark" ? "Dark" : "System"
   const ThemeIcon = themeIcon
 
-  const navItems = [
-    { id: "dashboard", label: "Dashboard", icon: LayoutDashboard },
-    { id: "power", label: "Power Mode", icon: Columns2 },
-    { id: "chat", label: "Chat", icon: MessagesSquare },
-    { id: "roadmap", label: "Roadmap", icon: MapIcon },
-    { id: "files", label: "Files", icon: Folder },
-    { id: "activity", label: "Activity", icon: Activity },
-    { id: "visualize", label: "Visualize", icon: BarChart3 },
-  ]
+  const navItems = resolveNavItems(extraItems)
 
   return (
     <div className="flex w-12 flex-col items-center gap-1 border-r border-border bg-sidebar py-3">
       {navItems.map((item) => (
         <button
           key={item.id}
-          onClick={() => onViewChange(item.id)}
+          onClick={() => selectNavItem(item, onViewChange)}
           disabled={isConnecting}
           className={cn(
             "flex h-10 w-10 items-center justify-center rounded-md transition-colors",
@@ -721,22 +708,41 @@ interface SidebarProps {
   onViewChange: (view: string) => void
   isConnecting?: boolean
   mobile?: boolean
+  extraItems?: NavItem[]
 }
 
-export function Sidebar({ activeView, onViewChange, isConnecting = false, mobile = false }: SidebarProps) {
+export function Sidebar({
+  activeView,
+  onViewChange,
+  isConnecting = false,
+  mobile = false,
+  extraItems,
+}: SidebarProps) {
   if (mobile) {
-    return <MobileNavPanel activeView={activeView} onViewChange={onViewChange} isConnecting={isConnecting} />
+    return (
+      <MobileNavPanel
+        activeView={activeView}
+        onViewChange={onViewChange}
+        isConnecting={isConnecting}
+        extraItems={extraItems}
+      />
+    )
   }
   return (
     <div className="flex h-full">
-      <NavRail activeView={activeView} onViewChange={onViewChange} isConnecting={isConnecting} />
+      <NavRail
+        activeView={activeView}
+        onViewChange={onViewChange}
+        isConnecting={isConnecting}
+        extraItems={extraItems}
+      />
     </div>
   )
 }
 
 /* ─── Mobile Nav Panel (full-width labels for touch) ─── */
 
-function MobileNavPanel({ activeView, onViewChange, isConnecting = false }: NavRailProps) {
+function MobileNavPanel({ activeView, onViewChange, isConnecting = false, extraItems }: NavRailProps) {
   const { openCommandSurface } = useGSDWorkspaceActions()
   const { theme, setTheme } = useTheme()
 
@@ -749,15 +755,7 @@ function MobileNavPanel({ activeView, onViewChange, isConnecting = false }: NavR
   const themeLabel = theme === "light" ? "Light" : theme === "dark" ? "Dark" : "System"
   const ThemeIcon = theme === "light" ? Sun : theme === "dark" ? Moon : Monitor
 
-  const navItems = [
-    { id: "dashboard", label: "Dashboard", icon: LayoutDashboard },
-    { id: "power", label: "Power Mode", icon: Columns2 },
-    { id: "chat", label: "Chat", icon: MessagesSquare },
-    { id: "roadmap", label: "Roadmap", icon: MapIcon },
-    { id: "files", label: "Files", icon: Folder },
-    { id: "activity", label: "Activity", icon: Activity },
-    { id: "visualize", label: "Visualize", icon: BarChart3 },
-  ]
+  const navItems = resolveNavItems(extraItems)
 
   return (
     <div className="flex h-full flex-col bg-sidebar pt-14" data-testid="mobile-nav-panel">
@@ -765,7 +763,7 @@ function MobileNavPanel({ activeView, onViewChange, isConnecting = false }: NavR
         {navItems.map((item) => (
           <button
             key={item.id}
-            onClick={() => onViewChange(item.id)}
+            onClick={() => selectNavItem(item, onViewChange)}
             disabled={isConnecting}
             className={cn(
               "flex w-full items-center gap-3 rounded-md px-3 py-3 text-sm font-medium transition-colors min-h-[44px]",

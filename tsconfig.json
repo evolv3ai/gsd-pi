@@ -9,7 +9,10 @@
     "declaration": true,
     "incremental": true,
     "esModuleInterop": true,
-    "skipLibCheck": true
+    "skipLibCheck": true,
+    "paths": {
+      "sharp": ["./node_modules/sharp/lib/index.d.ts"]
+    }
   },
   "include": ["src"],
   "exclude": ["src/resources/extensions", "src/resources/skills", "src/resources/agents", "src/tests", "src/web"]
