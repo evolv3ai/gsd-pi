@@ -11,6 +11,7 @@ import {
   getMilestoneLifecycleShadowSnapshot,
   getSliceStatusSummary,
   getSliceTaskCounts,
+  getTask,
   insertMilestone,
   insertAssessment,
   insertGateRun,
@@ -43,7 +44,7 @@ import { hostname } from "node:os";
 import { join } from "node:path";
 import type { CompleteMilestoneParams } from "./complete-milestone.js";
 import { handleCompleteMilestone } from "./complete-milestone.js";
-import { handleCompleteTask } from "./complete-task.js";
+import { handleCompleteTask, resolveTaskSummaryPath } from "./complete-task.js";
 import {
   resolveTaskCompletionAuthority,
   stageTaskCompletion,
@@ -853,6 +854,35 @@ export async function executeTaskComplete(
       } else if (params.blockerDiscovered === true) {
         coerced.verification = "Not run: blocker discovered before verification.";
       } else {
+        // A model that fires several parallel gsd_task_complete calls for the
+        // same task in one turn typically sends one well-formed call plus
+        // malformed duplicates. Failing those closed produces spurious
+        // error-trace anomalies for a task that actually completed, so when the
+        // task is already closed in current DB state, unwind the duplicate as an
+        // idempotent success pointing at the existing summary instead (#1569).
+        const existingTask = getTask(params.milestoneId, params.sliceId, params.taskId);
+        if (existingTask && isClosedStatus(existingTask.status)) {
+          const summaryPath = resolveTaskSummaryPath(
+            basePath,
+            params.milestoneId,
+            params.sliceId,
+            params.taskId,
+          );
+          return {
+            content: [{
+              type: "text",
+              text: `Task ${params.taskId} (${params.sliceId}/${params.milestoneId}) is already complete; ignoring duplicate completion call. Summary: ${summaryPath}`,
+            }],
+            details: {
+              operation: "complete_task",
+              taskId: params.taskId,
+              sliceId: params.sliceId,
+              milestoneId: params.milestoneId,
+              summaryPath,
+              duplicate: true,
+            },
+          };
+        }
         return {
           content: [{
             type: "text",

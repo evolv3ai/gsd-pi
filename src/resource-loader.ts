@@ -870,8 +870,33 @@ function getBundledExtensionKeys(): Set<string> {
   return _bundledExtensionKeys
 }
 
+/**
+ * The suppression subset of the loader's constructor options that --bare sets.
+ * Derived from the real option type so a key typo (or an upstream rename) fails
+ * typecheck instead of silently degrading --bare to a no-op.
+ */
+type BareResourceLoaderOptions = Partial<
+  Pick<
+    ConstructorParameters<typeof DefaultResourceLoaderType>[0],
+    'noSkills' | 'noPromptTemplates' | 'noThemes' | 'noContextFiles'
+  >
+>
+
+/**
+ * Resource-loader options for --bare mode: skip user skills, prompt templates,
+ * themes, and the CLAUDE.md/AGENTS.md ancestor walk. Single source of truth so
+ * the print-mode and interactive loader construction sites cannot drift.
+ */
+export function bareResourceLoaderOptions(bare: boolean | undefined): BareResourceLoaderOptions {
+  return bare
+    ? { noSkills: true, noPromptTemplates: true, noThemes: true, noContextFiles: true }
+    : {}
+}
+
 interface BuildResourceLoaderOptions {
   additionalExtensionPaths?: string[]
+  /** --bare: minimal context (see bareResourceLoaderOptions) */
+  bare?: boolean
 }
 
 export async function buildResourceLoader(
@@ -891,6 +916,7 @@ export async function buildResourceLoader(
     cwd: process.cwd(),
     additionalExtensionPaths,
     bundledExtensionKeys: bundledKeys,
+    ...bareResourceLoaderOptions(options.bare),
     extensionPathsTransform: (paths: string[]) => {
       // 1. Filter community extensions through the GSD registry
       const filteredPaths = paths.filter((entryPath) => {

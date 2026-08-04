@@ -3,8 +3,8 @@ import type { Logger } from './logger.js';
 import type { DiscordMessageLike } from './orchestrator.js';
 import { SessionManager } from './session-manager.js';
 import { scanForProjects } from './project-scanner.js';
-import { DiscordBot, validateDiscordConfig } from './discord-bot.js';
-import { EventBridge } from './event-bridge.js';
+import type { DiscordBot } from './discord-bot.js';
+import type { EventBridge } from './event-bridge.js';
 import { Orchestrator } from './orchestrator.js';
 import { CloudRuntime } from './cloud-runtime.js';
 import { LocalToolExecutor } from './local-tool-executor.js';
@@ -56,7 +56,16 @@ export class Daemon {
     // Conditionally start Discord bot if config is present and valid
     if (this.config.discord?.token) {
       try {
-        validateDiscordConfig(this.config.discord);
+        // Lazy-load the discord.js-dependent modules only when Discord is
+        // configured — daemon startup and non-Discord configs should never
+        // pay discord.js's module-load cost. (Same pattern as
+        // orchestrator-agent.ts lazy-loading @anthropic-ai/sdk.)
+        // NOTE: the module binding needs an explicit type annotation so the
+        // `validateDiscordConfig` assertion signature is preserved (TS2775).
+        const discordBotModule: typeof import('./discord-bot.js') = await import('./discord-bot.js');
+        const { DiscordBot } = discordBotModule;
+        const { EventBridge } = await import('./event-bridge.js');
+        discordBotModule.validateDiscordConfig(this.config.discord);
         this.discordBot = new DiscordBot({
           config: this.config.discord,
           logger: this.logger,

@@ -477,6 +477,30 @@ test("gsd headless query returns JSON from the built CLI", async (t) => {
   assert.equal(typeof snapshot.state?.phase, "string", "query output should include state.phase");
 });
 
+test("gsd --mode rpc --bare is not rejected at startup (headless --bare forwarding argv)", async () => {
+  // headless.ts and the MCP/daemon session managers forward --bare to the
+  // spawned RPC child (`node cli.js --mode rpc ... --bare`). Regression: the
+  // top-level parseCliArgs rejected --bare, so every `gsd headless --bare ...`
+  // child died at startup with "Unknown option: --bare" before RPC mode began.
+  //
+  // runGsd closes stdin immediately, so a child that accepted --bare either
+  // keeps serving until the budget expires (timedOut) or shuts down cleanly on
+  // EOF (exit 0). The regression instead threw out of parseCliArgs and exited
+  // nonzero within ~2s, so requiring "timed out or exit 0" pins that the child
+  // survived startup rather than merely failing for some other reason.
+  const result = await runGsd(["--mode", "rpc", "--bare"], 15_000);
+
+  const combined = stripAnsi(result.stdout + result.stderr);
+  assert.ok(
+    !combined.includes("Unknown option: --bare"),
+    `RPC child rejected --bare at startup:\n${combined.slice(0, 500)}`,
+  );
+  assert.ok(
+    result.timedOut || result.code === 0,
+    `RPC child died at startup (exit ${result.code}):\n${combined.slice(0, 500)}`,
+  );
+});
+
 test("gsd worktree list loads the built worktree CLI without module errors", async (t) => {
   const tmpDir = createTempGitRepo("gsd-e2e-worktree-");
 

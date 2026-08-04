@@ -33,6 +33,7 @@ import type {
 import { AssistantMessageEventStream } from "../utils/event-stream.js";
 import { headersToRecord } from "../utils/headers.js";
 import { parseStreamingJson } from "../utils/json-parse.js";
+import { sanitizeToolSchema } from "../utils/sanitize-tool-schema.js";
 import { sanitizeSurrogates } from "../utils/sanitize-unicode.js";
 import { isCloudflareProvider, resolveCloudflareBaseUrl } from "./cloudflare.js";
 import { buildCopilotDynamicHeaders, hasCopilotVisionInput } from "./github-copilot-headers.js";
@@ -1108,24 +1109,72 @@ export function convertMessages(
 	return params;
 }
 
+/**
+ * Recursively strip verbose metadata from a JSON Schema to reduce payload size.
+ *
+ * The model already receives tool-level descriptions via the `description`
+ * field on the tool definition itself. Parameter-level `description`,
+ * `examples`, and `default` values are redundant and waste ~45-60KB per
+ * request (128 tools × ~400B avg).
+ *
+ * This is a pure data transformation — the JSON Schema remains valid
+ * (description/examples/default are all optional per JSON Schema spec).
+ *
+ * Used in convertTools() before sending tools to any provider API.
+ */
+/**
+ * Truncate a tool description to ~50 characters at a word boundary.
+ * Used for GSD workflow tools whose descriptions are already in the system prompt.
+ * The model can discover full details from the system prompt when needed.
+ */
+function shortenToolDescription(description: string, maxChars = 50): string {
+	if (!description || description.length <= maxChars) return description;
+	// Cut at last word boundary before maxChars
+	const truncated = description.substring(0, maxChars);
+	const lastSpace = truncated.lastIndexOf(" ");
+	if (lastSpace > maxChars * 0.5) {
+		return truncated.substring(0, lastSpace) + "...";
+	}
+	return truncated + "...";
+}
+
+/**
+ * Check if a tool name belongs to the GSD workflow tool family.
+ * These tools are already documented in the system prompt, so their
+ * API descriptions can be safely shortened.
+ */
+function isGSDTool(name: string): boolean {
+	return name.startsWith("gsd_") || name.startsWith("gsd-");
+}
+
 function convertTools(
 	tools: Tool[],
 	compat: ResolvedOpenAICompletionsCompat,
 	model: Model<"openai-completions">,
 ): OpenAI.Chat.Completions.ChatCompletionTool[] {
 	const sanitizeParameters = requiresMoonshotToolSchemaSanitization(model);
-	return tools.map((tool) => ({
-		type: "function",
-		function: {
-			name: tool.name,
-			description: tool.description,
-			parameters: sanitizeParameters
-				? sanitizeSchemaForMoonshot(tool.parameters)
-				: (tool.parameters as any), // TypeBox already generates JSON Schema
-			// Only include strict if provider supports it. Some reject unknown fields.
-			...(compat.supportsStrictMode !== false && { strict: false }),
-		},
-	}));
+	return tools.map((tool) => {
+		let parameters: Record<string, unknown> = tool.parameters as Record<string, unknown>;
+		if (sanitizeParameters) {
+			parameters = sanitizeSchemaForMoonshot(parameters) as Record<string, unknown>;
+		}
+		// Always strip verbose metadata to reduce payload size
+		parameters = sanitizeToolSchema(parameters) as Record<string, unknown>;
+		// Shorten GSD workflow tool descriptions — they're already in the system prompt
+		const description = isGSDTool(tool.name)
+			? shortenToolDescription(tool.description)
+			: tool.description;
+		return {
+			type: "function" as const,
+			function: {
+				name: tool.name,
+				description,
+				parameters,
+				// Only include strict if provider supports it. Some reject unknown fields.
+				...(compat.supportsStrictMode !== false && { strict: false }),
+			},
+		};
+	});
 }
 
 function parseChunkUsage(

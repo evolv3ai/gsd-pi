@@ -5,12 +5,12 @@
 // Run after building both packages:
 //   cd packages/pi-tui && npx tsc -p tsconfig.json && cd ../..
 //   npx tsc -p packages/pi-coding-agent/tsconfig.json
-//   node scripts/tui-open-surface-demo.mjs
+//   node scripts/archive/tui-open-surface-demo.mjs
 //
 // Then SELECT body lines of any block and paste them — they copy clean.
 
-import { style } from "../packages/pi-tui/dist/index.js";
-import { initTheme } from "../packages/pi-coding-agent/dist/modes/interactive/theme/theme.js";
+import { style } from "../../packages/pi-tui/dist/index.js";
+import { initTheme } from "../../packages/pi-coding-agent/dist/modes/interactive/theme/theme.js";
 import {
 	renderAssistantRail,
 	renderUserRail,
@@ -18,7 +18,7 @@ import {
 	renderTranscriptCard,
 	renderCommandCard,
 	renderChatFrame,
-} from "../packages/pi-coding-agent/dist/modes/interactive/components/transcript-design.js";
+} from "../../packages/pi-coding-agent/dist/modes/interactive/components/transcript-design.js";
 
 initTheme("dark", false);
 

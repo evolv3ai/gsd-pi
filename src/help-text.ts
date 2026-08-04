@@ -22,23 +22,31 @@ const SUBCOMMAND_HELP: Record<string, string> = {
   ].join('\n'),
 
   update: [
-    'Usage: gsd update [browser]',
+    'Usage: gsd update [browser] [--models]',
     '',
-    'Update GSD to the latest version, or update browser automation only.',
+    'Update GSD to the latest version, update browser automation only,',
+    'or refresh the runtime model catalog.',
+    '',
+    'Options:',
+    '  --models   Refresh the model catalog overlay',
+    '             (~/.gsd/agent/models-catalog.json) from the latest published catalog',
     '',
     'Examples:',
     '  gsd update',
     '  gsd update browser',
+    '  gsd update --models',
   ].join('\n'),
 
   upgrade: [
-    'Usage: gsd upgrade [browser]',
+    'Usage: gsd upgrade [browser] [--models]',
     '',
-    'Alias for update. Upgrade GSD, or upgrade browser automation only.',
+    'Alias for update. Upgrade GSD, upgrade browser automation only,',
+    'or refresh the runtime model catalog.',
     '',
     'Examples:',
     '  gsd upgrade',
     '  gsd upgrade browser',
+    '  gsd upgrade --models',
   ].join('\n'),
 
   sessions: [

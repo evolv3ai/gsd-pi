@@ -128,6 +128,18 @@ describe('parseCliArgs — short flags and basic options', () => {
     assert.deepEqual(flags.messages, ['headless', '--bare', 'auto'])
   })
 
+  test('--bare is accepted at top level (the RPC child argv from headless/MCP forwarding)', () => {
+    // headless.ts and the MCP/daemon session managers spawn the RPC child as
+    // `node cli.js --mode rpc ... --bare`; that argv hits this parser directly.
+    const flags = parse('--mode', 'rpc', '--thinking', 'medium', '--bare')
+    assert.equal(flags.bare, true)
+    assert.equal(flags.mode, 'rpc')
+  })
+
+  test('bare is undefined when --bare not passed', () => {
+    assert.equal(parse('-p').bare, undefined)
+  })
+
   test('`auto` does not pass through: --model/--thinking are parsed so buildHeadlessAutoArgs can reorder them', () => {
     const flags = parse('auto', '--model', 'test-model', '--thinking', 'medium')
     assert.deepEqual(flags.messages, ['auto'])
@@ -216,5 +228,34 @@ describe('parseCliArgs — positional messages', () => {
     const flags = parse()
     assert.deepEqual(flags.messages, [])
     assert.deepEqual(flags.extensions, [])
+  })
+})
+
+describe('parseCliArgs — update --models routing', () => {
+  test('`gsd update --models` passes the bare flag through to the update subcommand', () => {
+    const flags = parse('update', '--models')
+    assert.deepEqual(flags.messages, ['update', '--models'])
+  })
+
+  test('`gsd upgrade --models` passes the bare flag through to the update subcommand', () => {
+    const flags = parse('upgrade', '--models')
+    assert.deepEqual(flags.messages, ['upgrade', '--models'])
+  })
+
+  test('`gsd update` and `gsd update browser` routing is unchanged', () => {
+    assert.deepEqual(parse('update').messages, ['update'])
+    assert.deepEqual(parse('update', 'browser').messages, ['update', 'browser'])
+  })
+
+  test('a value after `update --models` stays in messages so the subcommand can reject it', () => {
+    const flags = parse('update', '--models', 'claude-*')
+    assert.deepEqual(flags.messages, ['update', '--models', 'claude-*'])
+  })
+
+  test('top-level --models keeps its existing behavior (not swallowed as a message)', () => {
+    // The value-taking --models flag (Ctrl+P cycling) is parsed downstream in
+    // @gsd/agent-modes; the top-level parser must keep rejecting it rather
+    // than turning the value into a prompt message.
+    assert.throws(() => parse('--models', 'claude-*'), /Unknown option: --models/)
   })
 })

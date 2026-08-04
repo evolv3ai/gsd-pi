@@ -1322,11 +1322,12 @@ Create a new provider file (for example `amazon-bedrock.ts`) that exports:
 
 #### 4. Model Generation (`scripts/generate-models.ts`, `scripts/generate-image-models.ts`)
 
-- Add logic to fetch and parse models from the provider's source (e.g., models.dev API)
+- The chat catalog is assembled from models.dev, OpenRouter, and Vercel AI Gateway. Generation fails without overwriting the committed catalog when any source returns no tool-capable models or a model cost, context window, or output-token limit is not finite.
 - Map chat/tool-capable provider model data to the standardized `Model` interface via `scripts/generate-models.ts`
 - Map image-generation provider model data to the standardized `ImagesModel` interface via `scripts/generate-image-models.ts`
 - Handle provider-specific quirks (pricing format, capability flags, model ID transformations)
 - Run `pnpm run generate` from `packages/pi-ai` when changing model generation; `pnpm run build` compiles the committed generated catalogs without refreshing them.
+- Routine chat-catalog refreshes are proposed by [the model-catalog workflow](../../.github/workflows/update-model-catalog.yml); generation-logic changes still require a manual regeneration.
 
 #### 5. Tests (`test/`)
 

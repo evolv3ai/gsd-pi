@@ -419,6 +419,9 @@ export interface ExtensionCommandContext extends ExtensionContext {
 
 	/** Reload extensions, skills, prompts, and themes. */
 	reload(): Promise<void>;
+
+	/** Get all configured tools with parameter schema and source metadata. */
+	getAllTools(): ToolInfo[];
 }
 
 /**
@@ -1653,6 +1656,7 @@ export interface ExtensionCommandContextActions {
 		options?: { withSession?: (ctx: ReplacedSessionContext) => Promise<void> },
 	) => Promise<{ cancelled: boolean }>;
 	reload: () => Promise<void>;
+	getAllTools: GetAllToolsHandler;
 }
 
 /**

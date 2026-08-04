@@ -49,5 +49,7 @@ export function createDefaultCommandContextActions(session: AgentSession): Exten
 		reload: async () => {
 			await session.reload();
 		},
+
+		getAllTools: () => session.getAllTools(),
 	};
 }

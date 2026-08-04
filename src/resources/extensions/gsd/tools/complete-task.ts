@@ -127,6 +127,28 @@ function taskSummaryPath(
   );
 }
 
+/**
+ * Resolve the on-disk SUMMARY.md path for a task without writing anything.
+ *
+ * Used by callers that need to reference an already-completed task's summary
+ * (e.g. the idempotent duplicate short-circuit in `executeTaskComplete`), which
+ * must apply the same canonical-milestone-root resolution `handleCompleteTask`
+ * uses so the reported path matches the one the real completion wrote.
+ */
+export function resolveTaskSummaryPath(
+  basePath: string,
+  milestoneId: string,
+  sliceId: string,
+  taskId: string,
+): string {
+  return taskSummaryPath(
+    resolveCanonicalMilestoneRoot(basePath, milestoneId),
+    milestoneId,
+    sliceId,
+    taskId,
+  );
+}
+
 async function repairMissingTaskSummaryProjection(
   artifactBasePath: string,
   taskRow: TaskRow,

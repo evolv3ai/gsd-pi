@@ -6,15 +6,40 @@ import type { Page } from "playwright";
 // when sharp is not installed.
 //
 // sharp's ESM build exposes the callable constructor as its default export, so
-// the cached value is `(await import("sharp")).default`. Type it as that default
-// export (the factory), not the module namespace, otherwise `sharp(buffer)`
-// is seen as non-callable.
-type SharpFactory = (typeof import("sharp"))["default"];
+// the cached value is the factory, not the module namespace — otherwise
+// `sharp(buffer)` is seen as non-callable.
+//
+// sharp ships two type surfaces: dist/index.d.mts (`export default sharp`) and
+// the legacy lib/index.d.ts (`export = sharp`). Depending on which one module
+// resolution picks, `typeof import("sharp")` either has a `default` property or
+// *is* the factory itself, so index into `default` only when it exists.
+type SharpModule = typeof import("sharp");
+type SharpFactory = SharpModule extends { default: infer D } ? D : SharpModule;
 let _sharp: SharpFactory | null | undefined;
+
+/**
+ * Normalize whatever `await import("sharp")` yields into the callable factory,
+ * or `null` when no factory can be found.
+ *
+ * Under Node ESM a namespace object always carries `.default`, so reading it
+ * directly works today. It stops working if this module is ever transpiled to
+ * CJS (jiti, esbuild `format: "cjs"`), where `require`-interop hands back the
+ * factory itself with no `.default` — and `_sharp = undefined` would then
+ * silently defeat the `_sharp !== undefined` cache sentinel, re-importing on
+ * every call. Normalizing here keeps the cache invariant `SharpFactory | null`
+ * regardless of module format. Exported for
+ * tests/screenshot-constraints.test.mjs.
+ */
+export function resolveSharpFactory(mod: unknown): SharpFactory | null {
+	const candidate =
+		typeof mod === "function" ? mod : (mod as { default?: unknown } | null)?.default;
+	return typeof candidate === "function" ? (candidate as SharpFactory) : null;
+}
+
 async function getSharp(): Promise<SharpFactory | null> {
 	if (_sharp !== undefined) return _sharp;
 	try {
-		_sharp = (await import("sharp")).default;
+		_sharp = resolveSharpFactory(await import("sharp"));
 	} catch {
 		_sharp = null;
 	}

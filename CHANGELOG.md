@@ -8,6 +8,186 @@ This changelog starts from the `open-gsd/gsd-pi` ownership baseline. Earlier pro
 
 ## [Unreleased]
 
+## [1.12.0] - 2026-08-03
+
+### Added
+- add gsd update --models to refresh the model catalog without a full upgrade
+- **web**: per-surface nav registry with host-supplied entries
+- **gsd**: add forward import repair
+- **gsd**: add crash-safe live import restore
+- **gsd**: add pure restore assessment
+- **gsd**: add typed authority cutover
+- **gsd**: add authority recovery receipt schema
+- **gsd**: route explicit recover through import application
+- **gsd**: compose transactional legacy import application
+- **gsd**: apply legacy import plans strictly
+- **gsd**: compile legacy import preview
+- **gsd**: add typed import transaction
+- **gsd**: freeze import application contract
+- **gsd**: fail close destructive recovery backups
+- **gsd**: prove isolated legacy backup restore
+- **gsd**: publish restart-safe legacy backups
+- **gsd**: verify legacy backup snapshots independently
+- **gsd**: create consistent legacy backup snapshots
+- **gsd**: enforce verified backup preflight
+- **gsd**: define verified legacy backup contract
+- **gsd**: seal public legacy import preview
+- **gsd**: classify exact legacy preview changes
+- **gsd**: interpret supplemental legacy evidence
+- **gsd**: interpret legacy GSD truth
+- **gsd**: interpret captured legacy planning
+- **gsd**: capture legacy import source bytes
+- **gsd**: seal legacy import preview identity
+- **gsd**: define legacy import corpus contract
+- **gsd**: inject project runtime contract
+- **web**: cloud mode + transport abstraction (ADR-047 WS-3) (#1504)
+- **gsd-cloud**: implement cloud terminal channel in the daemon runtime (#1508)
+- **gsd-cloud**: publish readiness, E2E harness, service install, live session events (#1499)
+- **pi-ai**: add Grok (xAI) subscription OAuth provider
+- **gsd**: enforce semantic shadow authority boundaries (#1480)
+- **gsd**: make milestone lifecycle database-authoritative (#1476)
+- **gsd**: enforce durable task recovery authority (#1451)
+- **gsd**: cut task execution onto durable authority (#1447)
+- **gsd**: adopt planning through replay-safe lifecycle operations (#1446)
+- **gsd**: add transaction-bound lifecycle writers (#1442)
+- **gsd**: add atomic domain operation boundary (#1438)
+- **gsd**: add v35 projection and closeout schema foundation (#1437)
+- **gsd**: add recovery evidence schema foundation (#1435)
+- **gsd**: add durable conversation database foundation (#1430)
+- **gsd**: add lifecycle database foundation (#1427)
+
+### Fixed
+- **mcp-server**: restore standalone npm installation (#1589)
+- **gsd**: restore read-before-write contract wording in system.md
+- **gsd**: fix Hard Rules assertion in system.md prompt
+- **gsd**: restore DB guardrail and flat-phase docs in system.md prompt
+- **gsd**: remove skills/skillFilter from agent-session-extensions (interface change)
+- **gsd**: repair wire-format regression and de-duplicate sanitizeToolSchema (#1475)
+- **gsd**: reduce prompt size via schema sanitization and prompt compression (#1475)
+- **scripts**: exclude archived scripts from the test-gap audit inventory
+- **cursor-cli**: stop classifying cursor-agent's prompt echo and thinking events as assistant text
+- **cli**: type bareResourceLoaderOptions and assert RPC child survives startup
+- **cli**: headless --bare kills the RPC child at startup — parseCliArgs rejects the forwarded flag
+- **issue**: complete-slice closeout always find(1)s a legacy tasks/ dir that DB-authoritative projects never create
+- **issue**: gsd_task_complete: parallel duplicate calls each trip fail-closed verification guard
+- **verification-gate**: drop operand-shaped prose markers so flagless commands stay commands
+- **issue**: verification-gate: prose Verify fields with shell metachars (; < >) plus leading command word misclassified as unsafe, suppressing task-plan-prose fallback -> false no-host-checks pause
+- **bug-2**: upsertSlicePlanning silently succeeds when UPDATE affects zero rows upsertSlicePlanning asserts the UPDATE affected at least one row and throws GSD_STALE_STATE otherwise.
+- **bug-1**: Milestone drift detector queries slices with DB ID instead of filesystem-canonical ID drift detector now unions slices across all milestone ids resolving to the same phase directory instead of only the DB row id.
+- **issue**: Stuck-loop false positive: auto-loop hardcodes 'unit-break' in dispatch ledger, tripping Rule 1
+- **test**: treat empty GSD_SMOKE_BINARY as unset
+- **test**: preserve PATH executable for GSD_SMOKE_BINARY and document legacy fixture layout
+- **ci**: unblock post-publish live regression verify
+- **browser-tools**: normalize sharp module shape when caching the factory
+- **issue**: [Bug]: error on pnpm build: Property 'default' does not exist on type 'typeof sharp'
+- **build**: drop vestigial sharp paths mapping that breaks build:core
+- **models**: distinguish HTTP errors from network failures in update --models
+- **ci**: unblock model-catalog CI (source-grep gate + sharp dual-type resolution)
+- **issue**: headless next counts deliberately-skipped unplanned milestones as projection drift
+- **web**: guard selectNavItem href navigation for non-browser envs
+- **ci**: type cached sharp as its default export, not the module namespace
+- **ci**: bump sharp to ^0.35.2 to restore missing types export
+- **web**: de-duplicate nav items by id and test resolveNavItems directly
+- **build**: resolve sharp 0.35.0 types under NodeNext
+- **ci**: repair broken pnpm lockfile duplicated postcss entries
+- **web**: dedupe duplicate postcss@8.5.23 lockfile entries
+- **issue**: [Feature]: Discover and enforce a project-local runtime contract before any subagent launches a business project
+- **pi-ai**: restore lexicographic ZAI model ordering in generated catalog
+- **issue**: [Bug]: daemon-spawned workflow MCP server and extension-owned server kill each other via PID-registry exclusivity
+- **issue**: Make legacy import recovery database-authoritative and restart-safe
+- **issue**: [Bug] ZAI provider model catalog is incomplete -- missing glm-4.5, glm-4.6, glm-5, glm-5.2
+- **gsd**: classify request-time 'No API key' failures as fallback-eligible
+- **issue**: gsd_task_complete: canonical completion path rejects escalation param, forcing reopen/replan handoff (#1528)
+- **issue**: [Bug]: Missing GPT-5.6 models from Copilot provider (#1532)
+- **gsd**: stop missing-task-plan recovery when the worktree projection is stale (#1523)
+- **gsd**: plain-fs fallbacks for projection tree removal and managed-output history (#1522)
+- **derive**: explicitly type empty Set<string> in loadProjectSequenceIds
+- **doctor**: treat scaffold-only queued milestone dir as present, not orphan
+- **derive**: promote in-sequence queued shells, not just draft-bearing ones
+- **derive**: give phantom-only repos a recovery path instead of a false dep-block
+- **derive**: don't let an earlier phantom queued-shell mask a later draft milestone
+- **bug-2**: `doctor-runtime-checks.js:732` — doctor skips queued milestones entirely doctor now only skips queued milestones that have content files, reporting content-less phantoms as orphan_milestone_db.
+- **bug-1**: `state/derive/from-db.js:130-136` — queued-shell promoted to active without content check added a `hasDraftContext` guard so content-less phantom queued-shells are no longer promoted to active.
+- **gsd**: re-prove parent identity in projection copy fallback and reject symlinked .gsd root
+- **gsd**: allow plain-fs directory fallback when the projection root does not exist yet
+- **gsd**: harden projection copy fallback against no-op O_NOFOLLOW
+- **gsd**: include rejected entry path in projection copy fallback error
+- **gsd**: validate projection root before plain-fs directory fallback
+- **gsd**: match native lock semantics in projection copy fallback
+- **gsd**: fall back to plain-fs projection copies when native identity locks are unavailable
+- **auto**: replace empty isIdle catch with workflow-logger warning
+- **auto**: guard abortActiveUnitTurn with isIdle to avoid aborting idle turns
+- **issue**: Auto-mode leaks SDK tasks in status:running on unit abort/re-dispatch (status bar shows ever-growing 'N running', e.g. 82)
+- **native**: borrow Windows evidence path
+- **native**: enrich Windows projection errors with the faulting path
+- **gsd**: preserve active backup staging ownership
+- **native**: preserve Windows root write access
+- **ci**: align Node smoke with workspace floor
+- **native**: enumerate share-held root through its handle on Windows
+- **gsd**: converge database authority recovery
+- **gsd-cloud**: launch workflow MCP server for cloud tools (#1514)
+- **gsd**: converge database authority recovery
+- **gsd**: harden live restore crash convergence
+- **gsd**: block implicit projection imports
+- **gsd**: prevent startup projection imports
+- **gsd**: keep rendering projection-only
+- **mcp**: tailor projectDir session error and add ask_user_questions to adapter surface
+- **issue**: [Bug]: workflow adapter tools (gsd_status, gsd_roadmap, ...) not registered in gsd --mode mcp — cloud daemon session polling fails, /devices/<id>/app hangs on boot
+- **issue**: Bug: session.currentMilestoneId stuck on parked milestone — dispatch mismatch guard fires permanently (shouldAdoptActiveMilestone ignores parked status) (#1502)
+- **issue**: [Bug]: Blocking gate on slice-level hooks never finds the flat-phase slice-prefixed artifact (NN-SS-<ARTIFACT>.md) — false "missing required gate artifact" + cycle budget exhaustion (#1429)
+- **issue**: renderRoadmapMarkdown emits trailing whitespace on empty Vision/After-this fields, causing doctor↔sync infinite loop
+- **gsd**: guard sibling phase artifact scan with milestone dir matching
+- **issue**: [Bug]: phase dir name divergence causes un-retryable stuck loop — S04-T02-SUMMARY.md written to stale 09-obg27g-… dir, verification checks 09-m009-obg27g-… dir
+- **gsd**: classify hook rejections missing exit status as hook-content
+- **gsd**: classify hook rejections when commit exit status is missing
+- **gsd**: preserve hook-content failure class when merging multi-repo commit errors
+- **daemon**: remove duplicate session:cancelled emit in evictSession
+- **daemon**: emit session:cancelled when evicting paused sessions
+- **daemon**: tear down bridge state when evicting a paused session
+- **daemon**: retain event subscription on pause and stop evicted clients
+- **daemon**: keep paused sessions interactive and reclaim them on shutdown
+- **gsd**: skip task remediation retry after partial multi-repo commits
+- **gsd**: classify commit hook rejections before transient git lock patterns
+- classify transient git lock failures before hook-content
+- **bug-3**: evidence validation errors omit recovery details validation errors now include accepted enum values and approved evidence roots.
+- **bug-2**: browser evidence validation does not accept URL refs browser evidence now accepts http/https URL refs and explicit browser artifact paths.
+- **bug-1**: run-uat prompt omits accepted evidence kinds documented all accepted evidence kinds and ref rules in run-uat-facing guidance.
+- **issue**: execute-task post-task commit silently swallows deterministic pre-commit-hook failures, strands task work uncommitted
+- **issue**: mcp_discover hangs when parallel stdio connections open concurrent trust dialogs
+- **issue**: [Bug]: gsd-auto-orchestrator terminal/pause event leaves sessions table status='running'; /gsd auto deadlocks indefinitely
+- **issue**: Allow a repaired task to resume after durable recovery abort
+- **issue**: [Bug]: Why isn't it generating? 01-RESEARCH.md、01-01-UI-SPEC.md
+- **issue**: fix(pi-tui): #677's scrollback-clamp guard only covers appendedLines=true; same-length reflow still duplicates a boundary line
+- **gsd**: ignore completed unregistered legacy quality gates (#1481)
+- **test**: import updateSliceProgressCache in auto-dashboard test
+- **issue**: Dashboard ETA wildly off: estimateTimeRemaining mixes global units with current-milestone slice count
+- **test**: nest milestone vision under planning in roadmap regression test
+- **issue**: v1.11.0: gsd_task_complete re-renders verified ROADMAP.md from stale DB and silently removes remediation criteria
+- **gsd**: make slice lifecycle operations atomic and replay-safe (#1474)
+- **gsd**: enforce evidence-backed task recovery authority (#1470)
+- **gsd**: resume isolated host verification safely (#1468)
+- **gsd**: run verification recovery in fresh task attempts (#1466)
+- **issue**: [Bug]: Background Agent() task becomes untraceable (TaskList/TaskOutput/TaskGet all report not-found) after compaction spawns a new claude process — orphaned old process keeps mutating the shared working tree unsupervised
+- **gsd**: keep milestone leases alive during unit execution (#1461)
+- **gsd**: resume tasks after repaired recovery aborts (#1459)
+- **gsd**: recover attempts after failed dispatch (#1456)
+- **gsd**: fail closed across workflow recovery (#1454)
+- **cli**: let --help win over unknown-flag errors so `gsd --foo --help` still prints help
+- **cli**: stop routing `auto` through subcommand passthrough so --model/--thinking parse correctly
+- **issue**: Subagent --thinking medium is misparsed as the child prompt during gate evaluation
+- **issue**: [Bug] Flat-phase migration rolls back because `.planning/` projection throws on `legacy-milestone-dir` layout (v1 only implements `flat-phases` writer)
+
+### Changed
+- remove audit-confirmed dead code and unused deps
+- **scripts**: archive nine unreferenced one-off scripts
+- **daemon**: defer discord.js loading until Discord is configured
+- **drift**: cache milestone-path resolution across id aliases
+- **migration**: single-pass exclusion of unplanned milestones from db scan
+- **migration**: guard slice/task count decrements on delete() result
+- drop committed .memtrace artifacts and ignore .memtrace/
+- untrack generated .memtrace artifacts and gitignore .memtrace/
+- **doctor**: drop redundant queued/hasContent guard in orphan DB-row check
+
 ## [1.11.0] - 2026-07-12
 
 ### Added

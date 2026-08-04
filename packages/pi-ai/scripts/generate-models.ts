@@ -308,8 +308,18 @@ function getBedrockBaseUrl(modelId: string): string {
 }
 
 function formatCost(value: number): string {
+	if (!Number.isFinite(value)) {
+		throw new Error("Model costs must be finite numbers.");
+	}
 	const rounded = Number(value.toFixed(12));
 	return Object.is(rounded, -0) ? "0" : String(rounded);
+}
+
+function formatFiniteNumber(value: unknown, field: string, modelId: string): string {
+	if (typeof value !== "number" || !Number.isFinite(value)) {
+		throw new Error(`${field} for model ${JSON.stringify(modelId)} must be a finite number.`);
+	}
+	return String(value);
 }
 
 async function fetchOpenRouterModels(): Promise<Model<any>[]> {
@@ -1200,7 +1210,7 @@ async function loadModelsDevData(): Promise<Model<any>[]> {
 }
 
 async function generateModels() {
-	// Fetch models from both sources
+	// Fetch models from every required upstream source
 	// models.dev: Anthropic, Google, OpenAI, Groq, Cerebras
 	// OpenRouter: xAI and other providers (excluding Anthropic, Google, OpenAI)
 	// AI Gateway: OpenAI-compatible catalog with tool-capable models
@@ -1213,7 +1223,15 @@ async function generateModels() {
 		process.exit(1);
 	}
 	const openRouterModels = await fetchOpenRouterModels();
+	if (openRouterModels.length === 0) {
+		throw new Error("OpenRouter returned no tool-capable models; refusing to overwrite src/models.generated.ts.");
+	}
 	const aiGatewayModels = await fetchAiGatewayModels();
+	if (aiGatewayModels.length === 0) {
+		throw new Error(
+			"Vercel AI Gateway returned no tool-capable models; refusing to overwrite src/models.generated.ts.",
+		);
+	}
 
 	// Combine models (models.dev has priority)
 	const allModels = [...modelsDevModels, ...openRouterModels, ...aiGatewayModels].filter(
@@ -2300,13 +2318,13 @@ export const MODELS = {
 		const sortedModelIds = Object.keys(models).sort();
 		for (const modelId of sortedModelIds) {
 			const model = models[modelId];
-			output += `\t\t"${model.id}": {\n`;
-			output += `\t\t\tid: "${model.id}",\n`;
-			output += `\t\t\tname: "${model.name}",\n`;
-			output += `\t\t\tapi: "${model.api}",\n`;
-			output += `\t\t\tprovider: "${model.provider}",\n`;
+			output += `\t\t${JSON.stringify(model.id)}: {\n`;
+			output += `\t\t\tid: ${JSON.stringify(model.id)},\n`;
+			output += `\t\t\tname: ${JSON.stringify(model.name)},\n`;
+			output += `\t\t\tapi: ${JSON.stringify(model.api)},\n`;
+			output += `\t\t\tprovider: ${JSON.stringify(model.provider)},\n`;
 			if (model.baseUrl !== undefined) {
-				output += `\t\t\tbaseUrl: "${model.baseUrl}",\n`;
+				output += `\t\t\tbaseUrl: ${JSON.stringify(model.baseUrl)},\n`;
 			}
 			if (model.headers) {
 				output += `\t\t\theaders: ${JSON.stringify(model.headers)},\n`;
@@ -2337,9 +2355,9 @@ export const MODELS = {
 				output += `\t\t\t\ttiers: [${tiers}],\n`;
 			}
 			output += `\t\t\t},\n`;
-			output += `\t\t\tcontextWindow: ${model.contextWindow},\n`;
-			output += `\t\t\tmaxTokens: ${model.maxTokens},\n`;
-			output += `\t\t} satisfies Model<"${model.api}">,\n`;
+			output += `\t\t\tcontextWindow: ${formatFiniteNumber(model.contextWindow, "contextWindow", model.id)},\n`;
+			output += `\t\t\tmaxTokens: ${formatFiniteNumber(model.maxTokens, "maxTokens", model.id)},\n`;
+			output += `\t\t} satisfies Model<${JSON.stringify(model.api)}>,\n`;
 		}
 
 		output += `\t},\n`;
@@ -2348,9 +2366,12 @@ export const MODELS = {
 	output += `} as const;
 `;
 
-	// Write file
+	// Write files
 	writeFileSync(join(packageRoot, "src/models.generated.ts"), output);
 	console.log("Generated src/models.generated.ts");
+
+	writeFileSync(join(packageRoot, "src/models.generated.json"), `${JSON.stringify(providers, null, 2)}\n`);
+	console.log("Generated src/models.generated.json");
 
 	// Print statistics
 	const totalModels = allModels.length;
@@ -2366,4 +2387,4 @@ export const MODELS = {
 }
 
 // Run the generator
-generateModels().catch(console.error);
+await generateModels();

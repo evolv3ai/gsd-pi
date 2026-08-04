@@ -4,10 +4,25 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, test } from "vitest";
+import { isModelsCatalog } from "../src/model-catalog.ts";
 import { calculateCost } from "../src/models.ts";
 import { MODELS } from "../src/models.generated.ts";
 
 describe("models.generated.ts", () => {
+	test("models.generated.json mirrors the complete generated catalog", () => {
+		// allow-source-grep: reads the generated JSON data snapshot (manifest output), not source, to verify it mirrors MODELS
+		const snapshot = JSON.parse(readFileSync(join(import.meta.dirname, "../src/models.generated.json"), "utf8"));
+
+		expect(snapshot).toEqual(MODELS);
+	});
+
+	test("models.generated.json satisfies catalog validation", () => {
+		// allow-source-grep: reads the generated JSON data snapshot (manifest output), not source, to validate its shape
+		const snapshot = JSON.parse(readFileSync(join(import.meta.dirname, "../src/models.generated.json"), "utf8"));
+
+		expect(isModelsCatalog(snapshot)).toBe(true);
+	});
+
 	test("does not include floating-point precision artifacts in cost literals", () => {
 		// allow-source-grep: generated catalog is data output; this test guards numeric literal formatting only
 		const generated = readFileSync(join(import.meta.dirname, "../src/models.generated.ts"), "utf8");

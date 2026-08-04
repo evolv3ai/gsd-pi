@@ -20,10 +20,6 @@ import type { ExtensionBindings, ToolDefinitionEntry } from "./agent-session-typ
 import type { SessionStartEvent } from "@gsd/pi-coding-agent/core/extensions/index.js";
 import type { AgentSessionHost } from "./agent-session-host.js";
 
-function normalizeSkillFilterName(name: string): string {
-	return name.trim().toLowerCase();
-}
-
 const extensionUiStreamBridgedAgents = new WeakSet<Agent>();
 
 export class AgentSessionExtensionsModule {
@@ -541,24 +537,18 @@ export class AgentSessionExtensionsModule {
 		const loaderAppendSystemPrompt = this.host.resourceLoader.getAppendSystemPrompt();
 		const appendSystemPrompt =
 			loaderAppendSystemPrompt.length > 0 ? loaderAppendSystemPrompt.join("\n\n") : undefined;
-		const loadedSkills = this.host.resourceLoader.getSkills().skills;
 		const loadedContextFiles = this.host.resourceLoader.getAgentsFiles().agentsFiles;
 
+		// Skills are discovered on-demand via read tool — no longer embedded
+		// in the system prompt (~29KB saved per request). No skillFilter needed.
 		this.host._baseSystemPromptOptions = {
 			cwd: this.host._cwd,
-			skills: loadedSkills,
 			contextFiles: loadedContextFiles,
 			customPrompt: loaderSystemPrompt,
 			appendSystemPrompt,
 			selectedTools: validToolNames,
 			toolSnippets,
 			promptGuidelines,
-			skillFilter: (skill) => {
-				const visible = this.host._visibleSkillNames;
-				if (visible === undefined) return true;
-				const skillName = normalizeSkillFilterName(skill.name);
-				return visible.some((name) => normalizeSkillFilterName(name) === skillName);
-			},
 		};
 		return buildSystemPrompt(this.host._baseSystemPromptOptions);
 	}

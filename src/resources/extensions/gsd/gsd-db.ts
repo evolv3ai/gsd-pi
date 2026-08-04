@@ -499,7 +499,7 @@ export function setSliceSketchFlag(milestoneId: string, sliceId: string, isSketc
 
 export function upsertSlicePlanning(milestoneId: string, sliceId: string, planning: Partial<SlicePlanningRecord>): void {
   if (!getDbOrNull()!) throw new GSDError(GSD_STALE_STATE, "gsd-db: No database open");
-  transaction(() => getDbOrNull()!.prepare(
+  const result = transaction(() => getDbOrNull()!.prepare(
     `UPDATE slices SET
       goal = COALESCE(:goal, goal),
       success_criteria = COALESCE(:success_criteria, success_criteria),
@@ -517,7 +517,19 @@ export function upsertSlicePlanning(milestoneId: string, sliceId: string, planni
     ":integration_closure": planning.integrationClosure ?? null,
     ":observability_impact": planning.observabilityImpact ?? null,
     ":target_repositories": planning.targetRepositories ? JSON.stringify(planning.targetRepositories) : null,
-  }));
+  })) as { changes?: number };
+
+  // #1565: an UPDATE that matches no row is not a successful upsert. Without
+  // this check gsd_plan_slice reports "Planned slice S04 (M004)" and writes the
+  // PLAN file even though no slice row exists for that milestone id — planning
+  // state then silently diverges from the DB (and the drift detector later
+  // blocks on the orphaned plan file). Fail loudly instead.
+  if ((result.changes ?? 0) === 0) {
+    throw new GSDError(
+      GSD_STALE_STATE,
+      `gsd-db: no slice row for ${milestoneId}/${sliceId} — slice planning update affected 0 rows`,
+    );
+  }
 }
 
 export function insertTask(t: {

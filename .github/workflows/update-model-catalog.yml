@@ -1,0 +1,188 @@
+# Weekly refresh of the generated model catalog in packages/pi-ai
+# (src/models.generated.ts, plus src/models.generated.json once the generator
+# emits it). Opens a bot PR with the diff so the change ships through normal
+# review + CI instead of an unreviewed push to main.
+#
+# Token note: PRs opened with the default GITHUB_TOKEN do not trigger CI
+# workflow runs, so this follows the repo's release-bot convention and requires
+# the RELEASE_PAT secret.
+name: Update model catalog
+
+on:
+  schedule:
+    # Tuesday 09:17 UTC — off-peak minute, outside the top/half hour.
+    - cron: "17 9 * * 2"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: update-model-catalog
+  cancel-in-progress: false
+
+jobs:
+  refresh:
+    name: refresh-model-catalog
+    if: github.repository == 'open-gsd/gsd-pi'
+    timeout-minutes: 20
+    runs-on: blacksmith-4vcpu-ubuntu-2404
+
+    steps:
+      - name: Require release token
+        env:
+          RELEASE_PAT: ${{ secrets.RELEASE_PAT }}
+        run: |
+          set -euo pipefail
+          if [ -z "$RELEASE_PAT" ]; then
+            echo "::error::RELEASE_PAT is required to open a bot PR that triggers CI" >&2
+            exit 1
+          fi
+
+      - name: Checkout main
+        uses: actions/checkout@v7
+        with:
+          ref: main
+          token: ${{ secrets.RELEASE_PAT }}
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v5.0.0
+        with:
+          version: 10.12.1
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: "24"
+          cache: "pnpm"
+
+      - name: Install dependencies
+        env:
+          ELECTRON_SKIP_BINARY_DOWNLOAD: '1'
+          PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: '1'
+          GSD_SKIP_RTK_INSTALL: '1'
+          GSD_SKIP_DEP_REPAIR: '1'
+        run: pnpm install --frozen-lockfile
+
+      # Count providers/models before regenerating. Prefer the JSON artifact
+      # (exact parse) once the generator emits it; fall back to counting
+      # entries in the generated TypeScript.
+      - name: Snapshot catalog counts (before)
+        id: before
+        shell: bash
+        env:
+          CATALOG_DIR: packages/pi-ai/src
+        run: node packages/pi-ai/scripts/model-catalog-counts.mjs "$CATALOG_DIR" >> "$GITHUB_OUTPUT"
+
+      - name: Regenerate model catalog
+        run: pnpm --filter @gsd/pi-ai run generate-models
+
+      - name: Snapshot catalog counts (after)
+        id: after
+        shell: bash
+        env:
+          CATALOG_DIR: packages/pi-ai/src
+        run: node packages/pi-ai/scripts/model-catalog-counts.mjs "$CATALOG_DIR" >> "$GITHUB_OUTPUT"
+
+      - name: Detect suspicious catalog shrinkage
+        id: shrinkage
+        shell: bash
+        env:
+          BEFORE_PROVIDER_COUNTS: ${{ steps.before.outputs.provider_counts }}
+          AFTER_PROVIDER_COUNTS: ${{ steps.after.outputs.provider_counts }}
+        run: |
+          node packages/pi-ai/scripts/model-catalog-shrinkage.mjs \
+            "$BEFORE_PROVIDER_COUNTS" "$AFTER_PROVIDER_COUNTS" >> "$GITHUB_OUTPUT"
+
+      - name: Commit, push, and open refresh PR
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.RELEASE_PAT }}
+          BEFORE_PROVIDERS: ${{ steps.before.outputs.providers }}
+          BEFORE_MODELS: ${{ steps.before.outputs.models }}
+          AFTER_PROVIDERS: ${{ steps.after.outputs.providers }}
+          AFTER_MODELS: ${{ steps.after.outputs.models }}
+          SUSPICIOUS_SHRINKAGE: ${{ steps.shrinkage.outputs.suspicious }}
+          SHRUNK_PROVIDERS: ${{ steps.shrinkage.outputs.providers }}
+        run: |
+          set -euo pipefail
+
+          BRANCH="bot/model-catalog-refresh"
+          PR_URL="$(gh pr list --base main --head "$BRANCH" --state open \
+            --json isCrossRepository,headRepositoryOwner,url |
+            node packages/pi-ai/scripts/select-model-catalog-pr.mjs "$GITHUB_REPOSITORY_OWNER")"
+
+          if [ -z "$(git status --porcelain)" ]; then
+            if [ -n "$PR_URL" ]; then
+              gh pr close "$PR_URL" --delete-branch
+              echo "Closed stale refresh PR: ${PR_URL}"
+            else
+              echo "Catalog already fresh"
+            fi
+            exit 0
+          fi
+
+          if [ "$SUSPICIOUS_SHRINKAGE" = "true" ] && [ -n "$PR_URL" ]; then
+            AUTO_MERGE_ENABLED="$(gh pr view "$PR_URL" --json autoMergeRequest --jq '.autoMergeRequest != null')"
+            if [ "$AUTO_MERGE_ENABLED" = "true" ]; then
+              gh pr merge --disable-auto "$PR_URL"
+            fi
+          fi
+
+          git status --porcelain
+
+          REMOTE_BRANCH_SHA="$(git ls-remote --heads origin "refs/heads/${BRANCH}" | cut -f1)"
+
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git checkout -B "$BRANCH"
+          git add packages/pi-ai/src/models.generated.ts
+          JSON_CATALOG="packages/pi-ai/src/models.generated.json"
+          if [ -f "$JSON_CATALOG" ] || git ls-files --error-unmatch "$JSON_CATALOG" >/dev/null 2>&1; then
+            git add -A "$JSON_CATALOG"
+          fi
+          git commit -m "chore(models): refresh generated model catalog"
+          if [ -n "$REMOTE_BRANCH_SHA" ]; then
+            git push --force-with-lease="refs/heads/${BRANCH}:${REMOTE_BRANCH_SHA}" origin "$BRANCH"
+          else
+            git push origin "$BRANCH"
+          fi
+
+          BODY_FILE="$(mktemp)"
+          {
+            if [ "$SUSPICIOUS_SHRINKAGE" = "true" ]; then
+              echo "> [!WARNING]"
+              echo "> Suspicious catalog shrinkage detected; human review is required."
+              echo "> Providers losing more than 50% of their models: ${SHRUNK_PROVIDERS}"
+              echo
+            fi
+            echo "## Model catalog refresh"
+            echo
+            echo "| | before | after |"
+            echo "| --- | ---: | ---: |"
+            echo "| providers | ${BEFORE_PROVIDERS} | ${AFTER_PROVIDERS} |"
+            echo "| models | ${BEFORE_MODELS} | ${AFTER_MODELS} |"
+            echo
+            echo "Regenerated via \`pnpm --filter @gsd/pi-ai run generate-models\`"
+            echo "(models.dev, OpenRouter, Vercel AI Gateway)."
+            echo
+            echo "Machine-generated by the \`update-model-catalog\` workflow"
+            echo "(run #${GITHUB_RUN_NUMBER})."
+          } > "$BODY_FILE"
+
+          if [ -z "$PR_URL" ]; then
+            PR_URL="$(gh pr create --base main --head "$BRANCH" \
+              --title "chore(models): refresh generated model catalog" \
+              --body-file "$BODY_FILE")"
+            echo "Opened PR: ${PR_URL}"
+          else
+            gh pr edit "$PR_URL" --body-file "$BODY_FILE"
+            echo "Updated PR: ${PR_URL}"
+          fi
+
+          if [ "$SUSPICIOUS_SHRINKAGE" = "true" ]; then
+            echo "Suspicious catalog shrinkage detected; auto-merge disabled and human review required"
+          elif ! gh pr merge --auto --squash "$PR_URL"; then
+            echo "auto-merge unavailable; leaving PR for manual review"
+          fi

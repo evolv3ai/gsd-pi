@@ -888,8 +888,9 @@ export async function autoLoop(
           unitId: iterData.unitId,
         });
         if (unitPhaseResult.action === "break") {
+          const breakReason = unitPhaseResult.reason ?? "unit-break";
           customDispatchSettled = settleDispatchIfNeeded(customDispatchSettled, () =>
-            settleDispatchFailed(customDispatchId, "unit-break", {
+            settleDispatchFailed(customDispatchId, breakReason, {
               markFailed: markDispatchFailed,
               logWriteFailure: logDispatchLedgerWriteFailure,
             }));
@@ -898,12 +899,12 @@ export async function autoLoop(
           }
           finishIncompleteIteration({
             status: "stopped",
-            reason: unitPhaseResult.reason ?? "unit-break",
+            reason: breakReason,
             unitType: iterData.unitType,
             unitId: iterData.unitId,
             failureClass: "execution",
           });
-          finishTurn("stopped", "execution", "unit-break");
+          finishTurn("stopped", "execution", breakReason);
           break;
         }
         if (unitPhaseResult.action === "retry") {
@@ -1599,19 +1600,20 @@ export async function autoLoop(
         restoreTaskHostVerificationContext(ic, iterData.unitType, iterData.unitId);
       }
       if (unitPhaseResult.action === "break") {
+        const breakReason = unitPhaseResult.reason ?? "unit-break";
         dispatchSettled = settleDispatchIfNeeded(dispatchSettled, () =>
-          settleDispatchFailed(dispatchId, "unit-break", {
+          settleDispatchFailed(dispatchId, breakReason, {
             markFailed: markDispatchFailed,
             logWriteFailure: logDispatchLedgerWriteFailure,
           }));
         finishIncompleteIteration({
           status: "stopped",
-          reason: unitPhaseResult.reason ?? "unit-break",
+          reason: breakReason,
           unitType: iterData.unitType,
           unitId: iterData.unitId,
           failureClass: "execution",
         });
-        finishTurn("stopped", "execution", "unit-break");
+        finishTurn("stopped", "execution", breakReason);
         break;
       }
       if (unitPhaseResult.action === "retry") {

@@ -58,7 +58,7 @@ describe("AgentSessionExtensionsModule", () => {
     assert.equal(received?.extensionUIContext, uiContext);
   });
 
-  test("matches visible skills case-insensitively when rebuilding the prompt", () => {
+  test("skills are no longer embedded in the system prompt (discovered on-demand)", () => {
     const host = {
       _cwd: "/tmp/project",
       _toolRegistry: new Map([["read", {}]]),
@@ -80,8 +80,11 @@ describe("AgentSessionExtensionsModule", () => {
 
     const prompt = new AgentSessionExtensionsModule(host as any).rebuildSystemPrompt(["read"]);
 
-    assert.match(prompt, /<name>Review-Skill<\/name>/);
+    // Skills are discovered on-demand via the read tool — no longer embedded
+    // in the system prompt (~29KB saved per request).
+    assert.doesNotMatch(prompt, /<name>Review-Skill<\/name>/);
     assert.doesNotMatch(prompt, /<name>other-skill<\/name>/);
+    assert.doesNotMatch(prompt, /<available_skills>/);
   });
 });
 

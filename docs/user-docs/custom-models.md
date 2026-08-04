@@ -11,6 +11,7 @@ Add custom providers and models (Ollama, vLLM, LM Studio, proxies) via `~/.gsd/a
 - [Model Configuration](#model-configuration)
 - [Overriding Built-in Providers](#overriding-built-in-providers)
 - [Per-model Overrides](#per-model-overrides)
+- [Updating the Model Catalog](#updating-the-model-catalog)
 - [OpenAI Compatibility](#openai-compatibility)
 
 ## Minimal Example
@@ -267,6 +268,24 @@ Behavior notes:
 - Unknown model IDs are ignored.
 - You can combine provider-level `baseUrl`/`headers` with `modelOverrides`.
 - If `models` is also defined for a provider, custom models are merged after built-in overrides. A custom model with the same `id` replaces the overridden built-in model entry.
+
+## Updating the Model Catalog
+
+Run `gsd update --models` to fetch the latest published model catalog without a full npm upgrade:
+
+```bash
+gsd update --models
+```
+
+The command downloads the current generated catalog snapshot from the gsd-pi repository's `main` branch and stores it as a versioned JSON overlay at `~/.gsd/agent/models-catalog.json`. The flag is standalone; a trailing value is rejected.
+
+At startup, models resolve in precedence order (lowest to highest):
+
+1. **Bundled catalog** shipped with the installed GSD version.
+2. **Overlay** from `~/.gsd/agent/models-catalog.json` — replaces bundled entries with the same provider + model `id` and adds new models and providers.
+3. **`models.json`** (this file) — custom providers, custom models, and `modelOverrides` always take highest precedence and are never modified by the update.
+
+This delivers new models, pricing, and context-window updates as they are published, without upgrading GSD itself. The overlay is replaced atomically only after a complete catalog passes validation, so a download, validation, or write failure leaves an existing overlay unchanged. If the overlay is missing or malformed, it is ignored and startup continues with the bundled catalog and `models.json`.
 
 ## OpenAI Compatibility
 

@@ -2047,6 +2047,36 @@ test("ADR-017: synthetic parallel-research slice directory is ignored", async (t
   assert.equal(result.repaired.some((record) => record.kind === "disk-slice-id-divergence"), false);
 });
 
+test("#1565: unique-suffix DB milestone id resolves slices planned under the filesystem id", async (t) => {
+  const base = mkdtempSync(join(tmpdir(), "gsd-suffix-id-drift-"));
+  t.after(() => cleanup(base));
+
+  const phaseDir = join(base, ".gsd", "phases", "04-t76mxm-new-milestone-m004-t76mxm");
+  mkdirSync(phaseDir, { recursive: true });
+  writeFileSync(join(phaseDir, "04-04-PLAN.md"), "# Plan S04\n");
+
+  openDatabase(join(base, ".gsd", "gsd.db"));
+  // gsd_plan_milestone stored the unique-suffix row; later units planned slices
+  // under the short filesystem-derived id that findMilestoneIds() returns for
+  // this phase dir, which reconciliation had imported as its own milestone row.
+  insertMilestone({ id: "M004-t76mxm", title: "Milestone", status: "active" });
+  insertMilestone({ id: "M004", title: "Milestone", status: "active" });
+  insertSlice({ id: "S04", milestoneId: "M004", title: "Slice", status: "pending" });
+
+  const result = await reconcileBeforeDispatch(base, {
+    invalidateStateCache: () => {},
+    deriveState: async () =>
+      makeState({ activeMilestone: { id: "M004-t76mxm", title: "Milestone" } }),
+  });
+
+  assert.equal(result.ok, true);
+  assert.equal(
+    result.blockers.join("\n").includes("references unknown S04"),
+    false,
+    "plan file for a slice stored under the filesystem id must not be flagged as unknown",
+  );
+});
+
 // ─── #5707: caller closure (reconcileBeforeSpawn) ────────────────────────────
 
 test("ADR-017 (#5707): reconcileBeforeSpawn returns ok=true on clean reconciliation", async () => {

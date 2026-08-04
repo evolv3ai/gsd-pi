@@ -111,6 +111,10 @@ Override specific model settings without redefining the entire model:
 }
 ```
 
+## Updating the Model Catalog
+
+See the [authoritative model catalog update guide](../../docs/user-docs/custom-models.md#updating-the-model-catalog) for the command, precedence, and failure behavior.
+
 ## Cost Tracking
 
 For accurate cost tracking with custom models, add the `cost` field (per million tokens):

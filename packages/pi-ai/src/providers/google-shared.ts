@@ -4,6 +4,7 @@
 
 import { type Content, FinishReason, FunctionCallingConfigMode, type Part } from "@google/genai";
 import type { Context, ImageContent, Model, StopReason, TextContent, Tool } from "../types.js";
+import { sanitizeToolSchema } from "../utils/sanitize-tool-schema.js";
 import { sanitizeSurrogates } from "../utils/sanitize-unicode.js";
 import { transformMessagesWithReport } from "./transform-messages.js";
 
@@ -697,15 +698,31 @@ export function convertTools(
 	if (tools.length === 0) return undefined;
 	return [
 		{
-			functionDeclarations: tools.map((tool) => ({
-				name: tool.name,
-				description: tool.description,
-				...(useParameters
-					? {
-							parameters: toClaudeInputSchemaRoot(tool.parameters as unknown),
-						}
-					: { parametersJsonSchema: sanitizeForOpenApi(tool.parameters as unknown) }),
-			})),
+			functionDeclarations: tools.map((tool) => {
+				if (useParameters) {
+					// Legacy OpenAPI `parameters` field (OpenAPI 3.03 Schema).
+					// Used for Cloud Code Assist with Claude models where the API
+					// translates `parameters` into Anthropic's `input_schema`.
+					return {
+						name: tool.name,
+						description: tool.description,
+						parameters: sanitizeToolSchema(
+							toClaudeInputSchemaRoot(tool.parameters as unknown),
+						),
+					};
+				}
+				// Full JSON Schema via `parametersJsonSchema` — supports anyOf,
+				// oneOf, const, etc. Sanitize to remove fields unsupported by
+				// Cloud Code Assist (patternProperties, const→enum, etc.), then
+				// strip verbose metadata for payload size reduction.
+				return {
+					name: tool.name,
+					description: tool.description,
+					parametersJsonSchema: sanitizeToolSchema(
+						sanitizeForOpenApi(tool.parameters as unknown),
+					),
+				};
+			}),
 		},
 	];
 }

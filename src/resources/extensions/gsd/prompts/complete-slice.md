@@ -40,7 +40,7 @@ Use `subagent` only when useful: reviewer, security, or tester. Apply findings b
    - Do not read source code, run `gsd_exec`, invoke subagents, or do implementation/planning work after the first `gsd_task_reopen` or `gsd_replan_slice` handoff call.
    - Terminal reopen sequence: call `gsd_task_reopen`; after success, final text may only be: "Slice {{sliceId}} needs execution follow-up."
    - Terminal replan sequence: call `gsd_replan_slice` once; after it succeeds, final text may only be: "Slice {{sliceId}} needs execution follow-up."
-6. Task summaries use a flat file layout under `tasks/` such as `T01-SUMMARY.md`, not inside per-task subdirectories like `tasks/T01/SUMMARY.md`. Never use `tasks/*/SUMMARY.md`.
+6. On DB-authoritative projects task summaries live in the database and `.gsd/milestones/<MID>/slices/<SID>/` does not exist on disk. When a legacy on-disk layout is present, task summaries use a flat file layout under `tasks/` such as `T01-SUMMARY.md`, not inside per-task subdirectories like `tasks/T01/SUMMARY.md`. Never use `tasks/*/SUMMARY.md`.
 7. If observability/diagnostics were planned, verify them unless the slice is simple.
 8. Address every Gate to Close. Q8 = **Operational Readiness**: health signal, failure signal, recovery, monitoring gaps. Omit empty sections.
 9. If requirement status changed, call `gsd_requirement_update`; do not write `.gsd/REQUIREMENTS.md` directly.
@@ -54,7 +54,7 @@ Use `subagent` only when useful: reviewer, security, or tester. Apply findings b
 
 **Autonomous execution:** no human is available. Do not call `ask_user_questions` or `secure_env_collect`; make reasonable assumptions and document them.
 
-**File system safety:** to re-read task summaries, use `find .gsd/milestones/{{milestoneId}}/slices/{{sliceId}}/tasks -name "*-SUMMARY.md"`. Never pass `{{slicePath}}` or any directory path directly to the `read` tool.
+**File system safety:** task summary excerpts are already inlined above; prefer them, or `gsd_milestone_status`, before touching the filesystem. Only if the legacy on-disk layout is needed, use `find .gsd/milestones/{{milestoneId}}/slices/{{sliceId}}/tasks -name "*-SUMMARY.md" 2>/dev/null || true` — the guard keeps the command from exiting 1 on DB-authoritative projects where that directory never exists. Never pass `{{slicePath}}` or any directory path directly to the `read` tool.
 
 **You MUST call `gsd_slice_complete` after verification passes. If not, MUST call `gsd_task_reopen` or `gsd_replan_slice`. Never finish this unit with plain text only.**
 

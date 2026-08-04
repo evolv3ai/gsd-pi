@@ -10,7 +10,14 @@ export const { getLinkablePackages } = require('./workspace-manifest.cjs');
 
 export const TEST_RE = /\.(?:test|spec)\.(?:ts|tsx|mjs|js|cjs)$/;
 export const SRC_RE = /\.(?:ts|tsx|mjs|js)$/;
-export const SKIP_DIRS = new Set(['node_modules', 'dist', 'dist-test', '.cache', 'templates']);
+// `worktrees` covers the checkouts that nest inside the repo (.worktrees/,
+// .claude/worktrees/, .gsd-worktrees/): their copies of every test file are
+// not this checkout's tests, and counting them buries the audit in tens of
+// thousands of phantom "unwired" entries locally.
+export const SKIP_DIRS = new Set([
+  'node_modules', 'dist', 'dist-test', '.cache', 'templates',
+  'worktrees', '.worktrees', '.gsd-worktrees',
+]);
 
 export const UNIT_EXTENSION_GLOBS = new Set([
   'gsd',
@@ -37,6 +44,10 @@ export const INTEGRATION_EXTENSION_GLOBS = new Set([
 ]);
 
 export const SOURCE_ROOTS = ['src', 'packages', 'scripts', 'web', 'studio', 'vscode-extension'];
+
+// Archived material is kept for provenance only: nothing imports it and no
+// runner executes it, so it must not register as live test or source surface.
+export const ARCHIVED_PATH_PREFIXES = ['scripts/archive/'];
 
 export const AUXILIARY_TEST_SCRIPTS = new Set([
   'test:browser-tools',
@@ -69,12 +80,18 @@ export function walk(dir, cb, skip = SKIP_DIRS) {
   }
 }
 
+export function isArchivedPath(path) {
+  const p = normalize(path);
+  return ARCHIVED_PATH_PREFIXES.some((prefix) => p.startsWith(prefix));
+}
+
 export function collectTestFiles(root) {
   const files = [];
   walk(root, (full) => {
-    if (TEST_RE.test(full)) {
-      files.push(normalize(relative(root, full)));
-    }
+    if (!TEST_RE.test(full)) return;
+    const rel = normalize(relative(root, full));
+    if (isArchivedPath(rel)) return;
+    files.push(rel);
   });
   return files.sort();
 }
@@ -185,6 +202,7 @@ export function collectSourceFiles(root, roots = SOURCE_ROOTS) {
     walk(dir, (full) => {
       const rel = normalize(relative(root, full));
       if (!isSourceFile(rel)) return;
+      if (isArchivedPath(rel)) return;
       if (rel.includes('/tests/') && !rel.startsWith('packages/')) return;
       if (rel.includes('/integration/') && rel.startsWith('src/')) return;
       files.push(rel);

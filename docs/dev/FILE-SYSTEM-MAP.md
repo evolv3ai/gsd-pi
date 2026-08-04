@@ -528,7 +528,6 @@
 | gsd/debug-logger.ts | GSD Workflow | Debug output and verbose logging |
 | gsd/commands.ts | Commands | Main command dispatcher |
 | gsd/commands-handlers.ts | Commands | Command-specific handlers |
-| gsd/commands-bootstrap.ts | Commands | Bootstrap and initialization commands |
 | gsd/commands-config.ts | Commands, Config | Configuration management commands |
 | gsd/commands-extensions.ts | Commands, Extensions | Extension discovery and management |
 | gsd/commands-inspect.ts | Commands, Doctor/Diagnostics | Database and state inspection tools |
@@ -550,7 +549,6 @@
 | gsd/notifications.ts | GSD Workflow | User notification and messaging |
 | gsd/guidance.ts | GSD Workflow, Doctor/Diagnostics | Single catalog mapping typed findings (recovery kinds, milestone blockers, doctor issue codes, crash unit classes) to remediation prose |
 | gsd/stop-notice.ts | Auto Engine, Headless Mode | Single owner of auto/step-mode stop/pause notice vocabulary — formatters and headless exit-code classifiers |
-| gsd/triage-ui.ts | GSD Workflow | Triage interface for issue categorization |
 | gsd/guided-flow.ts | GSD Workflow | User-guided workflow orchestration |
 | gsd/env-utils.ts | GSD Workflow | Environment variable utilities |
 | gsd/git-constants.ts | GSD Workflow | Git-related constants and paths |
@@ -975,6 +973,7 @@ package and refreshes stale or incomplete managed copies.
 | scripts/generate-changelog.mjs | Build System | Changelog generator from commits |
 | scripts/update-changelog.mjs | Build System | Changelog updater |
 | scripts/version-stamp.mjs | Build System | Version timestamp generator |
+| scripts/validate-mcp-server-tarball.mjs | Build System, MCP Server/Client | Standalone MCP package validation |
 | scripts/validate-pack.sh | Build System | Package validation script |
 | scripts/validate-pack.js | Build System | Package validation (Node.js) |
 | scripts/install-pi-global.js | Build System | Global installation helper |

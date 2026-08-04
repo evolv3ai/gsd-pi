@@ -8,7 +8,7 @@
 import { existsSync, readdirSync, realpathSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, isAbsolute, join, relative, resolve } from "node:path";
-import { pathToFileURL } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { z } from "zod";
 import {
   WORKFLOW_TOOL_NAMES as CONTRACT_WORKFLOW_TOOL_NAMES,
@@ -945,6 +945,32 @@ function getWorkflowExecutorModuleCandidates(env: NodeJS.ProcessEnv = process.en
   return [...new Set(candidates)];
 }
 
+export function hasWorkflowToolBridgeConfiguration(
+  env: NodeJS.ProcessEnv = process.env,
+  moduleExists: (modulePath: string) => boolean = existsSync,
+): boolean {
+  if (
+    env.GSD_WORKFLOW_EXECUTORS_MODULE?.trim()
+    || env.GSD_WORKFLOW_WRITE_GATE_MODULE?.trim()
+  ) {
+    return true;
+  }
+
+  // Workflow tools need BOTH co-located bridges (executors + write gate), so
+  // each module must resolve to at least one existing candidate. A partial
+  // checkout with only one of them must report "not configured" rather than
+  // enabling workflow tools and then failing warmWorkflowToolBridges().
+  const localModuleCandidateGroups = [
+    buildBridgeImportCandidates("../../../src/resources/extensions/gsd/tools/workflow-tool-executors.js"),
+    buildBridgeImportCandidates("../../../src/resources/extensions/gsd/mcp-bridge.js"),
+  ];
+  return localModuleCandidateGroups.every((candidates) =>
+    candidates.some((candidate) =>
+      moduleExists(fileURLToPath(new URL(candidate, import.meta.url)))
+    )
+  );
+}
+
 async function getWorkflowToolExecutors(): Promise<WorkflowToolExecutors> {
   if (!workflowToolExecutorsPromise) {
     workflowToolExecutorsPromise = (async () => {
@@ -974,10 +1000,11 @@ async function getWorkflowToolExecutors(): Promise<WorkflowToolExecutors> {
 
 /**
  * Eagerly load and shape-check the workflow executor and write-gate bridges.
- * The stdio CLI awaits this at startup so a broken bridge fails the spawn
- * with an actionable error instead of presenting an available-looking tool
- * surface that errors on the first call. Shares the cached promises the tool
- * handlers use, so a successful warm-up also removes first-call import latency.
+ * When workflow tools are enabled, the stdio CLI awaits this before connecting
+ * so a broken bridge fails the spawn with an actionable error instead of
+ * presenting an available-looking tool surface that errors on the first call.
+ * Shares the cached promises the tool handlers use, so a successful warm-up
+ * also removes first-call import latency.
  */
 export async function warmWorkflowToolBridges(): Promise<void> {
   await getWorkflowToolExecutors();

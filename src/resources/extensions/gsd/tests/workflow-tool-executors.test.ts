@@ -403,6 +403,44 @@ test("executeTaskComplete derives missing verification from evidence", async () 
   }
 });
 
+test("executeTaskComplete treats a malformed duplicate for an already-complete task as idempotent", async () => {
+  const base = makeTmpBase();
+  try {
+    openTestDb(base);
+    const planDir = join(base, ".gsd", "milestones", "M001", "slices", "S01");
+    mkdirSync(planDir, { recursive: true });
+    writeFileSync(join(planDir, "S01-PLAN.md"), "# S01\n\n- [ ] **T01: Demo** `est:5m`\n");
+
+    const first = await inProjectDir(base, () => executeTaskComplete({
+      milestoneId: "M001",
+      sliceId: "S01",
+      taskId: "T01",
+      oneLiner: "Completed task",
+      narrative: "Did the work",
+      verification: "npm test",
+    }, base));
+    assert.ok(!first.isError, "the well-formed call should complete the task");
+
+    // Parallel duplicate from the same turn: no verification, no evidence, no
+    // blocker. Must not trip the fail-closed guard now that the task is closed.
+    const duplicate = await inProjectDir(base, () => executeTaskComplete({
+      milestoneId: "M001",
+      sliceId: "S01",
+      taskId: "T01",
+      oneLiner: "Completed task",
+      narrative: "Did the work",
+    } as Parameters<typeof executeTaskComplete>[0], base));
+
+    assert.ok(!duplicate.isError, "duplicate completion should not be an error");
+    assert.equal(duplicate.details.error, undefined);
+    assert.equal(duplicate.details.duplicate, true);
+    assert.equal(duplicate.details.summaryPath, first.details.summaryPath);
+  } finally {
+    closeDatabase();
+    cleanup(base);
+  }
+});
+
 test("executeTaskComplete creates the legacy escalation directory and surfaces its metadata", async () => {
   const base = makeTmpBase();
   try {

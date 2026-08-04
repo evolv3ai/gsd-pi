@@ -9,6 +9,7 @@ import {
 	type Context,
 	getModels,
 	getProviders,
+	isModelsCatalogOverlay,
 	type KnownProvider,
 	type Model,
 	type OAuthProviderInterface,
@@ -20,7 +21,7 @@ import {
 } from "@gsd/pi-ai";
 import { registerOAuthProvider, resetOAuthProviders } from "@gsd/pi-ai/oauth";
 import { existsSync, readFileSync } from "fs";
-import { join } from "path";
+import { dirname, join } from "path";
 import { type Static, Type } from "typebox";
 import { Compile } from "typebox/compile";
 import type { TLocalizedValidationError } from "typebox/error";
@@ -283,6 +284,12 @@ function emptyCustomModelsResult(error?: string): CustomModelsResult {
 	return { models: [], overrides: new Map(), modelOverrides: new Map(), error };
 }
 
+/** Result of loading the models catalog overlay */
+interface ModelsCatalogOverlayResult {
+	models: Model<Api>[];
+	error: string | undefined;
+}
+
 function mergeCompat(
 	baseCompat: Model<Api>["compat"],
 	overrideCompat: ModelOverride["compat"],
@@ -420,7 +427,17 @@ export class ModelRegistry {
 			// Keep built-in models even if custom models failed to load
 		}
 
-		const builtInModels = this.loadBuiltInModels(overrides, modelOverrides);
+		// Load the user-level catalog overlay (models-catalog.json), a sibling of
+		// models.json. Precedence: bundled catalog < overlay < models.json.
+		const overlay = this._modelsJsonPath
+			? this.loadModelsCatalogOverlay(join(dirname(this._modelsJsonPath), "models-catalog.json"))
+			: { models: [], error: undefined };
+
+		if (overlay.error) {
+			this.loadError = this.loadError ? `${this.loadError}\n\n${overlay.error}` : overlay.error;
+		}
+
+		const builtInModels = this.loadBuiltInModels(overrides, modelOverrides, overlay.models);
 		let combined = this.mergeCustomModels(builtInModels, customModels);
 
 		// Let OAuth providers modify their models (e.g., update baseUrl)
@@ -434,36 +451,40 @@ export class ModelRegistry {
 		this.models = combined;
 	}
 
-	/** Load built-in models and apply provider/model overrides */
+	/** Load built-in models, layer the catalog overlay on top, then apply provider/model overrides */
 	private loadBuiltInModels(
 		overrides: Map<string, ProviderOverride>,
 		modelOverrides: Map<string, Map<string, ModelOverride>>,
+		catalogOverlayModels: Model<Api>[] = [],
 	): Model<Api>[] {
-		return getProviders().flatMap((provider) => {
-			const models = getModels(provider as Parameters<typeof getModels>[0]) as Model<Api>[];
-			const providerOverride = overrides.get(provider);
-			const perModelOverrides = modelOverrides.get(provider);
+		const bundledModels = getProviders().flatMap(
+			(provider) => getModels(provider as Parameters<typeof getModels>[0]) as Model<Api>[],
+		);
+		// Overlay entries replace bundled entries with the same provider+id
+		// wholesale and add entries that don't exist in the bundled catalog.
+		const baseModels = this.mergeCustomModels(bundledModels, catalogOverlayModels);
 
-			return models.map((m) => {
-				let model = m;
+		return baseModels.map((m) => {
+			let model = m;
+			const providerOverride = overrides.get(m.provider);
+			const perModelOverrides = modelOverrides.get(m.provider);
 
-				// Apply provider-level baseUrl/headers/compat override
-				if (providerOverride) {
-					model = {
-						...model,
-						baseUrl: providerOverride.baseUrl ?? model.baseUrl,
-						compat: mergeCompat(model.compat, providerOverride.compat),
-					};
-				}
+			// Apply provider-level baseUrl/headers/compat override
+			if (providerOverride) {
+				model = {
+					...model,
+					baseUrl: providerOverride.baseUrl ?? model.baseUrl,
+					compat: mergeCompat(model.compat, providerOverride.compat),
+				};
+			}
 
-				// Apply per-model override
-				const modelOverride = perModelOverrides?.get(m.id);
-				if (modelOverride) {
-					model = applyModelOverride(model, modelOverride);
-				}
+			// Apply per-model override
+			const modelOverride = perModelOverrides?.get(m.id);
+			if (modelOverride) {
+				model = applyModelOverride(model, modelOverride);
+			}
 
-				return model;
-			});
+			return model;
 		});
 	}
 
@@ -545,6 +566,46 @@ export class ModelRegistry {
 			return emptyCustomModelsResult(
 				`Failed to load models.json: ${error instanceof Error ? error.message : error}\n\nFile: ${modelsJsonPath}`,
 			);
+		}
+	}
+
+	/**
+	 * Load the user-level models catalog overlay (models-catalog.json).
+	 * Missing file is a no-op; malformed JSON or wrong shape is reported as a
+	 * non-fatal error and the overlay is ignored, never breaking startup.
+	 */
+	private loadModelsCatalogOverlay(overlayPath: string): ModelsCatalogOverlayResult {
+		if (!existsSync(overlayPath)) {
+			return { models: [], error: undefined };
+		}
+
+		try {
+			const content = readFileSync(overlayPath, "utf-8");
+			const parsed = JSON.parse(stripJsonComments(content)) as unknown;
+
+			if (!isModelsCatalogOverlay(parsed)) {
+				return {
+					models: [],
+					error: `Invalid models-catalog.json: expected { "version": 1, "models": { "<provider>": { "<modelId>": <Model> } } }\n\nFile: ${overlayPath}`,
+				};
+			}
+
+			const models: Model<Api>[] = [];
+			for (const providerModels of Object.values(parsed.models)) {
+				for (const modelDef of Object.values(providerModels)) {
+					models.push(modelDef);
+				}
+			}
+
+			return { models, error: undefined };
+		} catch (error) {
+			if (error instanceof SyntaxError) {
+				return { models: [], error: `Failed to parse models-catalog.json: ${error.message}\n\nFile: ${overlayPath}` };
+			}
+			return {
+				models: [],
+				error: `Failed to load models-catalog.json: ${error instanceof Error ? error.message : error}\n\nFile: ${overlayPath}`,
+			};
 		}
 	}
 

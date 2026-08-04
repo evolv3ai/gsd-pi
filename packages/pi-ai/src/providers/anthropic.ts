@@ -32,6 +32,7 @@ import type {
 import { AssistantMessageEventStream } from "../utils/event-stream.js";
 import { headersToRecord } from "../utils/headers.js";
 import { parseJsonWithRepair, parseStreamingJson } from "../utils/json-parse.js";
+import { sanitizeToolSchema } from "../utils/sanitize-tool-schema.js";
 import { sanitizeSurrogates } from "../utils/sanitize-unicode.js";
 
 import { resolveCloudflareBaseUrl } from "./cloudflare.js";
@@ -1257,14 +1258,19 @@ function convertTools(
 	const sanitizeInputSchema = requiresMoonshotToolSchemaSanitizationAnthropic(model);
 
 	return tools.map((tool, index) => {
-		const schema = tool.parameters as { properties?: unknown; required?: string[] };
-		const inputSchema = sanitizeInputSchema
-			? sanitizeSchemaForMoonshot(tool.parameters)
-			: {
-					type: "object" as const,
-					properties: schema.properties ?? {},
-					required: schema.required ?? [],
-				};
+		let inputSchema: unknown;
+		if (sanitizeInputSchema) {
+			inputSchema = sanitizeSchemaForMoonshot(tool.parameters);
+		} else {
+			const schema = tool.parameters as { properties?: unknown; required?: string[] };
+			inputSchema = {
+				type: "object" as const,
+				properties: schema.properties ?? {},
+				required: schema.required ?? [],
+			};
+		}
+		// Always strip verbose metadata to reduce payload size
+		inputSchema = sanitizeToolSchema(inputSchema);
 
 		return {
 			name: isOAuthToken ? toClaudeCodeName(tool.name) : tool.name,

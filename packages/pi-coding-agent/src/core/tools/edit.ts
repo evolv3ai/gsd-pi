@@ -294,8 +294,7 @@ export function createEditToolDefinition(
 	return {
 		name: "edit",
 		label: "edit",
-		description:
-			"Edit a single file using exact text replacement. Each edits[].oldText must match a unique region of the original file. Do not pad oldText with large unchanged regions to connect distant changes.",
+			description: "Edit a file using exact text replacement. Each edits[].oldText must match uniquely in the file.",
 		promptSnippet:
 			"Make precise file edits with exact text replacement, including multiple disjoint edits in one call",
 		promptGuidelines: [

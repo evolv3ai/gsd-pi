@@ -53,6 +53,7 @@ import {
   getSlice,
   setSliceSketchFlag,
   deleteDecisionById,
+  upsertSlicePlanning,
 } from '../gsd-db.ts';
 import { MigrationBackupError } from '../db-migration-backup.ts';
 import { _resetLogs, peekLogs, setStderrLoggingEnabled } from '../workflow-logger.ts';
@@ -1398,6 +1399,36 @@ describe('gsd-db', () => {
       assert.strictEqual(status.lastPhase, null, 'lastPhase cleared on successful open');
       closeDatabase();
       try { fs.unlinkSync(corruptPath); } catch { /* best effort */ }
+    });
+  });
+
+  // ─── #1565: upsertSlicePlanning zero-row guard ─────────────────────────────
+
+  describe('#1565: upsertSlicePlanning affected-row assertion', () => {
+    test('throws when no slice row matches the milestone/slice id', () => {
+      openDatabase(':memory:');
+      insertMilestone({ id: 'M004-t76mxm', title: 'Milestone', status: 'active' });
+      insertMilestone({ id: 'M004', title: 'Milestone', status: 'active' });
+      insertSlice({ id: 'S04', milestoneId: 'M004', title: 'Slice', status: 'pending' });
+
+      assert.throws(
+        () => upsertSlicePlanning('M004-t76mxm', 'S04', { goal: 'ship it' }),
+        /no slice row for M004-t76mxm\/S04/,
+      );
+      closeDatabase();
+    });
+
+    test('succeeds when the slice row exists', () => {
+      openDatabase(':memory:');
+      insertMilestone({ id: 'M004', title: 'Milestone', status: 'active' });
+      insertSlice({ id: 'S04', milestoneId: 'M004', title: 'Slice', status: 'pending' });
+
+      upsertSlicePlanning('M004', 'S04', { goal: 'ship it' });
+      const row = _getAdapter()!
+        .prepare('SELECT goal FROM slices WHERE milestone_id = :mid AND id = :sid')
+        .get({ ':mid': 'M004', ':sid': 'S04' }) as { goal: string };
+      assert.strictEqual(row.goal, 'ship it');
+      closeDatabase();
     });
   });
 

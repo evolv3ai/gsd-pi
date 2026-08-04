@@ -7,7 +7,7 @@ import type {
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { agentDir, sessionsDir, authFilePath } from './app-paths.js'
-import { initResources, buildResourceLoader, getNewerManagedResourceVersion } from './resource-loader.js'
+import { initResources, buildResourceLoader, bareResourceLoaderOptions, getNewerManagedResourceVersion } from './resource-loader.js'
 import { ensureManagedTools } from './tool-bootstrap.js'
 import { loadStoredEnvKeys } from './wizard.js'
 import { migratePiCredentials } from './pi-migration.js'
@@ -253,7 +253,7 @@ function ensureRtkBootstrap(): Promise<void> {
 // actually upgrade out of the broken state. See shouldBypassManagedResourceMismatchGate.
 if (shouldBypassManagedResourceMismatchGate(cliFlags.messages[0])) {
   const { runUpdate } = await import('./update-cmd.js')
-  await runUpdate({ target: cliFlags.messages[1] })
+  await runUpdate({ target: cliFlags.messages[1], extraArgs: cliFlags.messages.slice(2) })
   process.exit(0)
 }
 
@@ -720,6 +720,8 @@ if (isPrintMode) {
     cwd: process.cwd(),
     additionalExtensionPaths: cliFlags.extensions.length > 0 ? cliFlags.extensions : undefined,
     appendSystemPrompt: appendSystemPrompt ? [appendSystemPrompt] : undefined,
+    // --bare (forwarded by headless/MCP to this RPC child): minimal context.
+    ...bareResourceLoaderOptions(cliFlags.bare),
   })
   await resourceLoader.reload()
   markStartup('resourceLoader.reload')
@@ -854,6 +856,7 @@ markStartup('initResources')
 // starting it early shaves ~50-200ms off interactive startup.
 const resourceLoader = await buildResourceLoader(agentDir, {
   additionalExtensionPaths: cliFlags.extensions.length > 0 ? cliFlags.extensions : undefined,
+  bare: cliFlags.bare,
 })
 const resourceLoadPromise = resourceLoader.reload()
 

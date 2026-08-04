@@ -416,7 +416,7 @@ The following commands are sent directly in your **Telegram chat** to a configur
 | `gsd --help` (`-h`) | Print help and exit |
 | `gsd sessions` | Interactive session picker — list all saved sessions for the current directory and choose one to resume |
 | `gsd config` | Set up global API keys for search and docs tools (saved to `~/.gsd/agent/auth.json`, applies to all projects). See [Global API Keys](./configuration.md#global-api-keys-gsd-config). |
-| `gsd update` | Update GSD to the latest version (use `gsd update browser` to update the managed browser) |
+| `gsd update` | Update GSD to the latest version (use `gsd update browser` to update the managed browser, or [`gsd update --models`](./custom-models.md#updating-the-model-catalog) to refresh the model catalog) |
 | `gsd install <source>` | Install an extension from npm, git, a URL, or a local path (e.g. `gsd install npm:@foo/bar`) |
 | `gsd remove <source>` | Remove a previously installed extension |
 | `gsd list` | List installed extensions |

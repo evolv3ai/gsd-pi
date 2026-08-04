@@ -258,6 +258,26 @@ describe("verification-gate: discovery", () => {
     assert.deepStrictEqual(result.commands, []);
   });
 
+  test("prose with shell metachars and a leading command word → task-plan-prose (issue #1567)", () => {
+    const result = discoverCommands({
+      taskPlanVerify:
+        "git log shows the scaffold commit authored by Name <user@example.com> on branch x; " +
+        "git ls-files piped to grep for .gsd/ returns nothing; platformio.ini is at repo root.",
+      cwd: tmp,
+    });
+    assert.equal(result.source, "task-plan-prose");
+    assert.deepStrictEqual(result.commands, []);
+  });
+
+  test("genuinely unsafe command still suppresses the prose fallback", () => {
+    const result = discoverCommands({
+      taskPlanVerify: "npm run test > results.txt",
+      cwd: tmp,
+    });
+    assert.equal(result.source, "none");
+    assert.deepStrictEqual(result.commands, []);
+  });
+
   test("valid command in taskPlanVerify still works", () => {
     const result = discoverCommands({
       taskPlanVerify: "npm run lint && npm run test",
@@ -754,6 +774,28 @@ test("isLikelyCommand: prose descriptions are rejected", () => {
   assert.equal(isLikelyCommand("All tests pass and coverage is above 80%"), false);
   assert.equal(isLikelyCommand("File should exist in the output directory"), false);
   assert.equal(isLikelyCommand("Build succeeds without errors or warnings"), false);
+});
+
+test("isLikelyCommand: known command word followed by English prose is rejected (issue #1567)", () => {
+  assert.equal(isLikelyCommand("git log shows the scaffold commit on branch x"), false);
+  assert.equal(isLikelyCommand("make builds the firmware without errors at repo root"), false);
+  // Real commands starting with the same words stay command-like
+  assert.equal(isLikelyCommand("git log --oneline -5"), true);
+  assert.equal(isLikelyCommand("git ls-files packages/core/src"), true);
+  assert.equal(isLikelyCommand("cargo build --release"), true);
+  assert.equal(isLikelyCommand("npm run test:unit"), true);
+});
+
+test("isLikelyCommand: prose markers exclude operand-shaped words", () => {
+  // Bare prepositions and single letters are plausible operands, so they must
+  // not flip a flagless command to prose.
+  assert.equal(isLikelyCommand("git diff on master"), true);
+  assert.equal(isLikelyCommand("git checkout at release"), true);
+  assert.equal(isLikelyCommand("make install into build"), true);
+  assert.equal(isLikelyCommand("cat a b c"), true);
+  assert.equal(isLikelyCommand("go build with tags"), true);
+  // Articles, copulas, and prose verbs still identify descriptions
+  assert.equal(isLikelyCommand("git log shows the commit on master"), false);
 });
 
 test("isLikelyCommand: non-ASCII prose descriptions are rejected", () => {

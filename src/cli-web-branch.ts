@@ -20,6 +20,8 @@ export interface CliFlags {
   extensions: string[]
   appendSystemPrompt?: string
   tools?: string[]
+  /** --bare: minimal context — suppress CLAUDE.md/AGENTS.md, user skills, prompt templates, themes */
+  bare?: boolean
   messages: string[]
   web?: boolean
   /** Optional project path for web mode: `gsd --web <path>` or `gsd web start <path>` */
@@ -136,6 +138,10 @@ export function parseCliArgs(argv: string[]): CliFlags {
       flags.appendSystemPrompt = args[++i]
     } else if (arg === '--tools' && i + 1 < args.length) {
       flags.tools = args[++i].split(',')
+    } else if (arg === '--bare') {
+      // Forwarded by the headless orchestrator / MCP session manager to the
+      // spawned RPC child (`--mode rpc ... --bare`); must parse at top level.
+      flags.bare = true
     } else if (arg === '--list-models') {
       flags.listModels = (i + 1 < args.length && !args[i + 1].startsWith('-')) ? args[++i] : true
     } else if (!arg.startsWith('--') && !arg.startsWith('-')) {

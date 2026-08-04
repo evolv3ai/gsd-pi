@@ -28,16 +28,16 @@ See [CHANGELOG.md](./CHANGELOG.md) for release-by-release fixes and [Legacy Rele
 ## Latest Release Highlights
 
 <!-- release-highlights:start -->
-Latest release: **v1.11.0**
+Latest release: **v1.12.0**
 
-- **gsd:** Add canonical database foundation (#1426).
-- **gsd-cloud:** Add macOS cloud monitor app and runtime telemetry (#1399).
-- **Added:** Add workflow authority baseline gate (#1422).
-- **issue:** [Feature]: Support using pi-llama-cpp for local models (#1425).
-- **issue:** [Bug]: GPT-5.6 ships as the nonexistent bare `gpt-5.6` slug — the real routable models are gpt-5.6-sol/terra/luna (#1424).
-- **issue:** Fix(doctor): artifact_file_missing false positive for active-worktree artifacts; checkbox_db_status_divergence regression on plan-slice re-dispatch (#1420).
-- **issue:** Planning_subagents should support user-defined planning agents.
-- **issue:** Auto-verification.js writes VERIFY.json to legacy tasks/ subdir in flat-phase projects.
+- **Added:** Add gsd update --models to refresh the model catalog without a full upgrade.
+- **web:** Per-surface nav registry with host-supplied entries.
+- **gsd:** Add forward import repair.
+- **gsd:** Add crash-safe live import restore.
+- **gsd:** Add pure restore assessment.
+- **gsd:** Add typed authority cutover.
+- **gsd:** Add authority recovery receipt schema.
+- **gsd:** Route explicit recover through import application.
 
 <!-- release-highlights:end -->
 

@@ -39,7 +39,7 @@
 | Command | Description |
 |---------|-------------|
 | `gsd config` | Set up global API keys |
-| `gsd update` | Update to the latest version |
+| `gsd update` | See the [authoritative CLI reference](../../docs/user-docs/commands.md#cli-flags) for update targets |
 
 ## Headless Mode
 

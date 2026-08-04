@@ -95,12 +95,18 @@ describe("constrainScreenshot — cached sharp value is a callable factory", () 
 		__setSharpForTesting(undefined);
 	});
 
-	// Regression guard for the sharp typing contract: getSharp() caches
-	// `(await import("sharp")).default` — the callable constructor — not the
-	// module namespace. If the cached value were the namespace (as it was typed
-	// before sharp 0.35.x's ESM types were adopted), `sharp(buffer)` would not be
-	// callable. This test injects a plain function factory and asserts the code
-	// invokes it as a function, without needing the native sharp binary.
+	// Regression guard for the sharp typing contract: getSharp() caches the
+	// callable constructor (via resolveSharpFactory) — not the module namespace.
+	// SharpFactory must resolve to that callable regardless of which type surface
+	// module resolution picks: sharp ships both dist/index.d.mts
+	// (`export default sharp`, so the module has a `default` property) and the
+	// legacy lib/index.d.ts (`export = sharp`, so the module *is* the factory).
+	// The conditional `SharpFactory` type indexes into `default` only when it
+	// exists; if it regressed to the module namespace, `sharp(buffer)` would not
+	// be callable. resolveSharpFactory's own unit coverage and the metadata-path
+	// runtime guard live in tests/screenshot-constraints.test.mjs (picked up by
+	// CI); this test instead injects a plain function factory and asserts the
+	// resize-path consumer invokes it as a function, without the native binary.
 	it("invokes the injected sharp factory as a function on the resize path", async () => {
 		const calls = [];
 		const makeInstance = () => ({

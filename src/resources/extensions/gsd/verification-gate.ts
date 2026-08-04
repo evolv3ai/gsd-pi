@@ -97,6 +97,10 @@ export function discoverCommands(options: DiscoverCommandsOptions): DiscoveredCo
         commands.push(normalized);
       } else if (validation.reason === "does not look like a runnable command") {
         hasTaskPlanProse = true;
+      } else if (splitUnquotedStatements(normalized).some(s => !isLikelyCommand(s))) {
+        // Rejected for unsafe syntax, but at least one `;`-separated clause reads
+        // as prose — treat the whole candidate as a description, not a command.
+        hasTaskPlanProse = true;
       } else {
         hasUnsafeTaskPlanCommand = true;
       }
@@ -346,6 +350,52 @@ function hasUnsafeShellSyntax(cmd: string): boolean {
   return false;
 }
 
+/**
+ * Split a candidate string on unquoted `;` into individual statements.
+ * Used to re-classify prose-vs-command for candidates rejected as unsafe.
+ */
+function splitUnquotedStatements(cmd: string): string[] {
+  const statements: string[] = [];
+  let current = "";
+  let inSingle = false;
+  let inDouble = false;
+  let escaped = false;
+
+  for (let i = 0; i < cmd.length; i += 1) {
+    const ch = cmd[i];
+
+    if (escaped) {
+      current += ch;
+      escaped = false;
+      continue;
+    }
+    if (ch === "\\" && !inSingle) {
+      current += ch;
+      escaped = true;
+      continue;
+    }
+    if (ch === "'" && !inDouble) {
+      inSingle = !inSingle;
+      current += ch;
+      continue;
+    }
+    if (ch === "\"" && !inSingle) {
+      inDouble = !inDouble;
+      current += ch;
+      continue;
+    }
+    if (ch === ";" && !inSingle && !inDouble) {
+      statements.push(current);
+      current = "";
+      continue;
+    }
+    current += ch;
+  }
+
+  statements.push(current);
+  return statements.map(s => s.trim()).filter(Boolean);
+}
+
 function splitLeadingShellWords(cmd: string): string[] {
   const words: string[] = [];
   let current = "";
@@ -451,6 +501,32 @@ const KNOWN_COMMAND_PREFIXES = new Set([
 ]);
 
 /**
+ * English words that never appear as a shell sub-command or operand but are
+ * common in descriptive prose. Deliberately excludes:
+ *   - words that double as sub-commands (`build`, `test`, `show`, `run`, ...)
+ *   - bare prepositions and single letters, which are plausible operands —
+ *     `git diff on master` and `cat a b c` must stay commands
+ */
+const PROSE_MARKER_WORDS = new Set([
+  "an", "the", "is", "are", "was", "were", "should", "shows", "showing",
+  "returns", "contains", "confirms", "exists", "piped", "authored",
+  "that", "which", "whether", "there", "its", "their",
+]);
+
+/**
+ * Does a known-command-prefixed string read as prose rather than a command?
+ * True when there is no flag/sub-command structure but there are English
+ * function words — e.g. "git log shows the scaffold commit authored by ...".
+ */
+function readsAsProseAfterCommandWord(tokens: string[]): boolean {
+  if (tokens.length < 4) return false;
+  if (tokens.some(t => t.startsWith("-"))) return false;
+  return tokens
+    .slice(1)
+    .some(t => PROSE_MARKER_WORDS.has(t.toLowerCase().replace(/[.,;:!?]+$/, "")));
+}
+
+/**
  * Heuristic check: does this string look like an executable shell command
  * rather than a prose description?
  *
@@ -479,8 +555,10 @@ export function isLikelyCommand(cmd: string): boolean {
   const effectiveTokens = firstToken === "!" ? tokens.slice(1) : tokens;
   if (firstToken === "!" && effectiveTokens.length === 0) return false;
 
-  // Known command prefix → definitely a command
-  if (KNOWN_COMMAND_PREFIXES.has(effectiveFirstToken)) return true;
+  // Known command prefix → command, unless the rest reads as English prose
+  if (KNOWN_COMMAND_PREFIXES.has(effectiveFirstToken)) {
+    return !readsAsProseAfterCommandWord(effectiveTokens);
+  }
 
   // Path-like first token → command
   if (effectiveFirstToken.startsWith("/") || effectiveFirstToken.startsWith("./") || effectiveFirstToken.startsWith("../")) return true;

@@ -717,6 +717,10 @@ export class ExtensionRunner {
 			this.assertActive();
 			return this.reloadHandler();
 		};
+		context.getAllTools = () => {
+			this.assertActive();
+			return this.runtime.getAllTools();
+		};
 		return context;
 	}
 

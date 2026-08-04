@@ -27,7 +27,7 @@ describe("buildSystemPrompt", () => {
 	});
 
 	describe("default tools", () => {
-		test("includes all default tools when snippets are provided", () => {
+		test("includes all default tools as comma-separated list (no per-tool descriptions)", () => {
 			const prompt = buildSystemPrompt({
 				toolSnippets: {
 					read: "Read file contents",
@@ -39,28 +39,25 @@ describe("buildSystemPrompt", () => {
 				skills: [],
 				cwd: process.cwd(),
 			});
-
-			expect(prompt).toContain("- read:");
-			expect(prompt).toContain("- bash:");
-			expect(prompt).toContain("- edit:");
-			expect(prompt).toContain("- write:");
+			// Tool descriptions are stripped from the system prompt to reduce payload size.
+			// Models receive tool-level descriptions via the API tool definitions.
+			expect(prompt).toContain("- read, bash, edit, write");
 		});
 
-		test("instructs models to resolve pi docs and examples under absolute base paths", () => {
+		test("includes compressed pi docs reference line", () => {
 			const prompt = buildSystemPrompt({
 				contextFiles: [],
 				skills: [],
 				cwd: process.cwd(),
 			});
 
-			expect(prompt).toContain(
-				"- When reading pi docs or examples, resolve docs/... under Additional docs and examples/... under Examples, not the current working directory",
-			);
+			expect(prompt).toContain("When asked about pi internals");
+			expect(prompt).toContain("follow cross-references to related docs");
 		});
 	});
 
 	describe("custom tool snippets", () => {
-		test("includes custom tools in available tools section when promptSnippet is provided", () => {
+		test("includes custom tools as comma-separated names (no per-tool descriptions)", () => {
 			const prompt = buildSystemPrompt({
 				selectedTools: ["read", "dynamic_tool"],
 				toolSnippets: {
@@ -71,10 +68,12 @@ describe("buildSystemPrompt", () => {
 				cwd: process.cwd(),
 			});
 
-			expect(prompt).toContain("- dynamic_tool: Run dynamic test behavior");
+			// Tool descriptions are stripped; only names appear in comma-separated list.
+			expect(prompt).toContain("- read, dynamic_tool");
+			expect(prompt).not.toContain("Run dynamic test behavior");
 		});
 
-		test("omits custom tools from available tools section when promptSnippet is not provided", () => {
+		test("all selectedTools appear in comma-separated list regardless of snippets", () => {
 			const prompt = buildSystemPrompt({
 				selectedTools: ["read", "dynamic_tool"],
 				contextFiles: [],
@@ -82,7 +81,8 @@ describe("buildSystemPrompt", () => {
 				cwd: process.cwd(),
 			});
 
-			expect(prompt).not.toContain("dynamic_tool");
+			// With comma-separated format, all selected tools appear regardless of snippets.
+			expect(prompt).toContain("- read, dynamic_tool");
 		});
 	});
 
