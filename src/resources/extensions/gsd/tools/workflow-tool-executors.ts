@@ -89,7 +89,7 @@ import { flushWorkflowProjections } from "../projection-flush.js";
 import { loadEffectiveGSDPreferences } from "../preferences.js";
 import { parseProject } from "../schemas/parsers.js";
 import { autoSession, getAutoRuntimeSnapshot, isAutoActive } from "../auto-runtime-state.js";
-import { renderPlanFromDb } from "../markdown-renderer.js";
+import { renderPlanFromDb, writeTaskSummaryProjection } from "../markdown-renderer.js";
 import { readUnitHarnessAbort, type UnitHarnessAbortRecord } from "../unit-runtime.js";
 import {
   prepareUatRun,
@@ -436,6 +436,7 @@ async function mirrorArtifactToActiveWorktreeProjection(
   basePath: string,
   relativePath: string,
   content: string,
+  required: boolean = false,
 ): Promise<void> {
   const contract = resolveGsdPathContract(basePath);
   if (!contract.worktreeGsd) return;
@@ -451,6 +452,7 @@ async function mirrorArtifactToActiveWorktreeProjection(
     logWarning("tool", `gsd_summary_save worktree projection mirror failed: ${(err as Error).message}`, {
       path: relativePath,
     });
+    if (required) throw err;
   }
 }
 
@@ -673,18 +675,33 @@ export async function executeSummarySave(
       }
     }
 
-    await saveArtifactToDb(
-      {
-        path: relativePath,
-        artifact_type: params.artifact_type,
-        content: contentToSave,
-        milestone_id: isRootArtifact ? undefined : params.milestone_id,
-        slice_id: isRootArtifact ? undefined : params.slice_id,
-        task_id: isRootArtifact ? undefined : params.task_id,
-      },
-      basePath,
-    );
-    await mirrorArtifactToActiveWorktreeProjection(basePath, relativePath, contentToSave);
+    const isTaskSummary = params.artifact_type === "SUMMARY" && !!params.milestone_id && !!params.slice_id && !!params.task_id;
+    let projectedContent = contentToSave;
+    if (isTaskSummary) {
+      const contract = resolveGsdPathContract(basePath);
+      const projection = await writeTaskSummaryProjection(
+        contract.projectRoot,
+        params.milestone_id!,
+        params.slice_id!,
+        params.task_id!,
+        contentToSave,
+      );
+      relativePath = projection.artifactPath;
+      projectedContent = projection.content;
+    } else {
+      await saveArtifactToDb(
+        {
+          path: relativePath,
+          artifact_type: params.artifact_type,
+          content: contentToSave,
+          milestone_id: isRootArtifact ? undefined : params.milestone_id,
+          slice_id: isRootArtifact ? undefined : params.slice_id,
+          task_id: isRootArtifact ? undefined : params.task_id,
+        },
+        basePath,
+      );
+    }
+    await mirrorArtifactToActiveWorktreeProjection(basePath, relativePath, projectedContent, isTaskSummary);
 
     if (params.artifact_type === "CONTEXT" && !params.task_id) {
       try {
@@ -1873,16 +1890,34 @@ export async function executePlanMilestone(
       const heldLease = getMilestoneLease(params.milestoneId);
       if (heldLease?.status === "held" && Date.parse(heldLease.expires_at) > Date.now()) {
         const holder = getAutoWorker(heldLease.worker_id);
-        // Let the one-shot claim path recover stale same-process worker rows.
-        const projectRoot = normalizeRealPath(basePath);
-        const isOurAutoLease = isAutoActive() && heldLease.worker_id === autoSession.workerId;
-        const holderIsOneShotReentrantPeer = !isAutoActive()
-          && !!holder
+        // Let one-shot and resumed-auto claim paths recover stale
+        // same-process worker rows.
+        const activeAutoWorkerId = isAutoActive() ? autoSession.workerId : null;
+        const isOurAutoLease = !!activeAutoWorkerId && heldLease.worker_id === activeAutoWorkerId;
+        const holderIsReentrantPeer = !!holder
           && holder.host === hostname()
-          && holder.pid === process.pid
-          && holder.project_root_realpath === projectRoot;
-        if (holder?.status === "active" && !isOurAutoLease && !holderIsOneShotReentrantPeer) {
-          return milestoneLeaseConflictResult(params.milestoneId, heldLease.worker_id, heldLease.expires_at);
+          && holder.pid === process.pid;
+        if (holder?.status === "active" && !isOurAutoLease) {
+          if (!holderIsReentrantPeer) {
+            return milestoneLeaseConflictResult(params.milestoneId, heldLease.worker_id, heldLease.expires_at);
+          }
+
+          if (isAutoActive()) {
+            // Active auto without a worker row (e.g. after a setup-race pause
+            // detached it) cannot reclaim here, and the one-shot claim path
+            // below is skipped while auto is active. Fail closed instead of
+            // planning against a lease we do not own.
+            if (!activeAutoWorkerId) {
+              return milestoneLeaseConflictResult(params.milestoneId, heldLease.worker_id, heldLease.expires_at);
+            }
+            const reclaimed = claimMilestoneLease(activeAutoWorkerId, params.milestoneId);
+            if (!reclaimed.ok) {
+              return milestoneLeaseConflictResult(params.milestoneId, reclaimed.byWorker, reclaimed.expiresAt);
+            }
+            autoSession.currentMilestoneId = params.milestoneId;
+            autoSession.milestoneLeaseToken = reclaimed.token;
+            markWorkerStopping(heldLease.worker_id);
+          }
         }
       }
     }
@@ -2186,6 +2221,7 @@ export async function executeMilestoneStatus(
         status: milestone.status,
         createdAt: milestone.created_at,
         completedAt: milestone.completed_at,
+        dependsOn: milestone.depends_on ?? [],
         sliceCount: slices.length,
         slices,
       };

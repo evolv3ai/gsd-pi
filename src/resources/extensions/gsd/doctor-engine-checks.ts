@@ -7,8 +7,10 @@ import {
   getAllMilestones,
   getMilestoneSlices,
   getSliceTasks,
+  findWrongKindLifecycleProjectionHeads,
   isDbAvailable,
   isMemoriesFtsAvailable,
+  repairWrongKindLifecycleProjections,
   _getAdapter,
 } from "./gsd-db.js";
 import { MEMORIES_FTS_REBUILT_KEY } from "./db-memory-fts-schema.js";
@@ -28,9 +30,10 @@ import { workflowEventLogPath } from "./workflow-event-ledger.js";
 import { readEvents } from "./workflow-events.js";
 import { flushWorkflowProjections } from "./projection-flush.js";
 import { parseRoadmapSlices } from "./roadmap-slices.js";
-import { parsePlan } from "./parsers-legacy.js";
+import { parseProjectionPlan } from "./schemas/parsers.js";
 import { LAYOUT_SEGMENTS } from "./layout-policy.js";
 import { resolveCanonicalMilestoneRoot } from "./worktree-manager.js";
+import { isCanonicalStagedTaskSummaryProjection } from "./task-summary-projection-classification.js";
 
 const USER_AUTHORED_ARTIFACT_TYPES = new Set(["CONTEXT", "RESEARCH"]);
 
@@ -142,11 +145,11 @@ function checkProjectionCheckboxDbStatus(basePath: string, milestoneIds: string[
       if (!planPath || !existsSync(planPath)) continue;
       try {
         const plan = readFileSync(planPath, "utf-8");
-        // parsePlan reads the authoritative task checkboxes (the flat-phase
+        // parseProjectionPlan reads the projection's task checkboxes (the flat-phase
         // <tasks> block / ## Tasks section), so a stray task-style checkbox
         // line elsewhere in PLAN.md (e.g. a Must-Haves or Verification bullet
         // above <tasks>) can no longer hide real drift or fake a divergence.
-        const taskDoneById = new Map(parsePlan(plan).tasks.map((entry) => [entry.id, entry.done]));
+        const taskDoneById = new Map(parseProjectionPlan(plan).tasks.map((entry) => [entry.id, entry.done]));
         for (const task of getSliceTasks(milestoneId, slice.id)) {
           const checkboxDone = taskDoneById.get(task.id);
           if (checkboxDone === undefined) continue;
@@ -355,6 +358,50 @@ function staleArtifactPruneMessage(row: ArtifactRow): string {
     : `pruned stale flat-phase artifact row ${row.path}`;
 }
 
+/**
+ * Detects (and under repair, heals) lifecycle/* projection heads that carry a
+ * non-canonical kind — the durable signature of a project imported by a build
+ * older than the #1659 fix, which enqueued every imported projection as
+ * "markdown". trg_workflow_projection_lineage makes kind immutable per chain,
+ * so such a head wedges slice/task closeout ("projection work must extend the
+ * current logical target head") until the kind is rewritten (#1661).
+ * Exported for direct testing.
+ */
+export function checkLifecycleProjectionKinds(
+  issues: DoctorIssue[],
+  fixesApplied: string[],
+  repair: boolean,
+): void {
+  let heads = findWrongKindLifecycleProjectionHeads();
+  if (heads.length === 0) return;
+  if (repair) {
+    try {
+      for (const repaired of repairWrongKindLifecycleProjections()) {
+        fixesApplied.push(
+          `rewrote projection kind for ${repaired.projectionKey} (${repaired.projectionKind} → ${repaired.expectedKind}) — pre-#1659 legacy import remediation`,
+        );
+      }
+      heads = findWrongKindLifecycleProjectionHeads();
+    } catch {
+      // Non-fatal — fall through and report the unrepaired heads below.
+    }
+  }
+  for (const head of heads) {
+    issues.push({
+      severity: "error",
+      code: "lifecycle_projection_wrong_kind",
+      scope: "project",
+      unitId: head.projectionKey,
+      message:
+        `Projection head ${head.projectionKey} carries kind "${head.projectionKind}" but the canonical lifecycle writer enqueues "${head.expectedKind}". ` +
+        `This project was imported by a pre-#1659 build; slice/task closeout will abort with "projection work must extend the current logical target head" until repaired. ` +
+        `Run \`gsd doctor --fix\` to rewrite the projection chain to its canonical kind.`,
+      file: ".gsd/gsd.db",
+      fixable: true,
+    });
+  }
+}
+
 export async function checkEngineHealth(
   basePath: string,
   issues: DoctorIssue[],
@@ -404,6 +451,14 @@ export async function checkEngineHealth(
         }
       } catch {
         // Non-fatal — memory FTS health check failed
+      }
+
+      // Pre-#1659 legacy import remediation (#1661): wrong-kind lifecycle
+      // projection heads wedge closeout; detect always, rewrite under --fix.
+      try {
+        checkLifecycleProjectionKinds(issues, fixesApplied, options?.repair === true);
+      } catch {
+        // Non-fatal — lifecycle projection kind check failed
       }
 
       // a. Orphaned tasks (task.slice_id points to non-existent slice)
@@ -632,10 +687,11 @@ export async function checkEngineHealth(
       try {
         const rows = adapter
           .prepare(
-            `SELECT a.path, a.artifact_type, a.milestone_id, a.slice_id, a.task_id, a.imported_at,
+            `SELECT a.path, a.artifact_type, a.milestone_id, a.slice_id, a.task_id,
+                    a.full_content, a.imported_at,
                     m.status AS milestone_status,
                     s.status AS slice_status,
-                    t.status AS task_status,
+                    t.status AS task_status, t.full_summary_md AS task_full_summary_md,
                     (SELECT COUNT(*) FROM tasks tt WHERE tt.milestone_id = a.milestone_id AND tt.slice_id = a.slice_id) AS task_count
              FROM artifacts a
              JOIN milestones m ON m.id = a.milestone_id
@@ -650,9 +706,11 @@ export async function checkEngineHealth(
             milestone_id: string;
             slice_id: string | null;
             task_id: string | null;
+            full_content: string;
             imported_at: string | null;
             slice_status: string | null;
             task_status: string | null;
+            task_full_summary_md: string | null;
             task_count: number;
           }>;
 
@@ -664,6 +722,27 @@ export async function checkEngineHealth(
           const isSliceSummary = row.slice_id && !row.task_id && row.slice_status && !["complete", "done", "skipped", "closed"].includes(row.slice_status);
           const isTaskSummary = row.slice_id && row.task_id && (!row.task_status || !["complete", "done", "skipped", "closed"].includes(row.task_status));
           const isTaskArtifactWithoutDbTasks = row.slice_id && row.task_id && Number(row.task_count) === 0;
+          if (
+            isTaskSummary &&
+            row.task_status &&
+            row.slice_id &&
+            row.task_id &&
+            isCanonicalStagedTaskSummaryProjection(basePath, {
+              path: row.path,
+              milestoneId: row.milestone_id,
+              sliceId: row.slice_id,
+              taskId: row.task_id,
+              fullContent: row.full_content,
+            }, {
+              milestoneId: row.milestone_id,
+              sliceId: row.slice_id,
+              taskId: row.task_id,
+              status: row.task_status,
+              fullSummaryMd: row.task_full_summary_md ?? "",
+            })
+          ) {
+            continue;
+          }
           if (!isSliceSummary && !isTaskSummary && !isTaskArtifactWithoutDbTasks) continue;
 
           const unitId = row.task_id

@@ -647,6 +647,44 @@ function seedSucceededVerificationFailure(
   };
 }
 
+test("host Technical Verdict rejects a blank rationale before SQLite persistence", () => {
+  const seeded = seedReadyTask();
+  const claim = claimTaskAttempt({
+    invocation: invocation("blank-rationale/claim"),
+    task: { milestoneId: "M001", sliceId: "S01", taskId: "T01" },
+    workerId: "worker-1",
+    milestoneLeaseToken: 7,
+    coordinationDispatchId: seeded.dispatchId,
+  });
+  settleTaskAttempt({
+    invocation: invocation("blank-rationale/settle"),
+    attemptId: claim.attemptId,
+    outcome: "succeeded",
+    failureClass: "none",
+    summary: "executor produced its result",
+    output: { changedFiles: ["src/task.ts"] },
+  });
+
+  assert.throws(() => recordTaskTechnicalVerdict({
+    invocation: invocation("blank-rationale/verdict"),
+    attemptId: claim.attemptId,
+    testedSourceRevision: "git:current-head",
+    verdict: "fail",
+    rationale: "   ",
+    evidence: {
+      evidenceClass: "command",
+      commandOrTool: "runtime-error-capture",
+      workingDirectory: "/tmp/project",
+      startedAt: "2026-07-13T01:00:00.000Z",
+      endedAt: "2026-07-13T01:00:01.000Z",
+      observation: "failed",
+      durableOutputRef: "db://host-verification/runtime-errors",
+      environment: { source: "bg-shell" },
+    },
+  }), /rationale must not be blank/);
+  assert.equal(count("workflow_technical_verdicts"), 0);
+});
+
 function supersedeFailedVerdict(scope: VerificationFailureScope): void {
   const fence = readDomainOperationFence();
   executeDomainOperation({

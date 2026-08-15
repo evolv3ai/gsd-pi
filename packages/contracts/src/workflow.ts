@@ -296,6 +296,38 @@ export const WORKFLOW_TOOL_CONTRACTS = [
 		writePolicy: "read",
 		auditEvent: "workflow.memory.graph",
 	},
+	{
+		canonicalName: "gsd_requirement_list",
+		aliases: [],
+		schemaId: "workflow.requirement.list",
+		executorId: "executeRequirementList",
+		writePolicy: "read",
+		auditEvent: "workflow.requirement.list",
+	},
+	{
+		canonicalName: "gsd_requirement_get",
+		aliases: [],
+		schemaId: "workflow.requirement.get",
+		executorId: "executeRequirementGet",
+		writePolicy: "read",
+		auditEvent: "workflow.requirement.get",
+	},
+	{
+		canonicalName: "gsd_decision_list",
+		aliases: [],
+		schemaId: "workflow.decision.list",
+		executorId: "executeDecisionList",
+		writePolicy: "read",
+		auditEvent: "workflow.decision.list",
+	},
+	{
+		canonicalName: "gsd_decision_get",
+		aliases: [],
+		schemaId: "workflow.decision.get",
+		executorId: "executeDecisionGet",
+		writePolicy: "read",
+		auditEvent: "workflow.decision.get",
+	},
 ] as const satisfies readonly WorkflowToolContractMetadata[];
 
 /** Literal union of canonical workflow tool names. Typing a name list with this union makes drift from WORKFLOW_TOOL_CONTRACTS a compile error. */
