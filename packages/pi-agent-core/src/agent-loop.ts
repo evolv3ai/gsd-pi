@@ -12,12 +12,18 @@ import {
 	isAgentToolName,
 	isEmptyPathToolArguments,
 	isToolSearchToolName,
-	streamSimple,
 	normalizeToolResultContent,
+	parseStreamingJson,
+	streamSimple,
 	type ToolResultMessage,
 	validateToolArguments,
 } from "@gsd/pi-ai";
 import { resolveAgentTool } from "./resolve-agent-tool.js";
+import {
+	collectValidationErrorFields,
+	decideSchemaOverloadBreaker,
+	narrowedSchemaRetryInstruction,
+} from "./schema-overload-convergence.js";
 import type {
 	AgentContext,
 	AgentEvent,
@@ -185,6 +191,8 @@ async function runLoop(
 	// Check for steering messages at start (user may have typed while waiting)
 	let pendingMessages: AgentMessage[] = (await config.getSteeringMessages?.()) || [];
 	let consecutiveAllToolErrorTurns = 0;
+	let previousValidationFields: string[] = [];
+	let narrowedSchemaRetryGranted = false;
 
 	// Outer loop: continues when queued follow-up messages arrive after agent would stop
 	while (true) {
@@ -242,9 +250,37 @@ async function runLoop(
 					consecutiveAllToolErrorTurns++;
 				} else if (!hasPreparationErrors) {
 					consecutiveAllToolErrorTurns = 0;
+					previousValidationFields = [];
+					narrowedSchemaRetryGranted = false;
 				}
 
-				if (consecutiveAllToolErrorTurns >= MAX_CONSECUTIVE_VALIDATION_FAILURES) {
+				const currentValidationFields = collectValidationErrorFields(
+					toolResults.map(toolResultText),
+				);
+				const overload = decideSchemaOverloadBreaker({
+					consecutive: consecutiveAllToolErrorTurns,
+					cap: MAX_CONSECUTIVE_VALIDATION_FAILURES,
+					previousFields: previousValidationFields,
+					currentFields: currentValidationFields,
+					narrowedRetryGranted: narrowedSchemaRetryGranted,
+				});
+				if (allToolsFailedPreparation) {
+					previousValidationFields = currentValidationFields;
+				}
+
+				if (overload.grantNarrowedRetry) {
+					narrowedSchemaRetryGranted = true;
+					consecutiveAllToolErrorTurns = MAX_CONSECUTIVE_VALIDATION_FAILURES - 1;
+					const retryMessage: AgentMessage = {
+						role: "user",
+						content: [{ type: "text", text: narrowedSchemaRetryInstruction(currentValidationFields) }],
+						timestamp: Date.now(),
+					};
+					currentContext.messages.push(retryMessage);
+					newMessages.push(retryMessage);
+					await emit({ type: "message_start", message: retryMessage });
+					await emit({ type: "message_end", message: retryMessage });
+				} else if (overload.trip) {
 					const stopMessage: AssistantMessage = {
 						role: "assistant",
 						content: [
@@ -380,6 +416,8 @@ async function streamAssistantResponse(
 	});
 
 	let partialMessage: AssistantMessage | null = null;
+	let providerPartialMessage: AssistantMessage | null = null;
+	const partialToolCallJson = new Map<number, string>();
 	let addedPartial = false;
 	let sawStreamActivity = false;
 
@@ -388,36 +426,99 @@ async function streamAssistantResponse(
 			sawStreamActivity = true;
 			markLatency(config, "agent_loop.first_stream_activity", { eventType: event.type });
 		}
+		let shouldEmitUpdate = false;
 		switch (event.type) {
 			case "start":
 				markLatency(config, "agent_loop.assistant_start", {
 					provider: event.partial.provider,
 					model: event.partial.model,
 				});
-				partialMessage = event.partial;
+				providerPartialMessage = event.partial;
+				partialMessage = {
+					...event.partial,
+					content: event.partial.content.map((block) => ({ ...block })),
+				};
 				context.messages.push(partialMessage);
 				addedPartial = true;
-				await emit({ type: "message_start", message: { ...partialMessage } });
+				await emit({ type: "message_start", message: partialMessage });
 				break;
 
 			case "text_start":
+				if (partialMessage) {
+					partialMessage.content[event.contentIndex] = { type: "text", text: "" };
+				}
+				shouldEmitUpdate = true;
+				break;
+
 			case "text_delta":
+				if (partialMessage) {
+					const block = partialMessage.content[event.contentIndex];
+					if (block?.type === "text") block.text += event.delta;
+				}
+				shouldEmitUpdate = true;
+				break;
+
 			case "text_end":
+				if (partialMessage) {
+					const block = partialMessage.content[event.contentIndex];
+					if (block?.type === "text") block.text = event.content;
+				}
+				shouldEmitUpdate = true;
+				break;
+
 			case "thinking_start":
+				if (partialMessage) {
+					partialMessage.content[event.contentIndex] = { type: "thinking", thinking: "" };
+				}
+				shouldEmitUpdate = true;
+				break;
+
 			case "thinking_delta":
+				if (partialMessage) {
+					const block = partialMessage.content[event.contentIndex];
+					if (block?.type === "thinking") block.thinking += event.delta;
+				}
+				shouldEmitUpdate = true;
+				break;
+
 			case "thinking_end":
+				if (partialMessage) {
+					const block = partialMessage.content[event.contentIndex];
+					if (block?.type === "thinking") block.thinking = event.content;
+				}
+				shouldEmitUpdate = true;
+				break;
+
 			case "toolcall_start":
+				if (partialMessage) {
+					const streamedBlock = providerPartialMessage?.content[event.contentIndex];
+					partialMessage.content[event.contentIndex] =
+						streamedBlock?.type === "toolCall"
+							? { ...streamedBlock, arguments: {} }
+							: { type: "toolCall", id: "", name: "", arguments: {} };
+					partialToolCallJson.set(event.contentIndex, "");
+				}
+				shouldEmitUpdate = true;
+				break;
+
 			case "toolcall_delta":
+				if (partialMessage) {
+					const block = partialMessage.content[event.contentIndex];
+					if (block?.type === "toolCall") {
+						const json = (partialToolCallJson.get(event.contentIndex) ?? "") + event.delta;
+						partialToolCallJson.set(event.contentIndex, json);
+						block.arguments = parseStreamingJson(json);
+					}
+				}
+				shouldEmitUpdate = true;
+				break;
+
 			case "toolcall_end":
 				if (partialMessage) {
-					partialMessage = event.partial;
-					context.messages[context.messages.length - 1] = partialMessage;
-					await emit({
-						type: "message_update",
-						assistantMessageEvent: event,
-						message: { ...partialMessage },
-					});
+					partialMessage.content[event.contentIndex] = { ...event.toolCall };
+					partialToolCallJson.delete(event.contentIndex);
 				}
+				shouldEmitUpdate = true;
 				break;
 
 			case "done":
@@ -434,6 +535,15 @@ async function streamAssistantResponse(
 				await emit({ type: "message_end", message: finalMessage });
 				return finalMessage;
 			}
+		}
+
+		if (shouldEmitUpdate && partialMessage) {
+			context.messages[context.messages.length - 1] = partialMessage;
+			await emit({
+				type: "message_update",
+				assistantMessageEvent: event,
+				message: { ...partialMessage },
+			});
 		}
 	}
 
@@ -912,6 +1022,13 @@ async function finalizeExecutedToolCall(
 		result,
 		isError,
 	};
+}
+
+function toolResultText(result: ToolResultMessage): string {
+	return result.content
+		.filter((block): block is { type: "text"; text: string } => block.type === "text")
+		.map((block) => block.text)
+		.join("\n");
 }
 
 function createErrorToolResult(message: string, displayReason?: string): AgentToolResult<any> {

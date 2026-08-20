@@ -17,7 +17,7 @@ import {
   getSlice,
 } from "./gsd-db.js";
 import { renderPlanCheckboxes, renderTaskSummary } from "./markdown-renderer.js";
-import { clearPathCache, resolveTaskFile } from "./paths.js";
+import { clearPathCache, resolveGsdPathContract, resolveTaskFile } from "./paths.js";
 import {
   closeTaskQualityGates,
   type TaskQualityGateContent,
@@ -267,11 +267,21 @@ async function renderTaskSummaryProjection(
   return summaryPath;
 }
 
+async function renderTaskSummaryProjections(
+  basePath: string,
+  task: TaskCompletionIdentity,
+): Promise<string> {
+  const contract = resolveGsdPathContract(basePath);
+  const canonicalPath = await renderTaskSummaryProjection(contract.projectRoot, task);
+  if (!contract.isWorktree || contract.workRoot === contract.projectRoot) return canonicalPath;
+  return renderTaskSummaryProjection(contract.workRoot, task);
+}
+
 async function renderPublishedTaskCompletionProjections(
   basePath: string,
   task: TaskCompletionIdentity,
 ): Promise<string> {
-  const summaryPath = await renderTaskSummaryProjection(basePath, task);
+  const summaryPath = await renderTaskSummaryProjections(basePath, task);
   try {
     const wrotePlan = await renderPlanCheckboxes(basePath, task.milestoneId, task.sliceId);
     if (!wrotePlan) throw new Error("plan projection write returned false");
@@ -319,7 +329,12 @@ export async function stageTaskCompletion(
     stagedTaskCompletion: buildStagedTaskCompletion(input, task),
   });
 
-  const summaryPath = await renderTaskSummaryProjection(input.basePath, input.task);
+  // A blockerDiscovered staging must not project a SUMMARY at all (#1726):
+  // the Attempt failed, so there is no completion to render.
+  let summaryPath = "";
+  if (!blocked) {
+    summaryPath = await renderTaskSummaryProjections(input.basePath, input.task);
+  }
   return {
     status: settlement.status,
     attemptId,

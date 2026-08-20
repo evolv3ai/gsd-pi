@@ -1195,7 +1195,7 @@ export const DISPATCH_RULES: DispatchRule[] = [
     // out 4 parallel subagents (stack, features, architecture, pitfalls).
     // Skipped entirely when user chose "skip" at the research-decision gate.
     name: "deep: pre-planning (research approved, files missing) → research-project",
-    match: async ({ state, basePath, prefs, structuredQuestionsAvailable }) => {
+    match: async ({ state, basePath, prefs, structuredQuestionsAvailable, sessionProvider }) => {
       if (prefs?.planning_depth !== "deep") return null;
       if (state.phase !== "pre-planning" && state.phase !== "needs-discussion") return null;
       const gate = resolveDeepProjectSetupState(prefs, basePath);
@@ -1232,7 +1232,7 @@ export const DISPATCH_RULES: DispatchRule[] = [
         throw err;
       }
       try {
-        const prompt = await researchProjectPromptBuilder(basePath, structuredQuestionsAvailable);
+        const prompt = await researchProjectPromptBuilder(basePath, structuredQuestionsAvailable, sessionProvider);
         return {
           action: "dispatch",
           unitType: "research-project",
@@ -1356,7 +1356,7 @@ export const DISPATCH_RULES: DispatchRule[] = [
     // Keep this rule before the single-slice research rule so the multi-slice
     // path wins whenever 2+ slices are ready.
     name: "planning (multiple slices need research) → parallel-research-slices",
-    match: async ({ state, mid, midTitle, basePath, prefs }) => {
+    match: async ({ state, mid, midTitle, basePath, prefs, sessionProvider }) => {
       if (state.phase !== "planning") return null;
       if (prefs?.phases?.skip_research || prefs?.phases?.skip_slice_research) return null;
       // #4781 phase 2: trivial-scope milestones skip dedicated slice research.
@@ -1411,13 +1411,14 @@ export const DISPATCH_RULES: DispatchRule[] = [
           basePath,
           resolveModelWithFallbacksForUnit("subagent")?.primary,
           resolveThinkingLevelForUnit("subagent"),
+          sessionProvider,
         ),
       };
     },
   },
   {
     name: "planning (no research) → research-slice",
-    match: async ({ state, mid, midTitle, basePath, prefs }) => {
+    match: async ({ state, mid, midTitle, basePath, prefs, sessionProvider }) => {
       if (state.phase !== "planning") return null;
       // Phase skip: skip research when preference or profile says so
       if (prefs?.phases?.skip_research || prefs?.phases?.skip_slice_research)
@@ -1438,6 +1439,7 @@ export const DISPATCH_RULES: DispatchRule[] = [
           sid,
           sTitle,
           basePath,
+          { sessionProvider },
         ),
       };
     },
@@ -1518,22 +1520,9 @@ export const DISPATCH_RULES: DispatchRule[] = [
       const unitId = `${mid}/${sid}`;
       let priorPreExecFailure: { blockingFindings: string[]; verdictExcerpt: string } | undefined;
       if (session?.lastPreExecFailure?.unitId === unitId) {
-        // Circuit breaker: stop re-dispatching after 2 failed retries. The
-        // planner has had multiple attempts with injected failure context and
-        // still cannot produce a valid plan — human review is required.
-        const MAX_PRE_EXEC_RETRIES = 2;
-        const retryCount = session.preExecRetryCount?.get(unitId) ?? 0;
-        if (retryCount >= MAX_PRE_EXEC_RETRIES) {
-          const findings = session.lastPreExecFailure.blockingFindings.join("; ");
-          session.lastPreExecFailure = null;
-          session.preExecRetryCount?.delete(unitId);
-          return {
-            action: "stop",
-            reason: `Pre-execution checks failed ${retryCount} times for ${unitId} — manual intervention required. Blocking findings: ${findings}. Fix the plan manually, then run /gsd auto to resume.`,
-            level: "error",
-            matchedRule: "planning → plan-slice",
-          };
-        }
+        // beginPreExecRepair owns the retry cap and pauses for human review.
+        // If the user resumes, always give the planner the persisted findings;
+        // stopping here would discard the exact repair signal pause preserved.
         priorPreExecFailure = {
           blockingFindings: session.lastPreExecFailure.blockingFindings,
           verdictExcerpt: session.lastPreExecFailure.verdictExcerpt,
@@ -2173,9 +2162,13 @@ function applyLanguageDirectiveToDispatch(
  * regardless. Applied at the dispatch seam so every unit gets it from one place,
  * rather than editing each prompt builder's tail.
  */
-function appendToolAffordanceToDispatch(action: DispatchAction): DispatchAction {
+function appendToolAffordanceToDispatch(
+  action: DispatchAction,
+  basePath?: string,
+  sessionProvider?: string,
+): DispatchAction {
   if (action.action !== "dispatch" || !action.prompt || !action.unitType) return action;
-  const reminder = composeToolAffordanceReminder(action.unitType);
+  const reminder = composeToolAffordanceReminder(action.unitType, basePath, sessionProvider);
   if (!reminder || action.prompt.trimEnd().endsWith(reminder)) return action;
   return { ...action, prompt: `${action.prompt.trimEnd()}\n\n${reminder}` };
 }
@@ -2276,7 +2269,10 @@ export async function resolveDispatch(
         level: "error",
       };
     }
-    return applyLanguageDirectiveToDispatch(appendToolAffordanceToDispatch(action), ctx.prefs);
+    return applyLanguageDirectiveToDispatch(
+      appendToolAffordanceToDispatch(action, dispatchCtx.basePath, dispatchCtx.sessionProvider),
+      ctx.prefs,
+    );
   }
 
   for (const rule of DISPATCH_RULES) {
@@ -2295,7 +2291,10 @@ export async function resolveDispatch(
           matchedRule: rule.name,
         };
       }
-      return applyLanguageDirectiveToDispatch(appendToolAffordanceToDispatch(action), ctx.prefs);
+      return applyLanguageDirectiveToDispatch(
+        appendToolAffordanceToDispatch(action, dispatchCtx.basePath, dispatchCtx.sessionProvider),
+        ctx.prefs,
+      );
     }
   }
 

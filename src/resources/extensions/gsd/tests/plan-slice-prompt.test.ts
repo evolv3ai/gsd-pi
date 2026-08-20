@@ -83,6 +83,8 @@ test("plan-slice prompt: DB-backed tool names survive template substitution", ()
   assert.ok(result.includes("gsd_plan_slice"), "gsd_plan_slice should appear in rendered prompt");
   assert.ok(result.includes("gsd_plan_task"), "gsd_plan_task should appear in rendered prompt");
   assert.ok(result.includes("gsd_decision_save"), "structural decisions should use DB-backed decision tool");
+  assert.ok(result.includes("host tool `capture_thought`"), "planner should use the native capture tool name");
+  assert.doesNotMatch(result, /\bgsd_capture_thought\b/, "planner should not request the unavailable prefixed host tool");
   assert.ok(result.includes("canonical write path"), "canonical write path language should survive substitution");
   assert.doesNotMatch(result, /append them to `.gsd\/DECISIONS\.md`/);
 });
@@ -274,6 +276,7 @@ test("research-slice prompt substitutes skillActivation", () => {
     outputPath: join(fixtureRoot, ".gsd", "milestones", "M001", "slices", "S01", "S01-RESEARCH.md"),
     inlinedContext: "Context",
     dependencySummaries: "",
+    scoutAgentType: "scout",
     skillDiscoveryMode: "manual",
     skillDiscoveryInstructions: " Discover skills manually.",
     skillActivation: "Load slice research skills first.",
@@ -339,6 +342,7 @@ test("guided research slice prompt substitutes skillActivation", () => {
     milestoneId: "M001",
     sliceId: "S01",
     sliceTitle: "Test Slice",
+    scoutAgentType: "scout",
     inlinedTemplates: "Templates",
     skillActivation: "Load guided research skills first.",
   });

@@ -206,7 +206,7 @@ export async function openProjectDbIfPresent(basePath: string): Promise<void> {
   if (!existsSync(gsdDbPath) || isDbAvailable()) return;
 
   const result = openExistingWorkflowDatabase(basePath);
-  if (!result.ok && result.reason === "open-failed") {
+  if (!result.ok && (result.reason === "open-failed" || result.reason === "locked")) {
     logWarning("engine", `gsd-db: failed to open existing database: ${result.error?.message ?? "open failed"}`);
   }
 }
@@ -1071,9 +1071,16 @@ export async function bootstrapAutoSession(
     return false;
   }
 
-  function releaseLockAndReturn(): false {
+  const ownsSessionLockAcquisition = lockResult.reentrant !== true;
+
+  function releaseLockAcquisition(): void {
+    if (!ownsSessionLockAcquisition) return;
     releaseSessionLock(base);
     clearLock(base);
+  }
+
+  function releaseLockAndReturn(): false {
+    releaseLockAcquisition();
     return false;
   }
 
@@ -1220,6 +1227,16 @@ export async function bootstrapAutoSession(
     }
     // Ensure symlink exists (handles fresh projects and post-migration)
     ensureGsdSymlink(base);
+
+    // Acquisition starts before migration so bootstrap is serialized. Once
+    // .gsd points at external state, hand ownership to that physical target
+    // before any later process can observe or contend on the new path.
+    const migratedLockResult = acquireSessionLock(base);
+    if (!migratedLockResult.acquired) {
+      ctx.ui.notify(migratedLockResult.reason, "error");
+      return releaseLockAndReturn();
+    }
+
     openWorkflowDatabase(base);
 
     // Ensure .gitignore has baseline patterns.
@@ -1823,12 +1840,12 @@ export async function bootstrapAutoSession(
     // ── DB lifecycle ──
     const gsdDbPath = resolveProjectRootDbPath(s.basePath);
     const initialDbOpen = openWorkflowDatabase(s.basePath);
-    if (!initialDbOpen.ok && initialDbOpen.reason === "open-failed") {
+    if (!initialDbOpen.ok && (initialDbOpen.reason === "open-failed" || initialDbOpen.reason === "locked")) {
       logError("engine", `failed to initialize project database: ${initialDbOpen.error?.message ?? "open failed"}`);
     }
     if (_shouldAbortBootstrapForUnavailableDbForTest(gsdDbPath, isDbAvailable())) {
       const retryDbOpen = openWorkflowDatabase(s.basePath);
-      if (!retryDbOpen.ok && retryDbOpen.reason === "open-failed") {
+      if (!retryDbOpen.ok && (retryDbOpen.reason === "open-failed" || retryDbOpen.reason === "locked")) {
         logError("engine", `failed to open existing database: ${retryDbOpen.error?.message ?? "open failed"}`);
       }
     }
@@ -1840,7 +1857,9 @@ export async function bootstrapAutoSession(
     // re-dispatches the same task — producing an infinite loop (#2419).
     if (existsSync(gsdDbPath) && !isDbAvailable()) {
       const dbStatus = getWorkflowDatabaseStatus();
-      const phaseHint = dbStatus.lastPhase === "open"
+      const phaseHint = dbStatus.lastPhase === "locked"
+        ? "The database is locked by another GSD process"
+        : dbStatus.lastPhase === "open"
         ? "The database file could not be opened"
         : dbStatus.lastPhase === "initSchema"
           ? "The database schema could not be initialized"
@@ -2060,8 +2079,7 @@ export async function bootstrapAutoSession(
 
     return true;
   } catch (err) {
-    releaseSessionLock(base);
-    clearLock(base);
+    releaseLockAcquisition();
     throw err;
   }
 }

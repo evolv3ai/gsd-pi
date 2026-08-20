@@ -1,4 +1,5 @@
-import { existsSync, readFileSync, statSync } from "node:fs";
+import { existsSync, readFileSync, realpathSync, statSync } from "node:fs";
+import { hostname } from "node:os";
 import { isAbsolute, join, relative, sep } from "node:path";
 
 import type { DoctorIssue } from "./doctor-types.js";
@@ -34,8 +35,117 @@ import { parseProjectionPlan } from "./schemas/parsers.js";
 import { LAYOUT_SEGMENTS } from "./layout-policy.js";
 import { resolveCanonicalMilestoneRoot } from "./worktree-manager.js";
 import { isCanonicalStagedTaskSummaryProjection } from "./task-summary-projection-classification.js";
+import { isMilestoneLifecycleAdopted, readMilestoneCloseoutAuthorization } from "./db/milestone-closeout-readiness.js";
+import { loadEffectiveGSDPreferences } from "./preferences.js";
+import {
+  captureMilestoneVerificationSourceRevision,
+  diagnoseMilestoneVerificationSourceDrift,
+  type VerificationSourceDriftDiagnosis,
+} from "./verification-source-integrity.js";
+import {
+  getWorkflowDatabaseStatus,
+  openExistingWorkflowDatabase,
+  openWorkflowDatabaseIsolated,
+} from "./db-workspace.js";
+import {
+  inspectWorkflowDbLockHolders,
+  terminateDormantWorkflowDbLockHolders,
+} from "./workflow-db-locks.js";
 
 const USER_AUTHORED_ARTIFACT_TYPES = new Set(["CONTEXT", "RESEARCH"]);
+
+interface RunningAttemptRow {
+  attempt_id: string;
+  worker_id: string | null;
+  milestone_lease_token: number | null;
+  milestone_id: string;
+  slice_id: string;
+  task_id: string;
+}
+
+/**
+ * A running Attempt is orphaned when no live process can settle it: its
+ * milestone lease is not currently held, or the lease-holding worker's OS
+ * process is gone (#1749). Mirrors the lease/liveness semantics auto-mode uses
+ * for dead lease holders, but reports instead of interrupting.
+ */
+function reportOrphanedRunningAttempts(
+  adapter: ReturnType<typeof _getAdapter> & object,
+  basePath: string,
+  issues: DoctorIssue[],
+): void {
+  const running = adapter.prepare(`
+    SELECT attempt.attempt_id, attempt.worker_id, attempt.milestone_lease_token,
+           lifecycle.milestone_id, lifecycle.slice_id, lifecycle.task_id
+    FROM workflow_execution_attempts attempt
+    JOIN workflow_item_lifecycles lifecycle
+      ON lifecycle.lifecycle_id = attempt.lifecycle_id
+     AND lifecycle.project_id = attempt.project_id
+    WHERE attempt.attempt_state = 'running'
+      AND lifecycle.item_kind = 'task'
+  `).all() as unknown as RunningAttemptRow[];
+  if (running.length === 0) return;
+
+  let projectRoot = basePath;
+  try {
+    projectRoot = realpathSync(basePath);
+  } catch {
+    // keep the unresolved basePath
+  }
+
+  for (const attempt of running) {
+    const lease = attempt.worker_id === null || attempt.milestone_lease_token === null
+      ? undefined
+      : adapter.prepare(`
+          SELECT 1 AS held
+          FROM milestone_leases
+          WHERE milestone_id = :milestone_id
+            AND worker_id = :worker_id
+            AND fencing_token = :fencing_token
+            AND status = 'held'
+            AND expires_at > strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+        `).get({
+          ":milestone_id": attempt.milestone_id,
+          ":worker_id": attempt.worker_id,
+          ":fencing_token": attempt.milestone_lease_token,
+        });
+    if (lease) {
+      const worker = adapter.prepare(`
+        SELECT pid, status, project_root_realpath
+        FROM workers WHERE worker_id = :worker_id
+      `).get({ ":worker_id": attempt.worker_id }) as
+        | { pid: number; status: string; project_root_realpath: string }
+        | undefined;
+      const processDead = worker !== undefined &&
+        worker.status === "active" &&
+        worker.project_root_realpath === projectRoot &&
+        Number.isInteger(worker.pid) && worker.pid > 0 &&
+        worker.pid !== process.pid &&
+        (() => {
+          try {
+            process.kill(worker.pid, 0);
+            return false;
+          } catch (err) {
+            return (err as NodeJS.ErrnoException).code !== "EPERM";
+          }
+        })();
+      if (!processDead) continue;
+    }
+    const unitId = `${attempt.milestone_id}/${attempt.slice_id}/${attempt.task_id}`;
+    issues.push({
+      severity: "error",
+      code: "orphaned_running_attempt",
+      scope: "task",
+      unitId,
+      message:
+        `Task ${unitId} has an orphaned running Attempt (${attempt.attempt_id}) with no live process or lease. ` +
+        "Settle it with gsd_task_settle (dry-run first, then apply: true) — doctor --fix will not settle it for you.",
+      file: ".gsd/gsd.db",
+      fixable: false,
+    });
+  }
+}
+
 
 function relativeFile(basePath: string, filePath: string): string {
   return relative(basePath, filePath).split("\\").join("/");
@@ -402,24 +512,155 @@ export function checkLifecycleProjectionKinds(
   }
 }
 
+export function createValidationSourceDriftDoctorIssue(
+  milestoneId: string,
+  mismatch: { expectedSourceRevision: string; testedSourceRevision: string },
+  drift: VerificationSourceDriftDiagnosis,
+): DoctorIssue {
+  const paths = drift.paths.length > 0
+    ? ` Offending source paths: ${drift.paths.join(", ")}.`
+    : " Inspect `git status` and the latest commit for the offending source paths.";
+  const recovery = drift.autoCommitDetected
+    ? " GSD's pre-merge auto-commit is the current HEAD. If it captured unintended files, run `git reset --mixed HEAD^` to preserve them as working-tree changes, remove or ignore unwanted files, then retry."
+    : " Restore or remove unintended working-tree changes before retrying.";
+  return {
+    severity: "error",
+    code: "validation_source_revision_mismatch",
+    scope: "milestone",
+    unitId: milestoneId,
+    message:
+      `Milestone ${milestoneId} validation source revision does not match the current tree ` +
+      `(expected ${mismatch.expectedSourceRevision}; tested ${mismatch.testedSourceRevision}).${paths}${recovery} ` +
+      `If the current content is intended, run \`/gsd validate-milestone ${milestoneId}\`, then \`/gsd auto\`.`,
+    file: drift.paths[0],
+    fixable: true,
+  };
+}
+
+export function reportMilestoneValidationSourceDrift(basePath: string, issues: DoctorIssue[]): void {
+  for (const milestone of getAllMilestones()) {
+    if (!isClosedStatus(milestone.status) || !isMilestoneLifecycleAdopted(milestone.id)) continue;
+    const sourceRoot = resolveCanonicalMilestoneRoot(basePath, milestone.id);
+    const preferences = loadEffectiveGSDPreferences(sourceRoot)?.preferences;
+    const source = captureMilestoneVerificationSourceRevision(sourceRoot, preferences);
+    if (!source.ok) continue;
+    const authorization = readMilestoneCloseoutAuthorization({
+      milestoneId: milestone.id,
+      sourceRevision: source.sourceRevision,
+    });
+    if (authorization.authorized) continue;
+    const mismatch = authorization.blockers.find(
+      (blocker) => blocker.kind === "validation-source-revision-mismatch",
+    );
+    if (!mismatch || mismatch.kind !== "validation-source-revision-mismatch") continue;
+    issues.push(createValidationSourceDriftDoctorIssue(
+      milestone.id,
+      mismatch,
+      diagnoseMilestoneVerificationSourceDrift(sourceRoot, preferences),
+    ));
+  }
+}
+
 export async function checkEngineHealth(
   basePath: string,
   issues: DoctorIssue[],
   fixesApplied: string[],
-  options?: { repair?: boolean },
+  options?: {
+    repair?: boolean;
+    repairDbLock?: boolean;
+    lockRecovery?: {
+      inspectHolders: typeof inspectWorkflowDbLockHolders;
+      terminateHolders: typeof terminateDormantWorkflowDbLockHolders;
+      reopen: typeof openExistingWorkflowDatabase;
+    };
+  },
 ): Promise<void> {
   const dbPath = resolveGsdPathContract(basePath).projectDb;
 
   if (!isDbAvailable() && existsSync(dbPath)) {
-    issues.push({
-      severity: "warning",
-      code: "db_unavailable",
-      scope: "project",
-      unitId: "project",
-      message: "Database unavailable — using filesystem state derivation (degraded mode). State queries may be slower and less reliable.",
-      file: ".gsd/gsd.db",
-      fixable: false,
-    });
+    const status = getWorkflowDatabaseStatus();
+    if (status.lastPhase === "locked") {
+      const readOnly = openWorkflowDatabaseIsolated(dbPath);
+      const staleWorkerStartedAtByPid = new Map<number, number>();
+      if (readOnly) {
+        try {
+          const cutoff = new Date(Date.now() - 5 * 60_000).toISOString();
+          const rows = readOnly.prepare(
+            `SELECT pid, started_at FROM workers
+             WHERE host = :host
+               AND status IN ('active', 'stopping')
+               AND last_heartbeat_at < :cutoff`,
+          ).all({ ":host": hostname(), ":cutoff": cutoff });
+          for (const row of rows) {
+            const pid = Number(row["pid"]);
+            const startedAtMs = Date.parse(String(row["started_at"]));
+            if (Number.isSafeInteger(pid) && pid > 0 && Number.isFinite(startedAtMs)) {
+              staleWorkerStartedAtByPid.set(
+                pid,
+                Math.max(staleWorkerStartedAtByPid.get(pid) ?? 0, startedAtMs),
+              );
+            }
+          }
+        } catch {
+          // Older schemas may not have the worker registry; report holders but do not terminate them.
+        }
+      }
+      const readOnlyProbeSucceeded = readOnly !== null;
+      readOnly?.close();
+      const lockRecovery = options?.lockRecovery;
+      const holders = (lockRecovery?.inspectHolders ?? inspectWorkflowDbLockHolders)(dbPath);
+      let repaired = false;
+      let remainingAfterFix: number[] = [];
+      if (options?.repairDbLock && readOnlyProbeSucceeded) {
+        const result = await (lockRecovery?.terminateHolders ?? terminateDormantWorkflowDbLockHolders)(
+          holders,
+          staleWorkerStartedAtByPid,
+        );
+        remainingAfterFix = result.remaining;
+        if (result.signaled.length > 0 && (lockRecovery?.reopen ?? openExistingWorkflowDatabase)(basePath).ok) {
+          fixesApplied.push(`released workflow database lock held by dormant PID(s): ${result.signaled.join(", ")}`);
+          repaired = true;
+        }
+      }
+
+      if (!repaired) {
+        const pids = holders.map((holder) => holder.pid);
+        const killablePids = holders
+          .filter((holder) => holder.sameUser)
+          .map((holder) => holder.pid);
+        const holderDetail = pids.length > 0
+          ? ` Lock-holder PID(s): ${pids.join(", ")}.`
+          : process.platform === "win32"
+            ? " Automatic holder discovery is unavailable on Windows; use Resource Monitor to identify the process using gsd.db."
+            : " No lock-holder PID could be discovered with lsof/fuser.";
+        const killDetail = remainingAfterFix.length > 0
+          ? ` SIGTERM did not stop PID(s) ${remainingAfterFix.join(", ")}; stop them manually: ${remainingAfterFix.map((pid) => `kill ${pid}`).join("; ")}.`
+          : killablePids.length > 0
+            ? ` Stop them manually if active: ${killablePids.map((pid) => `kill ${pid}`).join("; ")}.`
+            : "";
+        issues.push({
+          severity: "error",
+          code: "db_locked",
+          scope: "project",
+          unitId: "project",
+          message:
+            `Workflow database is write-locked by another process; the read-only probe ${readOnlyProbeSucceeded ? "succeeded" : "also failed"}.` +
+            holderDetail + killDetail,
+          file: ".gsd/gsd.db",
+          fixable: process.platform !== "win32",
+        });
+      }
+    } else {
+      issues.push({
+        severity: "warning",
+        code: "db_unavailable",
+        scope: "project",
+        unitId: "project",
+        message: "Database unavailable — using filesystem state derivation (degraded mode). State queries may be slower and less reliable.",
+        file: ".gsd/gsd.db",
+        fixable: false,
+      });
+    }
   }
 
   // ── DB constraint violation detection (full doctor only, not pre-dispatch per D-10) ──
@@ -459,6 +700,12 @@ export async function checkEngineHealth(
         checkLifecycleProjectionKinds(issues, fixesApplied, options?.repair === true);
       } catch {
         // Non-fatal — lifecycle projection kind check failed
+      }
+
+      try {
+        reportMilestoneValidationSourceDrift(basePath, issues);
+      } catch {
+        // Non-fatal — closeout source drift diagnostics failed
       }
 
       // a. Orphaned tasks (task.slice_id points to non-existent slice)
@@ -579,6 +826,17 @@ export async function checkEngineHealth(
         }
       } catch {
         // Non-fatal — duplicate ID check failed
+      }
+
+      // e. Orphaned running Task Attempts (#1749): a running Attempt whose
+      // milestone lease is gone or whose worker process is dead wedges every
+      // downstream lifecycle operation ("running Attempt descendant"). The
+      // operator repair is gsd_task_settle; doctor --fix must never settle on
+      // its own — settling is a human judgment call.
+      try {
+        reportOrphanedRunningAttempts(adapter, basePath, issues);
+      } catch {
+        // Non-fatal — orphaned running Attempt check failed
       }
 
       // e. Completed milestone dispatch history but DB reopened without an explicit reopen event.

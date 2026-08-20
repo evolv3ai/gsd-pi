@@ -261,7 +261,7 @@ export async function handleAgentEvent(host: InteractiveModeStateHost & {
 					}
 				}
 
-				runSegmentWalker(host, rs, timestampFormat);
+					runSegmentWalker(host, rs, timestampFormat);
 
 				// Update index: fully processed blocks won't need re-scanning.
 				// Keep the last block's index (it may still be accumulating data),
@@ -278,15 +278,18 @@ export async function handleAgentEvent(host: InteractiveModeStateHost & {
 					startLoadingAnimation(host);
 				}
 
-				host.ui.requestRender();
+				// Batch renders, not the walker: sub-turn replacement and
+				// suppression logic must observe every intermediate state,
+				// while consecutive renders within one 50ms window can coalesce.
+				rs.scheduleDebouncedRender(host.ui);
 			}
 			break;
 
-			case "message_end":
-				if (event.message.role === "user") break;
-				if (event.message.role === "assistant") {
-					host.streamingMessage = event.message;
-					let errorMessage: string | undefined;
+		case "message_end":
+			if (event.message.role === "user") break;
+			if (event.message.role === "assistant") {
+				host.streamingMessage = event.message;
+				let errorMessage: string | undefined;
 					if (host.streamingMessage.stopReason === "aborted") {
 						const retryAttempt = host.session.retryAttempt;
 						errorMessage = retryAttempt > 0
@@ -357,9 +360,11 @@ export async function handleAgentEvent(host: InteractiveModeStateHost & {
 				// (e.g. form elicitation) after the assistant message ends.
 				tearDownPinnedZone(host, { realignViewport: true });
 				host.footer.invalidate();
-			}
-			host.ui.requestRender();
-			break;
+		}
+		// Final state paints immediately: cancel any pending debounced
+		// render from streaming and request one now.
+		rs.flushPendingStreamingWork(host.ui);
+		break;
 
 		case "tool_execution_start": {
 			const { component, created } = registerPendingToolComponent(
@@ -433,7 +438,7 @@ export async function handleAgentEvent(host: InteractiveModeStateHost & {
 			// Keep chat history as the single source after completion.
 			tearDownPinnedZone(host, { realignViewport: true });
 			await host.checkShutdownRequested();
-			host.ui.requestRender();
+			rs.flushPendingStreamingWork(host.ui);
 			break;
 
 		case "auto_compaction_start":

@@ -11,6 +11,7 @@ import { afterEach, test } from "node:test";
 import {
   captureVerificationSourceSnapshot,
   confirmVerificationSourceSnapshot,
+  diagnoseMilestoneVerificationSourceDrift,
   resolveVerificationRepositoryTargets,
   verificationSourceChanged,
 } from "../verification-source-integrity.js";
@@ -99,6 +100,18 @@ test("source revision is stable when the verified working tree is committed unch
 
   assert.equal(staged.aggregateRevision, beforeCommit.aggregateRevision);
   assert.equal(afterCommit.aggregateRevision, beforeCommit.aggregateRevision);
+});
+
+test("source drift diagnostics identify paths captured by the pre-merge auto-commit", () => {
+  const cwd = createRepository("auto-commit-drift");
+  writeFileSync(join(cwd, "ad-hoc-helper.ps1"), "Write-Output helper\n");
+  git(cwd, ["add", "ad-hoc-helper.ps1"]);
+  git(cwd, ["commit", "-qm", "chore: auto-commit before milestone merge"]);
+
+  assert.deepEqual(diagnoseMilestoneVerificationSourceDrift(cwd, undefined), {
+    paths: ["ad-hoc-helper.ps1"],
+    autoCommitDetected: true,
+  });
 });
 
 test("candidate snapshots exclude only the generated dossier self-reference", () => {
@@ -241,4 +254,24 @@ test("a .gsd symlink resolving to the repository parent still produces a source 
   const after = capture([{ id: "root", cwd }]);
 
   assert.notEqual(after.aggregateRevision, before.aggregateRevision);
+});
+
+test("source snapshot ignores tracked receipts/** bookkeeping (#1819)", () => {
+  const cwd = createRepository("receipts-exclude");
+  writeFileSync(join(cwd, "src.ts"), "export {}\n");
+  git(cwd, ["add", "src.ts"]);
+  git(cwd, ["commit", "-m", "src"]);
+  const before = capture([{ id: "root", cwd }]);
+
+  mkdirSync(join(cwd, "receipts"), { recursive: true });
+  writeFileSync(join(cwd, "receipts", "receipts.jsonl"), "{\"call\":1}\n");
+  git(cwd, ["add", "receipts/receipts.jsonl"]);
+  git(cwd, ["commit", "-m", "receipts"]);
+
+  const after = capture([{ id: "root", cwd }]);
+  assert.equal(
+    after.aggregateRevision,
+    before.aggregateRevision,
+    "tracked receipts must not move the source hash",
+  );
 });

@@ -16,7 +16,8 @@
 // The separate `.gsd/unit-claims.db` (unit-ownership.ts) is an intentionally
 // independent store and is excluded from this invariant.
 import { createHash } from "node:crypto";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
+import { renamePhaseDirOnTitleChange } from "./phase-dir-rename.js";
 import type { Decision, Requirement, GateRow, GateId, GateScope, GateStatus, GateVerdict } from "./types.js";
 import { GSDError, GSD_STALE_STATE } from "./errors.js";
 import { getGateIdsForTurn, type OwnerTurn } from "./gate-registry.js";
@@ -48,7 +49,7 @@ import { rowToSlice, rowToTask, type SliceRow, type TaskRow } from "./db-task-sl
 // primitives now live in the engine; re-export the full public surface so
 // existing `from "./gsd-db.js"` imports keep working.
 export * from "./db/engine.js";
-import { immediateTransaction, transaction, getDb, getDbOrNull } from "./db/engine.js";
+import { immediateTransaction, transaction, getDb, getDbOrNull, getDbPath } from "./db/engine.js";
 import { assertNoAdoptedLifecycleHistory } from "./db/writers/import-restore.js";
 
 // ─── Single Writer Layer re-exports ──────────────────────────────────────
@@ -87,10 +88,8 @@ import { applyStatusTransition } from "./db/writers/status.js";
 export { projectCanonicalStatusToLegacy } from "./db/writers/status.js";
 import {
   LAYOUT_SEGMENTS,
-  derivePhaseSlug,
+  canonicalPhaseDirName,
   milestoneIdToPhaseNum,
-  milestoneIdUniqueSuffix,
-  phaseDirName,
 } from "./layout-policy.js";
 
 export function insertDecision(d: Omit<Decision, "seq">): void {
@@ -231,17 +230,10 @@ export function insertArtifact(a: {
   }));
 }
 
-function canonicalPhaseDirNameForDb(milestoneId: string, title: string): string {
-  const phaseNum = milestoneIdToPhaseNum(milestoneId);
-  const slug = derivePhaseSlug(title || milestoneId);
-  const suffix = milestoneIdUniqueSuffix(milestoneId);
-  return phaseDirName(phaseNum, suffix ? `${suffix}-${slug}` : slug);
-}
-
 function reconcileMilestonePhaseArtifactPaths(milestoneId: string, title: string): void {
   const db = getDbOrNull()!;
   const phaseNumPrefix = String(milestoneIdToPhaseNum(milestoneId)).padStart(2, "0");
-  const canonicalDir = canonicalPhaseDirNameForDb(milestoneId, title);
+  const canonicalDir = canonicalPhaseDirName(milestoneId, title);
   const staleRows = db.prepare(
     `SELECT path
        FROM artifacts
@@ -353,6 +345,9 @@ export function insertMilestone(m: {
 
 export function upsertMilestonePlanning(milestoneId: string, planning: Partial<MilestonePlanningRecord> & { title?: string; status?: string; depends_on?: string[] }): void {
   if (!getDbOrNull()!) throw new GSDError(GSD_STALE_STATE, "gsd-db: No database open");
+  const previousTitle = (getDbOrNull()!.prepare(
+    "SELECT title FROM milestones WHERE id = :id",
+  ).get({ ":id": milestoneId }) as { title?: string } | undefined)?.title;
   transaction(() => {
     if (planning.status !== undefined && planning.status !== "") {
       applyStatusTransition({
@@ -397,6 +392,15 @@ export function upsertMilestonePlanning(milestoneId: string, planning: Partial<M
     const finalTitle = planning.title?.trim();
     if (finalTitle) reconcileMilestonePhaseArtifactPaths(milestoneId, finalTitle);
   });
+  const finalTitle = planning.title?.trim();
+  const dbPath = getDbPath();
+  if (finalTitle && dbPath && dbPath !== ":memory:") {
+    try {
+      renamePhaseDirOnTitleChange(dirname(dirname(dbPath)), milestoneId, previousTitle, finalTitle);
+    } catch (error) {
+      logWarning("db", `phase dir rename after title update failed: ${(error as Error).message}`);
+    }
+  }
 }
 
 export function insertSlice(s: {
@@ -786,6 +790,20 @@ export function setTaskSummaryMd(milestoneId: string, sliceId: string, taskId: s
   transaction(() => getDbOrNull()!.prepare(
     `UPDATE tasks SET full_summary_md = :md WHERE milestone_id = :mid AND slice_id = :sid AND id = :tid`,
   ).run({ ":mid": milestoneId, ":sid": sliceId, ":tid": taskId, ":md": md }));
+}
+
+export function clearTaskSummaryProjectionState(milestoneId: string, sliceId: string, taskId: string): void {
+  if (!getDbOrNull()!) throw new GSDError(GSD_STALE_STATE, "gsd-db: No database open");
+  transaction(() => {
+    getDbOrNull()!.prepare(
+      `UPDATE tasks SET full_summary_md = '' WHERE milestone_id = :mid AND slice_id = :sid AND id = :tid`,
+    ).run({ ":mid": milestoneId, ":sid": sliceId, ":tid": taskId });
+    getDbOrNull()!.prepare(
+      `DELETE FROM artifacts
+       WHERE artifact_type = 'SUMMARY'
+         AND milestone_id = :mid AND slice_id = :sid AND task_id = :tid`,
+    ).run({ ":mid": milestoneId, ":sid": sliceId, ":tid": taskId });
+  });
 }
 
 export function setSliceSummaryMd(milestoneId: string, sliceId: string, summaryMd: string, uatMd: string): void {

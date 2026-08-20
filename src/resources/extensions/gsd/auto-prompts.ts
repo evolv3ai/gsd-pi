@@ -37,6 +37,7 @@ import {
   getPendingGates,
   getPendingGatesForTurn,
   getSlice,
+  getTask,
   isDbAvailable,
 } from "./gsd-db.js";
 import {
@@ -79,6 +80,7 @@ import {
   type PendingTaskRecoveryContext,
 } from "./task-recovery-domain-operation.js";
 import type { MilestoneScope } from "./workspace.js";
+import { resolveSubagentRoleForProvider } from "./subagent-role-resolver.js";
 
 export { buildSkillActivationBlock, buildSkillDiscoveryVars };
 
@@ -458,8 +460,13 @@ function prependContextModeToBlock(
   base: string,
   block: string,
   renderMode: ContextModeRenderMode = "standalone",
+  sessionProvider?: string,
 ): string {
-  const toolSurface = composeToolSurfaceInstructions(unitType, { renderMode, basePath: base });
+  const toolSurface = composeToolSurfaceInstructions(unitType, {
+    renderMode,
+    basePath: base,
+    sessionProvider,
+  });
   const contextMode = renderContextModeBlockForPrompt(unitType, base, renderMode);
   const guidance = [toolSurface, contextMode].filter(Boolean).join("\n\n");
   if (!guidance) return block;
@@ -793,7 +800,7 @@ function inlineCompactTemplate(name: "plan" | "task-summary" | "slice-summary", 
       "",
       "## Verification Evidence",
       "| # | Command | Exit Code | Verdict | Duration |",
-      "|---|---------|-----------|---------|----------|",
+      "| --- | --- | --- | --- | --- |",
       "| {{row}} | {{command}} | {{exitCode}} | {{verdict}} | {{duration}} |",
       "",
       "## Diagnostics",
@@ -1868,11 +1875,14 @@ export async function buildWorkflowPreferencesPrompt(
 export async function buildResearchProjectPrompt(
   base: string,
   structuredQuestionsAvailable = "false",
+  sessionProvider?: string,
 ): Promise<string> {
+  const scoutAgentType = resolveSubagentRoleForProvider("scout", sessionProvider);
   return prependContextModeToBlock("research-project", base, loadPrompt("guided-research-project", {
     workingDirectory: base,
     structuredQuestionsAvailable,
-  }));
+    scoutAgentType,
+  }), "standalone", sessionProvider);
 }
 
 /**
@@ -2319,7 +2329,7 @@ export async function buildPlanMilestonePrompt(
 
 export async function buildResearchSlicePrompt(
   mid: string, _midTitle: string, sid: string, sTitle: string, base: string,
-  options?: { contextModeRenderMode?: ContextModeRenderMode },
+  options?: { contextModeRenderMode?: ContextModeRenderMode; sessionProvider?: string },
 ): Promise<string> {
   const roadmapPath = resolveMilestoneFile(base, mid, "ROADMAP");
   const roadmapRel = relMilestoneFile(base, mid, "ROADMAP");
@@ -2443,10 +2453,12 @@ export async function buildResearchSlicePrompt(
     base,
     cappedInlinedContext,
     options?.contextModeRenderMode,
+    options?.sessionProvider,
   );
   emitPromptContextTelemetry("research-slice", contextTelemetry, inlinedContext);
 
   const outputRelPath = relSliceFile(base, mid, sid, "RESEARCH");
+  const scoutAgentType = resolveSubagentRoleForProvider("scout", options?.sessionProvider);
   return loadPrompt("research-slice", {
     workingDirectory: base,
     milestoneId: mid, sliceId: sid, sliceTitle: sTitle,
@@ -2457,6 +2469,7 @@ export async function buildResearchSlicePrompt(
     outputPath: join(base, outputRelPath),
     inlinedContext,
     dependencySummaries: depContent,
+    scoutAgentType,
     skillActivation: buildSkillActivationBlock({
       base,
       milestoneId: mid,
@@ -2788,6 +2801,83 @@ export interface ExecuteTaskPromptOptions {
   contextModeRenderMode?: ContextModeRenderMode;
 }
 
+function extractInlineTaskPlan(slicePlan: string, taskId: string): string | null {
+  const escapedTaskId = taskId.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const xmlTask = new RegExp(`<task\\b[^>]*\\bid=["']${escapedTaskId}["'][^>]*>([\\s\\S]*?)<\\/task>`, "i")
+    .exec(slicePlan);
+  if (xmlTask?.[0]) return xmlTask[0].trim();
+
+  const taskLines = slicePlan.split("\n");
+  const start = taskLines.findIndex((line) =>
+    new RegExp(`^\\s*-\\s*\\[[ xX]\\]\\s+\\*\\*${escapedTaskId}(?:\\*\\*|:)`, "i").test(line),
+  );
+  if (start >= 0) {
+    let end = start + 1;
+    while (end < taskLines.length && !/^\s*-\s*\[[ xX]\]\s+\*\*/.test(taskLines[end]!)) {
+      if (/^<\/tasks>\s*$/.test(taskLines[end]!.trim())) break;
+      end++;
+    }
+    return taskLines.slice(start, end).join("\n").trim();
+  }
+
+  const tasksBlock = /<tasks>([\s\S]*?)<\/tasks>/i.exec(slicePlan)?.[0];
+  return tasksBlock?.includes(taskId) ? tasksBlock.trim() : null;
+}
+
+async function resolveExecuteTaskPlan(input: {
+  basePath: string;
+  milestoneId: string;
+  sliceId: string;
+  taskId: string;
+  slicePlanContent: string | null;
+}): Promise<{ content: string | null; relativePath: string; source: string }> {
+  const relativePath = relTaskFile(
+    input.basePath,
+    input.milestoneId,
+    input.sliceId,
+    input.taskId,
+    "PLAN",
+  );
+  const standalonePath = resolveTaskFile(
+    input.basePath,
+    input.milestoneId,
+    input.sliceId,
+    input.taskId,
+    "PLAN",
+  );
+  if (standalonePath) {
+    return { content: await loadFile(standalonePath), relativePath, source: `\`${relativePath}\`` };
+  }
+
+  const durablePlan = isDbAvailable()
+    ? getTask(input.milestoneId, input.sliceId, input.taskId)?.full_plan_md.trim() || null
+    : null;
+  if (durablePlan) {
+    return {
+      content: durablePlan,
+      relativePath,
+      source: `durable task planning state for ${input.milestoneId}/${input.sliceId}/${input.taskId}`,
+    };
+  }
+
+  const inlinePlan = input.slicePlanContent
+    ? extractInlineTaskPlan(input.slicePlanContent, input.taskId)
+    : null;
+  const slicePlanRelativePath = relSliceFile(
+    input.basePath,
+    input.milestoneId,
+    input.sliceId,
+    "PLAN",
+  );
+  return {
+    content: inlinePlan,
+    relativePath: inlinePlan ? slicePlanRelativePath : relativePath,
+    source: inlinePlan
+      ? `\`${slicePlanRelativePath}\``
+      : `\`${relativePath}\``,
+  };
+}
+
 export async function buildTaskRecoveryReplanPrompt(
   mid: string,
   sid: string,
@@ -2841,24 +2931,30 @@ export async function buildExecuteTaskPrompt(
     ? priorSummaries.map(p => `- \`${p}\``).join("\n")
     : "- (no prior tasks)";
 
-  const taskPlanPath = resolveTaskFile(base, mid, sid, tid, "PLAN");
-  const taskPlanContent = taskPlanPath ? await loadFile(taskPlanPath) : null;
-  const taskPlanRelPath = relTaskFile(base, mid, sid, tid, "PLAN");
+  const slicePlanPath = resolveSliceFile(base, mid, sid, "PLAN");
+  const slicePlanContent = slicePlanPath ? await loadFile(slicePlanPath) : null;
+  const taskPlan = await resolveExecuteTaskPlan({
+    basePath: base,
+    milestoneId: mid,
+    sliceId: sid,
+    taskId: tid,
+    slicePlanContent,
+  });
+  const taskPlanContent = taskPlan.content;
+  const taskPlanRelPath = taskPlan.relativePath;
   const taskPlanContext = taskPlanContent
     ? [
       "## Inlined Task Plan (authoritative local execution contract)",
-      `Source: \`${taskPlanRelPath}\``,
+      `Source: ${taskPlan.source}`,
       "",
       taskPlanContent.trim(),
     ].join("\n")
     : [
       "## Inlined Task Plan (authoritative local execution contract)",
-      `Task plan not found at dispatch time. Read \`${taskPlanRelPath}\` before executing.`,
+      `Task plan not found at dispatch time. Read ${taskPlan.source} before executing.`,
     ].join("\n");
   trackPromptContext(contextTelemetry, "task-plan", taskPlanContent ? "inline" : "on-demand", taskPlanContext, taskPlanContent ? undefined : "missing at dispatch");
 
-  const slicePlanPath = resolveSliceFile(base, mid, sid, "PLAN");
-  const slicePlanContent = slicePlanPath ? await loadFile(slicePlanPath) : null;
   const slicePlanContext = extractSliceExecutionExcerpt(slicePlanContent, relSliceFile(base, mid, sid, "PLAN"));
   trackPromptContext(contextTelemetry, "slice-plan", slicePlanContext ? "excerpt" : "skipped", slicePlanContext, slicePlanContext ? undefined : "missing");
 
@@ -4165,6 +4261,8 @@ export async function buildReactiveExecutePrompt(
   );
   const contextTelemetry: PromptContextTelemetryEntry[] = [];
   trackPromptContext(contextTelemetry, "graph-context", "inline", graphContext);
+  const slicePlanPath = resolveSliceFile(base, mid, sid, "PLAN");
+  const slicePlanContent = slicePlanPath ? await loadFile(slicePlanPath) : null;
 
   for (const tid of readyTaskIds) {
     const node = graph.find((n) => n.id === tid);
@@ -4176,19 +4274,24 @@ export async function buildReactiveExecutePrompt(
       mid, sid, tid, node?.dependsOn ?? [], base,
     );
 
-    const taskPlanPath = resolveTaskFile(base, mid, sid, tid, "PLAN");
-    const taskPlanContent = taskPlanPath ? await loadFile(taskPlanPath) : null;
-    const taskPlanRelPath = relTaskFile(base, mid, sid, tid, "PLAN");
+    const taskPlan = await resolveExecuteTaskPlan({
+      basePath: base,
+      milestoneId: mid,
+      sliceId: sid,
+      taskId: tid,
+      slicePlanContent,
+    });
+    const taskPlanContent = taskPlan.content;
     const taskPlanInline = taskPlanContent
       ? [
           "## Inlined Task Plan (authoritative local execution contract)",
-          `Source: \`${taskPlanRelPath}\``,
+          `Source: ${taskPlan.source}`,
           "",
           taskPlanContent.trim(),
         ].join("\n")
       : [
           "## Inlined Task Plan (authoritative local execution contract)",
-          `Task plan not found at dispatch time. Read \`${taskPlanRelPath}\` before executing.`,
+          `Task plan not found at dispatch time. Read ${taskPlan.source} before executing.`,
         ].join("\n");
     const carryForwardSection = await buildCarryForwardSection(depPaths, base);
     const finalCarryForwardSection = carryForwardSection.length > perSubagentCarryForwardBudget
@@ -4338,16 +4441,21 @@ export async function buildParallelResearchSlicesPrompt(
   basePath: string,
   subagentModel?: string,
   subagentThinking?: string,
+  sessionProvider?: string,
 ): Promise<string> {
   // Build individual research-slice prompts for each slice
   const subagentSections: string[] = [];
   const modelSuffix = subagentCallSuffix(subagentModel, subagentThinking);
+  const scoutAgentType = resolveSubagentRoleForProvider("scout", sessionProvider);
   for (const slice of slices) {
-    const slicePrompt = await buildResearchSlicePrompt(mid, midTitle, slice.id, slice.title, basePath, { contextModeRenderMode: "nested" });
+    const slicePrompt = await buildResearchSlicePrompt(mid, midTitle, slice.id, slice.title, basePath, {
+      contextModeRenderMode: "nested",
+      sessionProvider,
+    });
     subagentSections.push([
       `### ${slice.id}: ${slice.title}`,
       "",
-      `Use this as the prompt for a \`subagent\` call${modelSuffix} (agent: \`scout\`):`,
+      `Use this as the prompt for a \`subagent\` call${modelSuffix} (agent: \`${scoutAgentType}\`):`,
       "",
       "```",
       slicePrompt,
@@ -4361,6 +4469,7 @@ export async function buildParallelResearchSlicesPrompt(
     midTitle,
     sliceCount: String(slices.length),
     sliceList: slices.map((s) => `- **${s.id}**: ${s.title}`).join("\n"),
+    scoutAgentType,
     subagentPrompts: subagentSections.join("\n\n---\n\n"),
   });
 }

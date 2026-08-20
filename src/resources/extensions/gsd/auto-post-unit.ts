@@ -78,7 +78,12 @@ import {
 import type { AutoSession, SidecarItem } from "./auto/session.js";
 import { getEvidence, clearEvidenceFromDisk, isExecutionToolName } from "./safety/evidence-collector.js";
 import { removeProjectionFileSync } from "./atomic-write.js";
-import { validateFileChanges, effectiveFileChangeAllowlist } from "./safety/file-change-validator.js";
+import {
+  validateFileChanges,
+  effectiveFileChangeAllowlist,
+  readCommittedHeadSha,
+  type FileChangeAudit,
+} from "./safety/file-change-validator.js";
 import { crossReferenceEvidence, type ClaimedEvidence } from "./safety/evidence-cross-ref.js";
 import { validateContent } from "./safety/content-validator.js";
 import { resolveSafetyHarnessConfig } from "./safety/safety-harness.js";
@@ -793,6 +798,72 @@ export function shouldDeferCloseoutGitAction(unitType: string): boolean {
   return unitType === "execute-task";
 }
 
+function reportFileChangeWarnings(
+  ctx: ExtensionContext,
+  audit: FileChangeAudit | null,
+): void {
+  if (!audit || audit.violations.length === 0) return;
+  const warnings = audit.violations.filter(v => v.severity === "warning");
+  for (const v of warnings) {
+    logWarning("safety", `file-change: ${v.file} — ${v.reason}`);
+  }
+  if (warnings.length > 0) {
+    ctx.ui.notify(
+      `Safety: ${warnings.length} unexpected file change(s) outside task plan`,
+      "warning",
+    );
+  }
+}
+
+function runExecuteTaskFileChangeSafety(
+  s: AutoSession,
+  ctx: ExtensionContext,
+  fileChangeAllowlist: string[],
+  headBeforeCloseout: string | null,
+): void {
+  if (s.currentUnit?.type !== "execute-task") return;
+  const { milestone: sMid, slice: sSid, task: sTid } = parseUnitId(s.currentUnit.id);
+  if (!sMid || !sSid || !sTid) return;
+
+  try {
+    const sliceTaskRows = isDbAvailable()
+      ? getSliceTasks(sMid, sSid).filter((t) => isClosedStatus(t.status) || t.id === sTid)
+      : [];
+
+    if (sliceTaskRows.length > 0) {
+      const expectedOutput = getPlannedKeyFiles(
+        sliceTaskRows.map((taskRow) => ({
+          expected_output: taskRow.expected_output,
+          files: taskRow.files,
+        })),
+      );
+      const plannedFiles = getPlannedKeyFiles(
+        sliceTaskRows.map((taskRow) => ({ files: taskRow.files })),
+      );
+      reportFileChangeWarnings(
+        ctx,
+        validateFileChanges(s.basePath, expectedOutput, plannedFiles, fileChangeAllowlist, { headBeforeCloseout }),
+      );
+      return;
+    }
+
+    const taskRow = getTask(sMid, sSid, sTid);
+    if (!taskRow) return;
+    reportFileChangeWarnings(
+      ctx,
+      validateFileChanges(
+        s.basePath,
+        taskRow.expected_output ?? [],
+        taskRow.files ?? [],
+        fileChangeAllowlist,
+        { headBeforeCloseout },
+      ),
+    );
+  } catch (e) {
+    debugLog("postUnit", { phase: "safety-file-change", error: String(e) });
+  }
+}
+
 /** Unit types that only touch `.gsd/` internal state files (no code changes).
  *  Auto-commit is skipped for these — their state files are picked up by the
  *  next actual task commit via `smartStage()`. */
@@ -1074,6 +1145,43 @@ function artifactValidationKind(unitType: string): "project" | "requirements" | 
 
 const TASK_COMPLETION_TOOL_NAMES = new Set(["gsd_task_complete", "gsd_complete_task"]);
 
+/**
+ * Verify-after-write receipt check (#1714/#1761): a run-uat or
+ * validate-milestone unit may only complete when its save actually persisted.
+ * Returns null when the durable receipt exists, else an error naming the
+ * missing artifact and the owning save tool.
+ */
+function missingDurableSaveReceipt(unitType: string, unitId: string): string | null {
+  if (!isDbAvailable()) return null;
+  const db = _getAdapter();
+  if (!db) return null;
+  if (unitType === "run-uat") {
+    const { milestone, slice } = parseUnitId(unitId);
+    const row = db.prepare(`
+      SELECT status FROM quality_gates
+      WHERE milestone_id = :milestone_id AND slice_id = :slice_id
+        AND gate_id = 'UAT' AND (task_id = '' OR task_id IS NULL)
+    `).get({ ":milestone_id": milestone, ":slice_id": slice }) as Record<string, unknown> | undefined;
+    if (!row) {
+      return `Artifact verification failed: UAT verdict for ${unitId} was not durably persisted (no quality_gates UAT row). Re-call gsd_uat_result_save with the existing evidence.`;
+    }
+    return null;
+  }
+  if (unitType === "validate-milestone") {
+    const { milestone } = parseUnitId(unitId);
+    const row = db.prepare(`
+      SELECT 1 AS present FROM assessments
+      WHERE milestone_id = :milestone_id AND scope = 'milestone-validation'
+      LIMIT 1
+    `).get({ ":milestone_id": milestone });
+    if (!row) {
+      return `Artifact verification failed: milestone validation verdict for ${milestone} was not durably persisted (no milestone-validation assessment row). Re-run gsd_validate_milestone.`;
+    }
+    return null;
+  }
+  return null;
+}
+
 function hasTaskCompletionToolCall(agentEndMessages?: unknown[] | null): boolean {
   if (!Array.isArray(agentEndMessages)) return false;
   for (const rawMessage of agentEndMessages) {
@@ -1098,8 +1206,7 @@ function describeArtifactVerificationFailure(
   unitId: string,
   basePath: string,
   agentEndMessages?: unknown[] | null,
-): string {
-  const worktreeFailure = diagnoseWorktreeIntegrityFailure(basePath);
+): string {  const worktreeFailure = diagnoseWorktreeIntegrityFailure(basePath);
   if (worktreeFailure) {
     return `${worktreeFailure} Unit: ${unitType} ${unitId}.`;
   }
@@ -1114,7 +1221,13 @@ function describeArtifactVerificationFailure(
     const completionToolHint = unitType === "execute-task" && !hasTaskCompletionToolCall(agentEndMessages)
       ? " No completion tool call detected (`gsd_task_complete`/alias)."
       : "";
-    return `Artifact verification failed: ${relPath} was not found on disk after unit execution${expected ? ` (${expected})` : ""}.${completionToolHint}`;
+    const saveToolHint =
+      unitType === "run-uat"
+        ? " Re-call gsd_uat_result_save."
+        : unitType === "validate-milestone"
+          ? " Re-run gsd_validate_milestone."
+          : "";
+    return `Artifact verification failed: ${relPath} was not found on disk after unit execution${expected ? ` (${expected})` : ""}.${completionToolHint}${saveToolHint}`;
   }
 
   const validationKind = artifactValidationKind(unitType);
@@ -1132,6 +1245,7 @@ function describeArtifactVerificationFailure(
   return `Artifact verification failed: ${relPath} exists but did not satisfy the ${unitType} completion contract${expected ? ` (${expected})` : ""}.`;
 }
 export const _describeArtifactVerificationFailureForTest = describeArtifactVerificationFailure;
+export const _missingDurableSaveReceiptForTest = missingDurableSaveReceipt;
 
 async function repairCompleteSliceRoadmapProjection(
   unitType: string,
@@ -1780,73 +1894,6 @@ export async function postUnitPreVerification(pctx: PostUnitContext, opts?: PreV
       if (safetyConfig.enabled) {
         const { milestone: sMid, slice: sSid, task: sTid } = parseUnitId(s.currentUnit.id);
 
-        const fileChangeAllowlist = effectiveFileChangeAllowlist(
-          safetyConfig.file_change_allowlist,
-          (prefs?.git as { manage_gitignore?: boolean } | undefined)?.manage_gitignore,
-        );
-
-        // File change validation (execute-task only, after unit execution)
-        if (safetyConfig.file_change_validation && s.currentUnit.type === "execute-task" && sMid && sSid && sTid) {
-          try {
-            const sliceTaskRows = isDbAvailable()
-              ? getSliceTasks(sMid, sSid).filter((t) => isClosedStatus(t.status) || t.id === sTid)
-              : [];
-
-            if (sliceTaskRows.length > 0) {
-              const expectedOutput = getPlannedKeyFiles(
-                sliceTaskRows.map((taskRow) => ({
-                  expected_output: taskRow.expected_output,
-                  files: taskRow.files,
-                })),
-              );
-              const plannedFiles = getPlannedKeyFiles(
-                sliceTaskRows.map((taskRow) => ({
-                  files: taskRow.files,
-                })),
-              );
-              const audit = validateFileChanges(s.basePath, expectedOutput, plannedFiles, fileChangeAllowlist);
-              if (audit && audit.violations.length > 0) {
-                const warnings = audit.violations.filter(v => v.severity === "warning");
-                for (const v of warnings) {
-                  logWarning("safety", `file-change: ${v.file} — ${v.reason}`);
-                }
-                if (warnings.length > 0) {
-                  ctx.ui.notify(
-                    `Safety: ${warnings.length} unexpected file change(s) outside task plan`,
-                    "warning",
-                  );
-                }
-              }
-            } else {
-              const taskRow = getTask(sMid, sSid, sTid);
-              if (taskRow) {
-                const expectedOutput = taskRow.expected_output ?? [];
-                const plannedFiles = taskRow.files ?? [];
-                const audit = validateFileChanges(
-                  s.basePath,
-                  expectedOutput,
-                  plannedFiles,
-                  fileChangeAllowlist,
-                );
-                if (audit && audit.violations.length > 0) {
-                  const warnings = audit.violations.filter(v => v.severity === "warning");
-                  for (const v of warnings) {
-                    logWarning("safety", `file-change: ${v.file} — ${v.reason}`);
-                  }
-                  if (warnings.length > 0) {
-                    ctx.ui.notify(
-                      `Safety: ${warnings.length} unexpected file change(s) outside task plan`,
-                      "warning",
-                    );
-                  }
-                }
-              }
-            }
-          } catch (e) {
-            debugLog("postUnit", { phase: "safety-file-change", error: String(e) });
-          }
-        }
-
         // Evidence cross-reference (execute-task only)
         // Only compare against concrete command evidence persisted by the task
         // completion tool. A prose Verify field can be satisfied later by the
@@ -2003,6 +2050,7 @@ export async function postUnitPreVerification(pctx: PostUnitContext, opts?: PreV
     // Artifact verification
     const verificationBasePath = s.currentUnit.workspaceRoot ?? s.basePath;
     let triggerArtifactVerified = false;
+    let durableReceiptFailure: string | null = null;
     if (!s.currentUnit.type.startsWith("hook/")) {
       try {
         triggerArtifactVerified =
@@ -2013,6 +2061,24 @@ export async function postUnitPreVerification(pctx: PostUnitContext, opts?: PreV
         }
       } catch (e) {
         debugLog("postUnit", { phase: "artifact-verify", error: String(e) });
+      }
+
+      // Verify-after-write (#1714/#1761): a run-uat or validate-milestone unit
+      // whose save never persisted is an explicit unit error, not a silent pass.
+      if (
+        triggerArtifactVerified &&
+        (s.currentUnit.type === "run-uat" || s.currentUnit.type === "validate-milestone")
+      ) {
+        durableReceiptFailure = missingDurableSaveReceipt(s.currentUnit.type, s.currentUnit.id);
+        if (durableReceiptFailure) {
+          triggerArtifactVerified = false;
+          debugLog("postUnit", {
+            phase: "durable-save-receipt-missing",
+            unitType: s.currentUnit.type,
+            unitId: s.currentUnit.id,
+            reason: durableReceiptFailure,
+          });
+        }
       }
 
       try {
@@ -2468,7 +2534,9 @@ export async function postUnitPreVerification(pctx: PostUnitContext, opts?: PreV
             );
           }
           const attempt = (s.verificationRetryCount.get(retryKey) ?? 0) + 1;
-          const failureDetails = describeArtifactVerificationFailure(
+          // A missing durable save receipt names the artifact and the owning
+          // save tool (#1761 O-4); everything else keeps the artifact ladder.
+          const failureDetails = durableReceiptFailure ?? describeArtifactVerificationFailure(
             s.currentUnit.type,
             s.currentUnit.id,
             verificationBasePath,
@@ -2577,6 +2645,7 @@ export async function postUnitPostVerification(pctx: PostUnitContext): Promise<"
 
   if (s.currentUnit) {
     if (shouldDeferCloseoutGitAction(s.currentUnit.type)) {
+      const headBeforeCloseout = readCommittedHeadSha(s.basePath);
       const gitActionResult = await runCloseoutGitAction(pctx, s.currentUnit, { softFailure: true });
       if (gitActionResult === "dispatched") {
         return "stopped";
@@ -2592,6 +2661,21 @@ export async function postUnitPostVerification(pctx: PostUnitContext): Promise<"
         }) === "retry"
       ) {
         return "retry";
+      }
+      try {
+        const prefs = loadEffectiveGSDPreferences()?.preferences;
+        const safetyConfig = resolveSafetyHarnessConfig(
+          prefs?.safety_harness as Record<string, unknown> | undefined,
+        );
+        if (safetyConfig.enabled && safetyConfig.file_change_validation) {
+          const fileChangeAllowlist = effectiveFileChangeAllowlist(
+            safetyConfig.file_change_allowlist,
+            (prefs?.git as { manage_gitignore?: boolean } | undefined)?.manage_gitignore,
+          );
+          runExecuteTaskFileChangeSafety(s, ctx, fileChangeAllowlist, headBeforeCloseout);
+        }
+      } catch (e) {
+        debugLog("postUnit", { phase: "safety-file-change", error: String(e) });
       }
     }
 

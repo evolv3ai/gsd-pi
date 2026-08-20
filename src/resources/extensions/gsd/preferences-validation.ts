@@ -648,10 +648,10 @@ export function validatePreferences(preferences: GSDPreferences): {
   // ─── Remote Questions ───────────────────────────────────────────────
   if (preferences.remote_questions !== undefined) {
     const remoteQuestions = preferences.remote_questions as unknown;
-    if (typeof remoteQuestions === "object" && remoteQuestions !== null) {
+    if (remoteQuestions === null || remoteQuestions === false) {
+      // Bare YAML stubs and explicit disable both mean absent (#1764).
+    } else if (typeof remoteQuestions === "object") {
       validated.remote_questions = remoteQuestions as GSDPreferences["remote_questions"];
-    } else if (remoteQuestions === false) {
-      // Explicit disable for a globally-configured remote questions channel.
     } else {
       errors.push("remote_questions must be an object");
     }
@@ -1348,6 +1348,15 @@ export function validatePreferences(preferences: GSDPreferences): {
       validated.verification_max_retries = Math.floor(raw);
     } else {
       errors.push("verification_max_retries must be a non-negative number");
+    }
+  }
+
+  if (preferences.verification_timeout_ms !== undefined) {
+    const raw = preferences.verification_timeout_ms;
+    if (typeof raw === "number" && Number.isFinite(raw) && raw > 0) {
+      validated.verification_timeout_ms = Math.floor(raw);
+    } else {
+      errors.push("verification_timeout_ms must be a positive number");
     }
   }
 

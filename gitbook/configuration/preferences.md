@@ -177,13 +177,14 @@ verification_commands:
   - npm run test
 verification_auto_fix: true       # auto-retry on failure (default)
 verification_max_retries: 2       # max attempts (default: 2)
+verification_timeout_ms: 120000   # per-command spawn timeout (default: 120000)
 ```
 
 Verification commands must be simple executable commands. Shell piping (`|`) is supported, but logical OR (`||`) is rejected. GSD also rejects redirects (`>` and `<`), semicolons, backticks, and command substitution (`$(...)`) because verification is run as a controlled command list, not as an arbitrary shell program.
 
 For task-level `verify` commands (`taskPlanVerify`), GSD splits checks on newlines. `&&` chains stay within a single shell invocation, so commands such as `cd path && npm test` preserve directory context.
 
-When `verification_commands` is empty and no task-level `verify` command is available, GSD can auto-discover project checks. JavaScript projects use `package.json` scripts in this order: `typecheck`, `lint`, `test`. Python projects use the `python-project` discovery source and run `python3 -m pytest` when GSD finds explicit pytest evidence: `pytest.ini`, a pytest configuration section in `pyproject.toml` such as `[tool.pytest.ini_options]`, or files matching pytest's default test file patterns (`test_*.py` or `*_test.py`) under `tests/`.
+For the authoritative project-check discovery order and package-manager command forms, see [Configuration — Verification](../../docs/user-docs/configuration.md#verification).
 
 ### `workspace`
 

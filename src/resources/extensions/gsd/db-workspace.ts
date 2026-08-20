@@ -52,8 +52,11 @@ import {
 import {
   createLegacyImportPreview,
   hashLegacyImportValue,
+  revalidateLegacyImportPreview,
+  resolveLegacyImportPreview,
   type LegacyImportPreviewArtifact,
   type LegacyImportPreviewCreateInput,
+  type LegacyImportPreviewResolutionChoice,
 } from "./legacy-import-preview.js";
 import { drillLegacyImportBackupRestore } from "./legacy-import-restore-drill.js";
 import { inspectSqliteReadOnlySnapshot } from "./sqlite-readonly.js";
@@ -76,6 +79,7 @@ export {
 import { resolveGsdPathContract, gsdRoot } from "./paths.js";
 import { logWarning, setLogBasePath } from "./workflow-logger.js";
 import { parseDecisionsTable } from "./decision-markdown-parser.js";
+import { isSqliteBusyError } from "./sqlite-errors.js";
 
 export interface WorkflowDatabaseLocation {
   projectRoot: string;
@@ -88,6 +92,7 @@ export type WorkflowDatabaseOpenReason =
   | "created-empty"
   | "missing-database"
   | "missing-gsd-dir"
+  | "locked"
   | "open-failed"
   | "schema-too-new";
 
@@ -99,7 +104,7 @@ export type WorkflowDatabaseOpenResult =
     }
   | {
       ok: false;
-      reason: "missing-database" | "missing-gsd-dir" | "open-failed";
+      reason: "missing-database" | "missing-gsd-dir" | "locked" | "open-failed";
       location: WorkflowDatabaseLocation;
       error?: Error;
     }
@@ -174,6 +179,14 @@ export function openWorkflowDatabase(basePath: string): WorkflowDatabaseOpenResu
       return {
         ok: false,
         reason: "schema-too-new",
+        location,
+        error,
+      };
+    }
+    if (isSqliteBusyError(error)) {
+      return {
+        ok: false,
+        reason: "locked",
         location,
         error,
       };
@@ -377,10 +390,7 @@ function countRecoverRows(database: DbAdapter, table: "milestones" | "slices" | 
   return Number(database.prepare(`SELECT COUNT(*) AS count FROM ${table}`).get()?.["count"] ?? 0);
 }
 
-function prepareVerifiedImportPreview(
-  basePath: string,
-  previewInput: LegacyImportPreviewCreateInput,
-): Pick<PreparedVerifiedRecoverApplication, "basePath" | "previewInput" | "preview"> {
+function requireVerifiedImportDatabase(basePath: string): void {
   const location = resolveWorkflowDatabaseLocation(basePath);
   const databasePath = getWorkflowDatabasePath();
   const canonicalDatabasePath = realpathSync(location.projectDb);
@@ -394,36 +404,49 @@ function prepareVerifiedImportPreview(
   if (databasePath !== canonicalDatabasePath && !openDatabase(canonicalDatabasePath)) {
     throw new Error("verified import could not reopen the canonical project database path");
   }
+}
 
+function prepareVerifiedImportPreview(
+  basePath: string,
+  previewInput: LegacyImportPreviewCreateInput,
+): Pick<PreparedVerifiedRecoverApplication, "basePath" | "previewInput" | "preview"> {
+  requireVerifiedImportDatabase(basePath);
   return { basePath, previewInput, preview: createLegacyImportPreview(previewInput) };
 }
 
-function prepareVerifiedImportEvidence(
+function revalidateVerifiedImportPreview(
   basePath: string,
   previewInput: LegacyImportPreviewCreateInput,
+  expected: LegacyImportPreviewArtifact,
+): LegacyImportPreviewArtifact {
+  requireVerifiedImportDatabase(basePath);
+  return revalidateLegacyImportPreview(previewInput, expected);
+}
+
+function prepareVerifiedImportEvidence(
+  evidence: Pick<PreparedVerifiedRecoverApplication, "basePath" | "previewInput" | "preview">,
   label: string,
 ): {
   previewInput: LegacyImportPreviewCreateInput;
   preview: LegacyImportPreviewArtifact;
   backup: LegacyImportVerifiedBackup;
 } {
-  const evidence = prepareVerifiedImportPreview(basePath, previewInput);
-  const location = resolveWorkflowDatabaseLocation(basePath);
+  const location = resolveWorkflowDatabaseLocation(evidence.basePath);
   const base = captureCurrentLegacyImportBaseSnapshot();
   const destinationDirectory = join(location.projectGsd, "backups");
   mkdirSync(destinationDirectory, { recursive: true });
   const backup = prepareLegacyImportBackup({
     preview: evidence.preview,
     base,
-    roots: previewInput.roots,
-    ...(previewInput.bundledDefinitionNames === undefined
+    roots: evidence.previewInput.roots,
+    ...(evidence.previewInput.bundledDefinitionNames === undefined
       ? {}
-      : { bundledDefinitionNames: previewInput.bundledDefinitionNames }),
+      : { bundledDefinitionNames: evidence.previewInput.bundledDefinitionNames }),
     destination_directory: destinationDirectory,
     label,
   });
   drillLegacyImportBackupRestore({ backup, preview: evidence.preview, base });
-  return { previewInput, preview: evidence.preview, backup };
+  return { previewInput: evidence.previewInput, preview: evidence.preview, backup };
 }
 
 function recoverAuthorizationText(preview: LegacyImportPreviewArtifact): string {
@@ -480,9 +503,20 @@ export function prepareVerifiedRecoverApplication(basePath: string): PreparedVer
   return prepareVerifiedRecoverEvidence(basePath);
 }
 
+export function resolvePreparedVerifiedRecoverApplication(
+  evidence: Readonly<PreparedVerifiedRecoverApplication>,
+  choices: readonly LegacyImportPreviewResolutionChoice[],
+): PreparedVerifiedRecoverApplication {
+  const preview = resolveLegacyImportPreview(evidence.preview, choices);
+  return { ...evidence, preview, authorizationText: recoverAuthorizationText(preview) };
+}
+
 export function prepareVerifiedRecoverBackup(basePath: string): LegacyImportVerifiedBackup {
   const evidence = prepareVerifiedRecoverEvidence(basePath);
-  return prepareVerifiedImportEvidence(basePath, evidence.previewInput, "pre-recover").backup;
+  return prepareVerifiedImportEvidence(
+    prepareVerifiedImportPreview(basePath, evidence.previewInput),
+    "pre-recover",
+  ).backup;
 }
 
 function requireApprovedRecoverPreview(
@@ -499,11 +533,27 @@ export function applyPreparedVerifiedRecoverApplication(
   approvedPreviewHash: string,
 ): VerifiedRecoverApplicationResult {
   requireApprovedRecoverPreview(evidence.preview, approvedPreviewHash);
-  const current = prepareVerifiedImportPreview(evidence.basePath, evidence.previewInput);
-  requireApprovedRecoverPreview(current.preview, approvedPreviewHash);
-  const prepared = prepareVerifiedImportEvidence(evidence.basePath, evidence.previewInput, "pre-recover");
+  const current = revalidateVerifiedImportPreview(
+    evidence.basePath,
+    evidence.previewInput,
+    evidence.preview,
+  );
+  requireApprovedRecoverPreview(current, approvedPreviewHash);
+  const backupPreview = revalidateVerifiedImportPreview(
+    evidence.basePath,
+    evidence.previewInput,
+    evidence.preview,
+  );
+  const prepared = prepareVerifiedImportEvidence(
+    { ...evidence, preview: backupPreview },
+    "pre-recover",
+  );
   requireApprovedRecoverPreview(prepared.preview, approvedPreviewHash);
-  const finalPreview = prepareVerifiedImportPreview(evidence.basePath, evidence.previewInput).preview;
+  const finalPreview = revalidateVerifiedImportPreview(
+    evidence.basePath,
+    evidence.previewInput,
+    evidence.preview,
+  );
   requireApprovedRecoverPreview(finalPreview, approvedPreviewHash);
   const receipt = applyLegacyImport({
     invocation: {
@@ -945,7 +995,22 @@ export function applyVerifiedMigrationApplication(
         presence: "required",
       }],
     };
-    const evidence = prepareVerifiedImportEvidence(basePath, previewInput, "pre-migrate-import");
+    const created = prepareVerifiedImportPreview(basePath, previewInput);
+    const preservable = new Set(created.preview.preview.diagnoses
+      .filter((diagnosis) => diagnosis.code === "ambiguous-task-membership")
+      .map((diagnosis) => diagnosis.diagnosis_id));
+    const resolved = resolveLegacyImportPreview(
+      created.preview,
+      created.preview.preview.resolutions.flatMap((resolution) => (
+        resolution.disposition === "requires-user" && preservable.has(resolution.diagnosis_id)
+          ? [{ diagnosis_id: resolution.diagnosis_id, disposition: "preserved" as const }]
+          : []
+      )),
+    );
+    const evidence = prepareVerifiedImportEvidence(
+      { ...created, preview: resolved },
+      "pre-migrate-import",
+    );
     beforeApply?.({
       previewId: evidence.preview.preview.preview_id,
       previewHash: evidence.preview.preview_hash,

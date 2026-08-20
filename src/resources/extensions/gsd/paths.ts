@@ -20,13 +20,15 @@ import { gsdHome } from "./gsd-home.js";
 import { findWorktreeSegment, isGsdWorktreePath, resolveExternalStateProjectGsdFromWorktreePath, resolveWorktreeProjectRoot } from "./worktree-root.js";
 import {
   LAYOUT_SEGMENTS,
-  phaseDirName,
   planFileName,
   milestoneIdToPhaseNum,
   milestoneIdUniqueSuffix,
   sliceIdToPlanNum,
-  derivePhaseSlug,
+  canonicalPhaseDirName,
 } from "./layout-policy.js";
+
+export { canonicalPhaseDirName };
+
 // ─── Directory Listing Cache ──────────────────────────────────────────────────
 
 const dirEntryCache = new Map<string, Dirent[]>();
@@ -237,7 +239,11 @@ export function buildTaskFileName(taskId: string, suffix: string): string {
  * ("S06", "T03", "SUMMARY") → "S06-T03-SUMMARY.md"
  */
 export function buildFlatTaskFileName(sliceId: string, taskId: string, suffix: string): string {
-  return `${sliceId}-${taskId}-${suffix}.md`;
+  const redundantPrefix = `${sliceId}-`;
+  const bareTaskId = taskId.toUpperCase().startsWith(redundantPrefix.toUpperCase())
+    ? taskId.slice(redundantPrefix.length)
+    : taskId;
+  return `${sliceId}-${bareTaskId}-${suffix}.md`;
 }
 
 /**
@@ -553,6 +559,19 @@ function isInsideGsdWorktree(p: string): boolean {
   return name.length > 0;
 }
 
+/** Prefix used by executeMigrationWrite temp dirs (`mkdtempSync(join(targetRoot, prefix))`). */
+export const MIGRATION_STAGING_DIR_PREFIX = ".gsd-migrate-stage-";
+
+/**
+ * Detect a path inside a `.gsd-migrate-stage-*` temp dir.
+ *
+ * Staging lives under the target repo, so the git-root probe would otherwise
+ * resolve to the live repo `.gsd` and write staged projection there (#1866).
+ */
+function isInsideMigrationStaging(p: string): boolean {
+  return p.replaceAll("\\", "/").split("/").some((seg) => seg.startsWith(MIGRATION_STAGING_DIR_PREFIX));
+}
+
 function probeGsdRoot(rawBasePath: string): string {
   const contract = resolveGsdPathContract(rawBasePath);
   if (contract.isWorktree) return contract.projectGsd;
@@ -568,6 +587,10 @@ function probeGsdRoot(rawBasePath: string): string {
   //     state in the wrong location.
   if (isInsideGsdWorktree(rawBasePath)) return local;
 
+  // 1c. Migration staging (#1866) — temp dirs live inside the target repo, so
+  //     git-root / walk-up would return the live `.gsd`. Keep staging local.
+  if (isInsideMigrationStaging(rawBasePath)) return local;
+
   // Resolve symlinks so path comparisons work correctly across platforms
   // (e.g. macOS /var → /private/var). Use rawBasePath as fallback if not resolvable.
   let basePath: string;
@@ -575,6 +598,7 @@ function probeGsdRoot(rawBasePath: string): string {
 
   // Also check the resolved path for the worktree pattern (macOS /tmp → /private/tmp)
   if (basePath !== rawBasePath && isInsideGsdWorktree(basePath)) return local;
+  if (basePath !== rawBasePath && isInsideMigrationStaging(basePath)) return local;
 
   // 2. Git root anchor — used as both probe target and walk-up boundary
   //    Only walk if we're inside a git project — prevents escaping into
@@ -802,21 +826,6 @@ function resolvePhaseDir(basePath: string, milestoneId: string): string | null {
     }
   }
   return null;
-}
-
-/**
- * Derive the canonical phase dir name for a milestone when it doesn't exist yet.
- * Used by the renderer to create new phase dirs, and by ensurePreconditions to
- * scaffold the correct NN-slug directory on disk before the first render.
- */
-export function canonicalPhaseDirName(milestoneId: string, title?: string): string {
-  const phaseNum = milestoneIdToPhaseNum(milestoneId);
-  const slug = derivePhaseSlug(title || milestoneId);
-  const suffix = milestoneIdUniqueSuffix(milestoneId);
-  if (suffix) {
-    return phaseDirName(phaseNum, `${suffix}-${slug}`);
-  }
-  return phaseDirName(phaseNum, slug);
 }
 
 export function resolveRuntimeFile(basePath: string): string {

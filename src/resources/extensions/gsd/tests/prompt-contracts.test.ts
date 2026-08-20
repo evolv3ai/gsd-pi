@@ -52,7 +52,7 @@ const PHASE_PROMPT_TOOL_CALLS: Record<string, readonly string[]> = {
     "gsd_decision_save",
   ],
   "research-slice": ["gsd_summary_save"],
-  "plan-slice": ["gsd_reassess_roadmap", "gsd_plan_slice", "gsd_decision_save"],
+  "plan-slice": ["gsd_reassess_roadmap", "gsd_plan_slice", "gsd_decision_save", "capture_thought"],
   "refine-slice": ["gsd_plan_slice", "gsd_decision_save"],
   "replan-slice": ["gsd_replan_slice"],
   "execute-task": [
@@ -134,6 +134,7 @@ test("run-uat prompt branches on dynamic UAT mode and supports runtime evidence"
   assert.match(prompt, /live-runtime/);
   assert.match(prompt, /browser\/runtime\/network/i);
   assert.match(prompt, /NEEDS-HUMAN/);
+  assert.match(prompt, /out-of-surface-tool/);
   assert.doesNotMatch(prompt, /uatType:\s*artifact-driven/);
   assert.doesNotMatch(prompt, /Call `gsd_summary_save`/);
 });
@@ -371,7 +372,7 @@ test("workflow preferences prompt writes defaults without interactive questions"
 
 test("project research prompt dispatches scout agents allowed by planning-dispatch", () => {
   const prompt = readPrompt("guided-research-project");
-  assert.match(prompt, /agent:\s*"scout"/);
+  assert.match(prompt, /agent:\s*"\{\{scoutAgentType\}\}"/);
   assert.match(prompt, /Do not use `agent: "researcher"`/);
   assert.match(prompt, /runtime clears the dispatch marker/i);
   assert.doesNotMatch(prompt, /Delete `\.gsd\/runtime\/research-project-inflight`/);
@@ -755,7 +756,7 @@ test("reactive-execute prompt references tool calls instead of checkbox updates"
 test("parallel subagent prompts forbid serialized tasks arrays", () => {
   const expectations = [
     { name: "reactive-execute", agent: "worker" },
-    { name: "parallel-research-slices", agent: "scout" },
+    { name: "parallel-research-slices", agent: "\\{\\{scoutAgentType\\}\\}" },
     { name: "gate-evaluate", agent: "tester" },
   ] as const;
 

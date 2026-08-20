@@ -157,7 +157,7 @@ export function readInstanceRegistry(registryPath = WEB_INSTANCES_PATH): WebInst
   }
 }
 
-export function writeInstanceRegistry(registry: WebInstanceRegistry, registryPath = WEB_INSTANCES_PATH): void {
+function writeInstanceRegistry(registry: WebInstanceRegistry, registryPath = WEB_INSTANCES_PATH): void {
   writeFileSync(registryPath, JSON.stringify(registry, null, 2), 'utf8')
 }
 
@@ -314,7 +314,7 @@ async function loadResourceBootstrap(): Promise<ResourceBootstrapLike> {
   }
 }
 
-export function resolveWebHostBootstrap(options: {
+function resolveWebHostBootstrap(options: {
   packageRoot?: string
   existsSync?: (path: string) => boolean
 } = {}): WebHostBootstrap {
@@ -351,7 +351,7 @@ export function resolveWebHostBootstrap(options: {
   }
 }
 
-export async function reserveWebPort(host = DEFAULT_HOST): Promise<number> {
+async function reserveWebPort(host = DEFAULT_HOST): Promise<number> {
   return await new Promise<number>((resolvePort, reject) => {
     const server = createServer()
     server.unref()
@@ -400,6 +400,17 @@ function emitLaunchStatus(stderr: WritableLike, status: WebModeLaunchStatus): vo
 
 function isWebNoAuthEnabled(env: NodeJS.ProcessEnv): boolean {
   return env.GSD_WEB_NO_AUTH === '1'
+}
+
+function unauthenticatedLanRefusalReason(host: string): string {
+  return [
+    `refusing to disable auth on non-loopback host ${host}: this exposes terminal and file APIs to the network. Bind to 127.0.0.1, keep token auth on, or set GSD_WEB_ALLOW_UNAUTHENTICATED_LAN=1 to override. --no-auth alone is not enough.`,
+    'Unix: GSD_WEB_ALLOW_UNAUTHENTICATED_LAN=1 gsd --web --host 0.0.0.0 --no-auth',
+    'PowerShell: $env:GSD_WEB_ALLOW_UNAUTHENTICATED_LAN="1"; gsd --web --host 0.0.0.0 --no-auth',
+    'CMD: set GSD_WEB_ALLOW_UNAUTHENTICATED_LAN=1',
+    '     gsd --web --host 0.0.0.0 --no-auth',
+    'See docs/user-docs/web-interface.md.',
+  ].join('\n')
 }
 
 function isLoopbackHost(host: string): boolean {
@@ -655,7 +666,7 @@ export async function launchWebMode(
       hostKind: 'unresolved',
       hostPath: null,
       hostRoot: null,
-      failureReason: `refusing to disable auth on non-loopback host ${host}: this exposes terminal and file APIs to the network. Bind to 127.0.0.1, keep token auth on, or set GSD_WEB_ALLOW_UNAUTHENTICATED_LAN=1 to override.`,
+      failureReason: unauthenticatedLanRefusalReason(host),
       candidates: [],
     }
     emitLaunchStatus(stderr, failure)

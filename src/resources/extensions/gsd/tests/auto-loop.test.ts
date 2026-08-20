@@ -2276,9 +2276,10 @@ test("custom-engine recovery break and retry terminalize their dispatch", async 
       s.orchestration = {
         settle: async () => { releaseCalls++; },
         retryActiveUnit: async () => { releaseCalls++; },
-        abandonActiveUnit: async () => {},
+        abandonActiveUnit: async () => { releaseCalls++; },
       };
       let dispatchStatusAtPause: string | undefined;
+      let releaseCallsAtPause: number | undefined;
       const deps = makeMockDeps({
         isDbAvailable: () => true,
         taskExecutionBoundary: async () => {
@@ -2287,6 +2288,7 @@ test("custom-engine recovery break and retry terminalize their dispatch", async 
         },
         pauseAuto: async () => {
           dispatchStatusAtPause = getLatestForUnit("M001/S01/T01")?.status;
+          releaseCallsAtPause = releaseCalls;
         },
       });
 
@@ -2302,13 +2304,141 @@ test("custom-engine recovery break and retry terminalize their dispatch", async 
         action === "break" ? "failed" : undefined,
         "a terminal recovery abort must settle its dispatch before pausing",
       );
-      assert.equal(releaseCalls, 0);
+      assert.equal(
+        releaseCallsAtPause,
+        action === "break" ? 1 : undefined,
+        "a terminal recovery abort must release its active unit before pausing",
+      );
+      assert.equal(releaseCalls, 1);
       assert.equal(pi.calls.length, 0, `${action} must exit before invoking the agent`);
     } finally {
       closeDatabase();
       rmSync(basePath, { recursive: true, force: true });
     }
   }
+});
+
+test("#1769: unit recovery retry releases the active orchestration marker", async (t) => {
+  _resetPendingResolve();
+
+  const ctx = makeMockCtx();
+  ctx.ui.setStatus = () => {};
+  ctx.ui.notify = () => {};
+  const pi = makeMockPi();
+  let advanceCalls = 0;
+  let activeMarker = false;
+  const retried: UnitRef[] = [];
+  const unit = { unitType: "execute-task", unitId: "M001/S01/T01" };
+  const s = makeLoopSession({
+    currentMilestoneId: "M001",
+    orchestration: {
+      start: async () => ({ kind: "stopped" as const, reason: "unused" }),
+      advance: async () => {
+        advanceCalls++;
+        if (advanceCalls === 1) {
+          activeMarker = true;
+          return {
+            kind: "advanced" as const,
+            unit,
+            stateSnapshot: await makeMockDeps().deriveState(s.basePath),
+            dispatchId: 1,
+          };
+        }
+        if (activeMarker) {
+          return {
+            kind: "skipped" as const,
+            code: "unit-already-active" as const,
+            reason: "idempotent advance: unit already active",
+          };
+        }
+        return { kind: "stopped" as const, reason: "retry marker released" };
+      },
+      settle: async () => {},
+      completeActiveUnit: async () => {},
+      retryActiveUnit: async (retriedUnit) => {
+        activeMarker = false;
+        retried.push(retriedUnit);
+      },
+      abandonActiveUnit: async () => {},
+      resume: async () => ({ kind: "stopped" as const, reason: "unused" }),
+      stop: async (reason: string) => ({ kind: "stopped" as const, reason }),
+      getStatus: () => ({
+        phase: "running" as const,
+        transitionCount: advanceCalls,
+        ...(activeMarker ? { activeUnit: unit } : {}),
+      }),
+    } satisfies AutoOrchestrationModule,
+  });
+  openLoopDatabase(t, s);
+  const deps = makeMockDeps({
+    adjudicateNonAdvancingOutcome: undefined,
+    taskExecutionBoundary: async () => ({
+      action: "retry" as const,
+      reason: "task-recovery-repair",
+    }),
+  });
+
+  await autoLoop(ctx, pi, s, deps);
+
+  assert.equal(advanceCalls, 2, "the next advance must run after recovery retry closeout");
+  assert.deepEqual(retried, [unit]);
+  const wedgeResult = getOpenWedge(realpathSync(s.basePath));
+  assert.equal(wedgeResult.ok, true);
+  assert.equal(wedgeResult.ok ? wedgeResult.wedge : null, null);
+});
+
+test("autoLoop stops at the retry closeout when orchestration reports a liveness trip", async (t) => {
+  _resetPendingResolve();
+
+  const ctx = makeMockCtx();
+  ctx.ui.setStatus = () => {};
+  ctx.ui.notify = () => {};
+  const pi = makeMockPi();
+  const unit = { unitType: "plan-slice", unitId: "M001/S01" };
+  let advanceCalls = 0;
+  let orchestrationPhase: AutoStatus["phase"] = "running";
+  const stopReasons: Array<string | undefined> = [];
+  const s = makeLoopSession({ currentMilestoneId: "M001" });
+  s.orchestration = {
+    start: async () => ({ kind: "stopped" as const, reason: "unused" }),
+    advance: async () => {
+      advanceCalls++;
+      if (advanceCalls > 1) {
+        s.active = false;
+        return { kind: "stopped" as const, reason: "unexpected redispatch after retry trip" };
+      }
+      return {
+        kind: "advanced" as const,
+        unit,
+        stateSnapshot: await makeMockDeps().deriveState(s.basePath),
+        dispatchId: 1,
+      };
+    },
+    settle: async () => {},
+    completeActiveUnit: async () => {},
+    retryActiveUnit: async () => {
+      orchestrationPhase = "stopped";
+    },
+    abandonActiveUnit: async () => {},
+    resume: async () => ({ kind: "stopped" as const, reason: "unused" }),
+    stop: async (reason: string) => ({ kind: "stopped" as const, reason }),
+    getStatus: () => ({ phase: orchestrationPhase, transitionCount: advanceCalls }),
+  } satisfies AutoOrchestrationModule;
+  openLoopDatabase(t, s);
+  const deps = makeMockDeps({
+    adjudicateNonAdvancingOutcome: undefined,
+    taskExecutionBoundary: async () => ({ action: "retry" as const, reason: "finalize-retry" }),
+    stopAuto: async (_ctx, _pi, reason) => {
+      stopReasons.push(reason);
+      s.active = false;
+    },
+  });
+
+  await autoLoop(ctx, pi, s, deps);
+
+  assert.equal(advanceCalls, 1, "the loop must not redispatch after the retry trip");
+  assert.equal(stopReasons.length, 1);
+  assert.match(stopReasons[0] ?? "", /liveness backstop tripped during retry closeout/);
 });
 
 test("custom-engine recovery fails loudly when dispatch terminalization cannot be confirmed", async (t) => {
@@ -3110,10 +3240,13 @@ test("autoLoop calls deriveState → resolveDispatch → runUnit in sequence", a
       deps.callLog.push("resolveDispatch");
       return {
         action: "dispatch" as const,
-        unitType: "plan-slice",
-        unitId: "M001/S01",
+        unitType: "execute-task",
+        unitId: "M001/S01/T01",
         prompt: "do the thing",
       };
+    },
+    taskPublicationBoundary: async () => {
+      deps.callLog.push("publishVerifiedTaskExecution");
     },
     postUnitPostVerification: async () => {
       deps.callLog.push("postUnitPostVerification");
@@ -3140,6 +3273,7 @@ test("autoLoop calls deriveState → resolveDispatch → runUnit in sequence", a
   const dispatchIdx = deps.callLog.indexOf("resolveDispatch");
   const preVerIdx = deps.callLog.indexOf("postUnitPreVerification");
   const verIdx = deps.callLog.indexOf("runPostUnitVerification");
+  const publishIdx = deps.callLog.indexOf("publishVerifiedTaskExecution");
   const postVerIdx = deps.callLog.indexOf("postUnitPostVerification");
 
   assert.ok(deriveIdx >= 0, "deriveState should have been called");
@@ -3156,8 +3290,12 @@ test("autoLoop calls deriveState → resolveDispatch → runUnit in sequence", a
     "runPostUnitVerification should come after pre-verification",
   );
   assert.ok(
-    postVerIdx > verIdx,
-    "postUnitPostVerification should come after verification",
+    publishIdx > verIdx,
+    "verified Task publication should come after verification",
+  );
+  assert.ok(
+    postVerIdx > publishIdx,
+    "postUnitPostVerification should observe the published Task",
   );
 });
 
@@ -4257,7 +4395,7 @@ test("autoLoop pauses a predecessor task-recovery abort before any agent turn", 
   const pi = makeMockPi();
   const s = makeLoopSession();
   let pauseReason: string | undefined;
-  let recoveryReads = 0;
+  let terminalAbortReads = 0;
   const abortReason =
     "task-recovery-abort (recoveryActionId: recovery-action-1; resume with gsd_task_recovery_resume)";
 
@@ -4283,14 +4421,12 @@ test("autoLoop pauses a predecessor task-recovery abort before any agent turn", 
             milestoneLeaseToken: 7,
           };
         },
+        readTerminalTaskRecoveryAbort() {
+          terminalAbortReads += 1;
+          return { recoveryActionId: "recovery-action-1" };
+        },
         readTaskRecoveryRoute() {
-          recoveryReads += 1;
-          return {
-            recoveryActionId: "recovery-action-1",
-            recoveryOwner: "agent",
-            action: "abort",
-            resumeAuthorized: false,
-          };
+          throw new Error("all-attempt terminal abort guard must run before the latest-route fallback");
         },
       }),
     pauseAuto: async (_ctx, _pi, errorContext) => {
@@ -4302,7 +4438,7 @@ test("autoLoop pauses a predecessor task-recovery abort before any agent turn", 
   await autoLoop(ctx, pi, s, deps);
 
   assert.equal(pi.calls.length, 0, "the predecessor abort must stop before an agent turn");
-  assert.equal(recoveryReads, 1, "the durable predecessor abort must be read exactly once");
+  assert.equal(terminalAbortReads, 1, "the durable predecessor abort must be read exactly once");
   assert.equal(pauseReason, abortReason);
   assert.match(notifications.join("\n"), /recoveryActionId: recovery-action-1/);
   assert.match(notifications.join("\n"), /gsd_task_recovery_resume/);
@@ -5180,6 +5316,80 @@ test("ADR-047 #1655: identical transient pauses trip at the loop outcome boundar
   } finally {
     try { closeDatabase(); } catch { /* noop */ }
     rmSync(s1.basePath, { recursive: true, force: true });
+  }
+});
+
+test("#1852: projection-lock transient pauses exhaust their backoff and never wedge", async () => {
+  _resetPendingResolve();
+
+  const ctx = makeMockCtx();
+  ctx.ui.setStatus = () => {};
+  const pi = makeMockPi();
+  const notices: string[] = [];
+  ctx.ui.notify = (message: string) => { notices.push(message); };
+
+  const s = makeLoopSession({ currentMilestoneId: "M001" });
+  let advanceCalls = 0;
+  s.orchestration = {
+    start: async () => ({ kind: "stopped" as const, reason: "unused" }),
+    advance: async () => {
+      advanceCalls++;
+      return {
+        kind: "paused" as const,
+        reason: "projection root operation failed: file in use (os error 32)",
+        backoffMs: [1, 1, 1],
+      };
+    },
+    settle: async () => {},
+    completeActiveUnit: async () => {},
+    retryActiveUnit: async () => {},
+    abandonActiveUnit: async () => {},
+    resume: async () => ({ kind: "stopped" as const, reason: "unused" }),
+    stop: async (reason: string) => ({ kind: "stopped" as const, reason }),
+    getStatus: () => ({ phase: "running" as const, transitionCount: 1 }),
+  } satisfies AutoOrchestrationModule;
+  mkdirSync(join(s.basePath, ".gsd"), { recursive: true });
+  openDatabase(join(s.basePath, ".gsd", "gsd.db"));
+
+  let stopReason = "";
+  const deps = makeMockDeps({
+    adjudicateNonAdvancingOutcome: undefined,
+    stopAuto: async (_ctx, _pi, reason) => {
+      deps.callLog.push("stopAuto");
+      stopReason = reason ?? "";
+      s.active = false;
+    },
+  });
+
+  try {
+    await autoLoop(ctx, pi, s, deps);
+
+    assert.equal(advanceCalls, 4, "all three waits must run before the next pause exhausts retries");
+    assert.equal(
+      notices.filter((message) => /waiting \d+s before retrying/.test(message)).length,
+      3,
+      "every class-specific backoff entry must be reachable",
+    );
+    assert.equal(deps.callLog.includes("stopAuto"), true, "the class budget still stops a never-healing transient");
+    assert.match(stopReason, /^Blocked: /);
+
+    // A later manual restart can exhaust the same naturally-identical lock
+    // failure again without that recurrence becoming an ADR-047 wedge.
+    s.active = true;
+    stopReason = "";
+    await autoLoop(ctx, pi, s, deps);
+    assert.equal(advanceCalls, 8);
+    assert.match(stopReason, /^Blocked: /);
+    const wedgeResult = getOpenWedge(realpathSync(s.basePath));
+    assert.equal(wedgeResult.ok, true);
+    assert.equal(
+      wedgeResult.ok ? wedgeResult.wedge : null,
+      null,
+      "identical transient strings must not trip the strike counter",
+    );
+  } finally {
+    try { closeDatabase(); } catch { /* noop */ }
+    rmSync(s.basePath, { recursive: true, force: true });
   }
 });
 

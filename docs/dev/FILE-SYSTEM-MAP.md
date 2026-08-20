@@ -555,7 +555,6 @@
 | gsd/guided-flow.ts | GSD Workflow | User-guided workflow orchestration |
 | gsd/env-utils.ts | GSD Workflow | Environment variable utilities |
 | gsd/git-constants.ts | GSD Workflow | Git-related constants and paths |
-| gsd/milestone-id-utils.ts | GSD Workflow | Milestone ID generation and parsing |
 | gsd/resource-version.ts | GSD Workflow | Resource versioning helpers |
 | gsd/atomic-write.ts | GSD Workflow | Atomic file write operations |
 | gsd/captures.ts | GSD Workflow | Artifact capture and storage |
@@ -739,7 +738,6 @@ package and refreshes stale or incomplete managed copies.
 
 | File | System Label(s) | Description |
 |------|-----------------|-------------|
-| web/components/gsd/terminal.tsx | Web UI | Terminal widget with input mode handling |
 | web/components/gsd/shell-terminal.tsx | Web UI | Shell terminal with PTY integration |
 | web/components/gsd/main-session-terminal.tsx | Web UI | Main session terminal display |
 | web/components/gsd/dual-terminal.tsx | Web UI | Side-by-side terminal layout |
@@ -752,7 +750,6 @@ package and refreshes stale or incomplete managed copies.
 | web/components/gsd/remaining-command-panels.tsx | Web UI, Commands | History, undo, export, cleanup panels |
 | web/components/gsd/diagnostics-panels.tsx | Web UI, Doctor/Diagnostics | Doctor, forensics, skill health panels |
 | web/components/gsd/settings-panels.tsx | Web UI, Config | Settings and preferences panels |
-| web/components/gsd/guided-dialog.tsx | Web UI | Generic guided dialog component |
 | web/components/gsd/update-banner.tsx | Web UI | Update notification banner |
 | web/components/gsd/scope-badge.tsx | Web UI | Scope badge indicator |
 | web/components/gsd/loading-skeletons.tsx | Web UI | Loading skeleton placeholders |
@@ -774,7 +771,6 @@ package and refreshes stale or incomplete managed copies.
 | web/components/gsd/onboarding/step-remote.tsx | Web UI, Onboarding | Remote configuration step |
 | web/components/gsd/onboarding/step-optional.tsx | Web UI, Onboarding | Optional settings step |
 | web/components/gsd/onboarding/step-ready.tsx | Web UI, Onboarding | Ready confirmation step |
-| web/components/gsd/onboarding/wizard-stepper.tsx | Web UI, Onboarding | Stepper progress indicator |
 
 ### API Routes
 

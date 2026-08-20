@@ -8,6 +8,7 @@ import { spawnSync } from "node:child_process";
 import {
   gsdProjectionRoot,
   gsdRoot,
+  buildFlatTaskFileName,
   milestonesDir,
   resolveGsdPathContract,
   resolveSliceFile,
@@ -32,6 +33,11 @@ function initGit(dir: string): void {
 }
 
 describe('paths', () => {
+  test('flat task artifacts do not duplicate a redundant slice prefix', () => {
+    assert.equal(buildFlatTaskFileName('S05', 'S05-T01', 'SUMMARY'), 'S05-T01-SUMMARY.md');
+    assert.equal(buildFlatTaskFileName('S05', 'T01', 'SUMMARY'), 'S05-T01-SUMMARY.md');
+  });
+
   test('Case 1: .gsd exists at basePath — fast path', () => {
     const root = tmp();
     try {
@@ -270,5 +276,19 @@ describe('paths', () => {
       else process.env.GSD_STATE_DIR = originalStateDir;
       cleanup(root);
     }
+  });
+
+  test('Case 12: migration staging under a git repo does not resolve to the live .gsd (#1866)', (t) => {
+    const root = tmp();
+    t.after(() => cleanup(root));
+    initGit(root);
+    const liveGsd = join(root, ".gsd");
+    mkdirSync(liveGsd);
+    writeFileSync(join(liveGsd, "PROJECT.md"), "# live\n");
+    const stagingRoot = mkdtempSync(join(root, ".gsd-migrate-stage-"));
+    _clearGsdRootCache();
+    const result = gsdRoot(stagingRoot);
+    assert.deepStrictEqual(result, join(stagingRoot, ".gsd"), "staging probe returns stagingRoot/.gsd");
+    assert.notDeepStrictEqual(result, liveGsd, "staging probe must not return the live git-root .gsd");
   });
 });

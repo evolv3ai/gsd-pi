@@ -22,7 +22,7 @@ import { join, dirname } from "node:path";
 import { tmpdir } from "node:os";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { discoverCommands, runVerificationGate, runVerificationGateForTargets, formatFailureContext, captureRuntimeErrors, runDependencyAudit, isLikelyCommand, validateVerificationCommand, hasDiscoverableTestFiles } from "../verification-gate.ts";
+import { discoverCommands, runVerificationGate, runVerificationGateForTargets, formatFailureContext, captureRuntimeErrors, runDependencyAudit, isLikelyCommand, validateVerificationCommand, hasDiscoverableTestFiles, splitUnquotedLines } from "../verification-gate.ts";
 import type { CaptureRuntimeErrorsOptions, DependencyAuditOptions } from "../verification-gate.ts";
 import { validatePreferences } from "../preferences.ts";
 
@@ -114,7 +114,7 @@ describe("verification-gate: discovery", () => {
     assert.deepStrictEqual(result.commands, [
       "npm run typecheck",
       "npm run lint",
-      "npm run test",
+      "npm test",
     ]);
     assert.equal(result.source, "package-json");
   });
@@ -172,7 +172,7 @@ describe("verification-gate: discovery", () => {
     assert.equal(result.source, "task-plan");
   });
 
-  test("package.json with only test script → returns only npm run test", () => {
+  test("package.json with only test script → returns only npm test", () => {
     writeFileSync(
       join(tmp, "package.json"),
       JSON.stringify({
@@ -184,7 +184,103 @@ describe("verification-gate: discovery", () => {
       }),
     );
     const result = discoverCommands({ cwd: tmp });
-    assert.deepStrictEqual(result.commands, ["npm run test"]);
+    assert.deepStrictEqual(result.commands, ["npm test"]);
+    assert.equal(result.source, "package-json");
+  });
+
+  test("pnpm-lock.yaml present → uses pnpm commands", () => {
+    writeFileSync(
+      join(tmp, "package.json"),
+      JSON.stringify({
+        scripts: {
+          typecheck: "tsc --noEmit",
+          lint: "eslint .",
+          test: "vitest",
+        },
+      }),
+    );
+    writeFileSync(join(tmp, "pnpm-lock.yaml"), "lockfileVersion: 9.0");
+    const result = discoverCommands({ cwd: tmp });
+    assert.deepStrictEqual(result.commands, [
+      "pnpm typecheck",
+      "pnpm lint",
+      "pnpm test",
+    ]);
+    assert.equal(result.source, "package-json");
+  });
+
+  test("yarn.lock present → uses yarn commands", () => {
+    writeFileSync(
+      join(tmp, "package.json"),
+      JSON.stringify({
+        scripts: {
+          typecheck: "tsc --noEmit",
+          lint: "eslint .",
+          test: "vitest",
+        },
+      }),
+    );
+    writeFileSync(join(tmp, "yarn.lock"), "# yarn lockfile v1");
+    const result = discoverCommands({ cwd: tmp });
+    assert.deepStrictEqual(result.commands, [
+      "yarn typecheck",
+      "yarn lint",
+      "yarn test",
+    ]);
+    assert.equal(result.source, "package-json");
+  });
+
+  test("bun.lockb present → uses bun commands", () => {
+    writeFileSync(
+      join(tmp, "package.json"),
+      JSON.stringify({
+        scripts: {
+          typecheck: "tsc --noEmit",
+          test: "bun test",
+        },
+      }),
+    );
+    writeFileSync(join(tmp, "bun.lockb"), "binary");
+    const result = discoverCommands({ cwd: tmp });
+    assert.deepStrictEqual(result.commands, [
+      "bun run typecheck",
+      "bun run test",
+    ]);
+    assert.equal(result.source, "package-json");
+  });
+
+  test("packageManager field in package.json → uses specified manager", () => {
+    writeFileSync(
+      join(tmp, "package.json"),
+      JSON.stringify({
+        packageManager: "pnpm@9.12.2",
+        scripts: {
+          typecheck: "tsc --noEmit",
+          lint: "eslint .",
+        },
+      }),
+    );
+    const result = discoverCommands({ cwd: tmp });
+    assert.deepStrictEqual(result.commands, [
+      "pnpm typecheck",
+      "pnpm lint",
+    ]);
+    assert.equal(result.source, "package-json");
+  });
+
+  test("lock file takes precedence over packageManager field", () => {
+    writeFileSync(
+      join(tmp, "package.json"),
+      JSON.stringify({
+        packageManager: "npm@10.0.0",  // says npm
+        scripts: {
+          typecheck: "tsc --noEmit",
+        },
+      }),
+    );
+    writeFileSync(join(tmp, "pnpm-lock.yaml"), "lockfileVersion: 9.0");  // but has pnpm lock
+    const result = discoverCommands({ cwd: tmp });
+    assert.deepStrictEqual(result.commands, ["pnpm typecheck"]);
     assert.equal(result.source, "package-json");
   });
 
@@ -231,7 +327,7 @@ describe("verification-gate: discovery", () => {
     });
     // Prose should be rejected, so it falls through to package.json
     assert.equal(result.source, "package-json");
-    assert.deepStrictEqual(result.commands, ["npm run test"]);
+    assert.deepStrictEqual(result.commands, ["npm test"]);
   });
 
   test("non-ASCII prose taskPlanVerify is rejected, falls through to package.json", () => {
@@ -246,7 +342,7 @@ describe("verification-gate: discovery", () => {
     });
     // Non-ASCII prose should be rejected, so it falls through to package.json
     assert.equal(result.source, "package-json");
-    assert.deepStrictEqual(result.commands, ["npm run test"]);
+    assert.deepStrictEqual(result.commands, ["npm test"]);
   });
 
   test("prose taskPlanVerify with no fallback checks → source task-plan-prose", () => {
@@ -503,6 +599,22 @@ describe("verification-gate: execution", () => {
     assert.equal(typeof result.timestamp, "number");
   });
 
+  test("passing task evidence prevents unrelated preference verification from failing an artifact task (#1431)", () => {
+    const result = runVerificationGate({
+      cwd: tmp,
+      taskPlanVerify: "Planning artifacts exist and contain all required sections",
+      preferenceCommands: ["node -e 'process.exit(9)'"],
+      taskEvidence: [
+        { command: "gsd_exec node: artifact check", exitCode: 0, verdict: "passed", durationMs: 12 },
+        { command: "gsd_exec node: consolidated artifact verification", exitCode: 0, verdict: "pass", durationMs: 8 },
+      ],
+    });
+
+    assert.equal(result.passed, true);
+    assert.equal(result.discoverySource, "task-plan-prose");
+    assert.deepEqual(result.checks, []);
+  });
+
   test("host verification removes GSD control-plane routing while preserving ordinary environment", () => {
     const routingKeys = [
       "GSD_PROJECT_ROOT",
@@ -669,6 +781,26 @@ describe("verification-gate: execution", () => {
     assert.ok(result.checks[2].stdout.includes("third"));
   });
 
+  test("large failure output preserves the exit code and trailing test summary", () => {
+    const scriptPath = join(tmp, "large-failure.cjs");
+    writeFileSync(scriptPath, [
+      'process.stdout.write("failure details\\n");',
+      'process.stdout.write("x".repeat(2 * 1024 * 1024));',
+      'process.stdout.write("\\n=== short test summary info ===\\nFAILED tests/test_example.py::test_failure\\n");',
+      "process.exitCode = 1;",
+    ].join("\n"));
+
+    const result = withRtkDisabled(() => runVerificationGate({
+      cwd: tmp,
+      preferenceCommands: [`${JSON.stringify(process.execPath)} ${JSON.stringify(scriptPath)}`],
+    }));
+
+    assert.equal(result.passed, false);
+    assert.equal(result.checks[0].exitCode, 1);
+    assert.match(result.checks[0].stdout, /FAILED tests\/test_example\.py::test_failure/);
+    assert.doesNotMatch(result.checks[0].stderr, /ENOBUFS/);
+  });
+
 test("gate execution uses cwd for spawnSync", () => {
     // pwd should report the temp dir
     const result = runVerificationGate({
@@ -719,8 +851,8 @@ test("gate execution uses cwd for spawnSync", () => {
     });
 
     assert.equal(result.checks.length, 2);
-    assert.equal(result.checks[0].command, "[frontend] npm run test");
-    assert.equal(result.checks[1].command, "[backend] npm run test");
+    assert.equal(result.checks[0].command, "[frontend] npm test");
+    assert.equal(result.checks[1].command, "[backend] npm test");
     assert.equal(result.discoverySource, "package-json");
   });
 });
@@ -941,12 +1073,126 @@ test("validateVerificationCommand rejects logical OR fallback syntax", () => {
   }
 });
 
+test("runVerificationGate: timeout is failureClass timeout, not exit 127 (#1759)", () => {
+  const dir = makeTempDir("gsd-verify-timeout");
+  const result = withRtkDisabled(() => runVerificationGate({
+    cwd: dir,
+    preferenceCommands: ["sleep 5"],
+    commandTimeoutMs: 50,
+  }));
+  assert.equal(result.passed, false);
+  assert.equal(result.checks.length, 1);
+  assert.notEqual(result.checks[0]?.exitCode, 127);
+  assert.equal(result.checks[0]?.failureClass, "timeout");
+  assert.match(result.checks[0]?.stderr ?? "", /timed out after 50ms/);
+  assert.match(result.checks[0]?.stderr ?? "", /verification_timeout_ms/);
+});
+
+test("runVerificationGate: missing binary is still exit 127 (#1759)", () => {
+  const dir = makeTempDir("gsd-verify-enoent");
+  const result = withRtkDisabled(() => runVerificationGate({
+    cwd: dir,
+    preferenceCommands: ["__gsd_missing_binary_1783__"],
+  }));
+  assert.equal(result.passed, false);
+  assert.equal(result.checks[0]?.exitCode, 127);
+  assert.equal(result.checks[0]?.failureClass, undefined);
+});
+
+test("validatePreferences: verification_timeout_ms override and default (#1759)", () => {
+  const set = validatePreferences({ verification_timeout_ms: 2500.9 });
+  assert.equal(set.errors.length, 0);
+  assert.equal(set.preferences.verification_timeout_ms, 2500);
+  assert.equal((set.warnings ?? []).filter((w) => w.includes("unknown")).length, 0);
+  const unset = validatePreferences({});
+  assert.equal(unset.preferences.verification_timeout_ms, undefined);
+  const bad = validatePreferences({ verification_timeout_ms: 0 });
+  assert.ok(bad.errors.some((e) => e.includes("verification_timeout_ms")));
+});
+
 test("validateVerificationCommand rejects arbitrary semicolon command chaining", () => {
   const result = validateVerificationCommand("python3 tools/check-status.py; rm -rf output");
   assert.equal(result.ok, false);
   if (!result.ok) {
     assert.match(result.reason, /shell control syntax/);
   }
+});
+
+// ─── Quote-aware substitution + flag-tolerant prose (#1671, #1724 / #1782) ──
+
+const ISSUE_1671_VERIFY =
+  "node --test tests/hooks-planning.test.ts — exit 0, asserts: (1) toolNames includes discussion_arena when forced + planning, (2) excludes when available-only, (3) excludes when execution phase, (4) prompt instruction contains marker, (5) repeated calls do not duplicate instruction. Plus npm test full suite 0 regressions on 19/41 (now 41+) tests.";
+
+const ISSUE_1671_OCCURRENCE_1 =
+  "npm test -- tests/discussion-arena-coordination.test.ts exit 0 con nuovi test verdi (assenza activation, activation valida, mode invalido, milestone ID con trattino vs underscore, milestones nested profondità). npx tsc --noEmit exit 0.";
+
+const ISSUE_1671_OCCURRENCE_2 =
+  "npm test -- tests/examples-validation.test.ts exit 0. Il parsing dell'esempio produce activation strutturata.";
+
+const ISSUE_1724_RG = "! rg -q '`[a-zA-Z_]+ \\(' module_file.py";
+
+test("validateVerificationCommand: quote-aware substitution truth table (#1724)", () => {
+  assert.equal(validateVerificationCommand(ISSUE_1724_RG).ok, true, "single-quoted backtick in rg pattern");
+  assert.equal(validateVerificationCommand("rg 'foo`bar' notes.md").ok, true, "walkthrough: single-quoted backtick");
+  assert.equal(validateVerificationCommand("rg -q '$(pattern)' file.txt").ok, true, "single-quoted $(");
+
+  const unquotedSub = validateVerificationCommand("echo $(rm -rf /tmp/gsd-verify-x)");
+  assert.equal(unquotedSub.ok, false, "unquoted $( still rejected");
+  if (!unquotedSub.ok) assert.match(unquotedSub.reason, /shell control syntax/);
+
+  const unquotedTick = validateVerificationCommand("echo `rm -rf /tmp/gsd-verify-x`");
+  assert.equal(unquotedTick.ok, false, "unquoted backtick still rejected");
+  if (!unquotedTick.ok) assert.match(unquotedTick.reason, /shell control syntax/);
+
+  const doubleQuotedSub = validateVerificationCommand('echo "$(rm -rf /tmp/gsd-verify-x)"');
+  assert.equal(doubleQuotedSub.ok, false, "double quotes do not protect $(");
+  if (!doubleQuotedSub.ok) assert.match(doubleQuotedSub.reason, /shell control syntax/);
+
+  const doubleQuotedTick = validateVerificationCommand("echo \"`rm -rf /tmp/gsd-verify-x`\"");
+  assert.equal(doubleQuotedTick.ok, false, "double quotes do not protect backticks");
+  if (!doubleQuotedTick.ok) assert.match(doubleQuotedTick.reason, /shell control syntax/);
+});
+
+test("isLikelyCommand: flags after the command word do not suppress prose (#1671)", () => {
+  assert.equal(isLikelyCommand("node --test tests/hooks-planning.test.ts"), true, "plain command with flags");
+  assert.equal(isLikelyCommand(ISSUE_1671_VERIFY), false, "reporter Verify line is prose");
+  assert.equal(isLikelyCommand("git log --oneline -5"), true, "flag-only command stays a command");
+  assert.equal(isLikelyCommand("git log --oneline shows the scaffold commit"), false, "flag then prose marker");
+  assert.equal(isLikelyCommand(`${ISSUE_1671_OCCURRENCE_1} contains a marker`), false);
+  assert.equal(isLikelyCommand(`${ISSUE_1671_OCCURRENCE_2} contains a marker`), false);
+});
+
+test("discoverCommands: #1671 reporter line is not executed; #1724 rg line is", () => {
+  const proseDir = makeTempDir("gsd-verify-1671");
+  const prose = discoverCommands({ cwd: proseDir, taskPlanVerify: ISSUE_1671_VERIFY });
+  assert.deepEqual(prose.commands, [], "appended assertion prose must not become a check");
+  assert.notEqual(prose.source, "task-plan");
+
+  const rgDir = makeTempDir("gsd-verify-1724");
+  const rg = discoverCommands({ cwd: rgDir, taskPlanVerify: ISSUE_1724_RG });
+  assert.deepEqual(rg.commands, [ISSUE_1724_RG]);
+  assert.equal(rg.source, "task-plan");
+});
+
+const ISSUE_1798_VERIFY = `grep -q '"version": "1.0.0"' manifest.json && node --input-type=module --eval "import fs from 'node:fs'
+const m = JSON.parse(fs.readFileSync('manifest.json','utf8'))
+if (m.priority !== 100) throw new Error('priority')
+console.log('OK')" && npm run typecheck`;
+
+test("splitUnquotedLines keeps newlines inside quotes (#1798)", () => {
+  assert.deepEqual(splitUnquotedLines("npm test\nnpm run lint"), ["npm test", "npm run lint"]);
+  const lines = splitUnquotedLines(ISSUE_1798_VERIFY);
+  assert.equal(lines.length, 1, "quoted --eval body must stay one command");
+  assert.match(lines[0] ?? "", /npm run typecheck$/);
+});
+
+test("discoverCommands: quoted multi-line --eval stays one command (#1798)", () => {
+  const dir = makeTempDir("gsd-verify-1798");
+  const found = discoverCommands({ cwd: dir, taskPlanVerify: ISSUE_1798_VERIFY });
+  assert.equal(found.source, "task-plan");
+  assert.equal(found.commands.length, 1);
+  assert.match(found.commands[0] ?? "", /node --input-type=module --eval/);
+  assert.match(found.commands[0] ?? "", /npm run typecheck$/);
 });
 
 // ─── Additional Preference Validation Tests (T02) ──────────────────────────

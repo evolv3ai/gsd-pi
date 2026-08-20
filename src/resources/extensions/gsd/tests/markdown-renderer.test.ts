@@ -24,6 +24,7 @@ import {
   updateSliceStatus,
   insertGateRow,
   saveGateResult,
+  transaction,
   _getAdapter,
 } from '../gsd-db.ts';
 import {
@@ -41,6 +42,7 @@ import {
   stripProjectionStamp,
 } from '../markdown-renderer.ts';
 import { repairStaleRenders } from '../state-reconciliation/drift/stale-render.ts';
+import { migrateHierarchyToDb } from '../md-importer.ts';
 import {
   parseProjectionRoadmap as parseRoadmap,
   parseProjectionPlan as parsePlan,
@@ -582,7 +584,7 @@ test('── markdown-renderer: renderPlanFromDb creates parse-compatible slice 
   }
 });
 
-test('── markdown-renderer: slice plan summarizes task descriptions without leaking nested headings ──', async () => {
+test('── markdown-renderer: slice plan preserves task descriptions without leaking nested headings ──', async () => {
   const tmpDir = makeTmpDir();
   const dbPath = path.join(tmpDir, '.gsd', 'gsd.db');
   openDatabase(dbPath);
@@ -641,7 +643,10 @@ test('── markdown-renderer: slice plan summarizes task descriptions without 
     assert.doesNotMatch(planContent, /Not provided/i, 'placeholder values should not render');
     assert.doesNotMatch(planContent, /^## Steps$/m, 'task detail headings must not escape into the slice plan');
     assert.strictEqual((planContent.match(/^## Must-Haves$/gm) ?? []).length, 1, 'slice plan has only its own Must-Haves heading');
-    assert.strictEqual(parsedPlan.tasks[0].description.trim(), 'Create the static app files.');
+    assert.match(parsedPlan.tasks[0].description, /Create the static app files\./);
+    assert.match(parsedPlan.tasks[0].description, /Create the HTML shell\./);
+    assert.match(parsedPlan.tasks[0].description, /Wire browser storage\./);
+    assert.match(parsedPlan.tasks[0].description, /Adding an item updates the list\./);
 
     // Flat-phase: no per-task plan files — tasks are inside the slice plan's
     // <tasks> block. Skip per-task plan assertions.
@@ -1919,6 +1924,68 @@ test('── markdown-renderer: stamped re-render is byte-stable (no stamp accum
 
     // A freshly rendered projection has no content drift against DB intent.
     assert.deepStrictEqual(detectProjectionDrift(tmpDir), [], 'fresh render has no projection drift');
+  } finally {
+    closeDatabase();
+    cleanupDir(tmpDir);
+  }
+});
+
+test('── markdown-renderer: ROADMAP render-import round-trip does not grow M### title prefix (#1592) ──', async () => {
+  // Renderer: a DB title that already carries the id prefix must not double in the H1.
+  const renderDir = makeTmpDir();
+  openDatabase(path.join(renderDir, '.gsd', 'gsd.db'));
+  clearAllCaches();
+  try {
+    insertMilestone({ id: 'M001', title: 'M001: M001: Clean Title', status: 'active' });
+    insertSlice({ id: 'S01', milestoneId: 'M001', title: 'First Slice', status: 'complete' });
+    scaffoldDirs(renderDir, 'M001', ['S01']);
+
+    const rendered = await renderRoadmapFromDb(renderDir, 'M001');
+    assert.ok(!('skipped' in rendered), 'prefixed-title milestone still renders');
+    assert.equal(
+      rendered.content.split('\n')[0],
+      '# M001: Clean Title',
+      'render must strip existing M001: prefixes from the H1',
+    );
+  } finally {
+    closeDatabase();
+    cleanupDir(renderDir);
+  }
+
+  // Importer: row-creating imports must not prepend another M001: each cycle.
+  const tmpDir = makeTmpDir();
+  openDatabase(path.join(tmpDir, '.gsd', 'gsd.db'));
+  clearAllCaches();
+  try {
+    insertMilestone({ id: 'M001', title: 'Clean Title', status: 'active' });
+    insertSlice({ id: 'S01', milestoneId: 'M001', title: 'First Slice', status: 'complete' });
+    scaffoldDirs(tmpDir, 'M001', ['S01']);
+
+    for (let cycle = 1; cycle <= 3; cycle++) {
+      const rendered = await renderRoadmapFromDb(tmpDir, 'M001');
+      assert.ok(!('skipped' in rendered), `cycle ${cycle}: planned milestone renders`);
+      assert.equal(
+        rendered.content.split('\n')[0],
+        '# M001: Clean Title',
+        `cycle ${cycle}: H1 must stay a single M001: prefix`,
+      );
+
+      const db = _getAdapter()!;
+      transaction(() => {
+        db.exec("DELETE FROM tasks");
+        db.exec("DELETE FROM slices");
+        db.exec("DELETE FROM milestones");
+      });
+      clearAllCaches();
+
+      const counts = migrateHierarchyToDb(tmpDir);
+      assert.equal(counts.milestones, 1, `cycle ${cycle}: import recreates the milestone`);
+      assert.equal(
+        getMilestone('M001')?.title,
+        'Clean Title',
+        `cycle ${cycle}: stored title must not grow an id prefix`,
+      );
+    }
   } finally {
     closeDatabase();
     cleanupDir(tmpDir);

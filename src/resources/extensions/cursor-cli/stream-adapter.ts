@@ -88,10 +88,18 @@ export function buildCursorPrompt(context: Context): string {
 	if (context.systemPrompt?.trim()) parts.push(`System instructions:\n${context.systemPrompt.trim()}`);
 	if (context.messages.length > 0) parts.push(context.messages.map(messageToText).join("\n\n"));
 	if (context.tools?.length) {
+		const names = context.tools.map((tool) => tool.name);
+		const bridged = names.filter((name) => isCursorBridgedGsdTool(name));
 		parts.push(
 			`The external Cursor agent may execute its own tools. ` +
 			`GSD will not redispatch Cursor-owned internal tool events locally. ` +
-			`Requested GSD tools: ${context.tools.map((tool) => tool.name).join(", ")}`,
+			`GSD lifecycle tools bridged to the local host: ${bridged.join(", ") || "(none)"}. ` +
+			(bridged.length > 0
+				? `To invoke one, emit exactly one final envelope in this form: ` +
+					`<gsd_tool_call>{"name":"gsd_task_complete","arguments":{...}}</gsd_tool_call>. ` +
+					`Use a bridged tool name and its real arguments; GSD removes the envelope and executes it locally. `
+				: "") +
+			`Requested GSD tools: ${names.join(", ")}`,
 		);
 	}
 	return parts.join("\n\n").trim();
@@ -116,6 +124,44 @@ export function buildCursorAgentRunPlan(
 		["-p", prompt, "--output-format", "stream-json", "--model", modelId, "--workspace", cwd, "--trust"],
 		platform,
 	);
+}
+
+const CURSOR_BRIDGED_GSD_TOOLS = new Set([
+	"gsd_task_complete",
+	"gsd_complete_task",
+	"gsd_task_recovery_resume",
+]);
+
+const GSD_TOOL_CALL_OPEN = "<gsd_tool_call>";
+const GSD_TOOL_CALL_CLOSE = "</gsd_tool_call>";
+
+function gsdToolBaseName(name: string): string {
+	return name.replace(/^mcp__.+?__/, "");
+}
+
+export function isCursorBridgedGsdTool(name: string): boolean {
+	const base = gsdToolBaseName(name);
+	return CURSOR_BRIDGED_GSD_TOOLS.has(name) || CURSOR_BRIDGED_GSD_TOOLS.has(base);
+}
+
+export function isGsdToolName(name: string): boolean {
+	const base = gsdToolBaseName(name);
+	return base.startsWith("gsd_") || name.startsWith("gsd_");
+}
+
+export function unsupportedCursorGsdToolError(name: string): string {
+	return `tool unsupported under cursor-agent: ${name}`;
+}
+
+function invalidCursorGsdToolEnvelopeError(detail: string): Error {
+	return new Error(`invalid cursor-agent GSD lifecycle envelope: ${detail}`);
+}
+
+function longestToolEnvelopePrefixSuffix(value: string): number {
+	for (let length = Math.min(value.length, GSD_TOOL_CALL_OPEN.length - 1); length > 0; length--) {
+		if (GSD_TOOL_CALL_OPEN.startsWith(value.slice(-length))) return length;
+	}
+	return 0;
 }
 
 function emitCompleteLines(chunk: string, pending: { value: string }, onLine: CursorAgentLineHandler): void {
@@ -338,14 +384,14 @@ function buildAssistantMessage(
 function emitDone(stream: AssistantMessageEventStream, message: AssistantMessage, text: string): void {
 	stream.push({ type: "start", partial: { ...message, content: [] } });
 	if (text) {
-		stream.push({ type: "text_start", contentIndex: 0, partial: message });
-		stream.push({ type: "text_delta", contentIndex: 0, delta: text, partial: message });
-		stream.push({ type: "text_end", contentIndex: 0, content: text, partial: message });
+		stream.push({ type: "text_start", contentIndex: 0 });
+		stream.push({ type: "text_delta", contentIndex: 0, delta: text });
+		stream.push({ type: "text_end", contentIndex: 0, content: text });
 	}
 	message.content.forEach((block, index) => {
 		if (block.type !== "toolCall") return;
-		stream.push({ type: "toolcall_start", contentIndex: index, partial: message });
-		stream.push({ type: "toolcall_end", contentIndex: index, toolCall: block, partial: message });
+		stream.push({ type: "toolcall_start", contentIndex: index });
+		stream.push({ type: "toolcall_end", contentIndex: index, toolCall: block });
 	});
 	stream.push({ type: "done", reason: "stop", message });
 	stream.end(message);
@@ -377,6 +423,8 @@ export function streamViaCursorAgent(
 			let textStarted = false;
 			const toolCalls = new Map<string, ToolCall>();
 			const content: AssistantMessage["content"] = [];
+			let envelopeBuffer = "";
+			let readingEnvelope = false;
 
 			const partialMessage = (): AssistantMessage => {
 				const partialContent: AssistantMessage["content"] = text ? [{ type: "text", text }, ...content] : [...content];
@@ -385,20 +433,88 @@ export function streamViaCursorAgent(
 			const ensureStart = () => {
 				if (streamStarted) return;
 				streamStarted = true;
-				stream.push({ type: "start", partial: buildAssistantMessage(model, []) });
+				stream.push({ type: "start", partial: partialMessage() });
+			};
+			const emitText = (value: string) => {
+				if (!value) return;
+				ensureStart();
+				if (!textStarted) {
+					textStarted = true;
+					stream.push({ type: "text_start", contentIndex: 0 });
+				}
+				text += value;
+				stream.push({ type: "text_delta", contentIndex: 0, delta: value });
+			};
+			const acceptToolCall = (toolCall: ToolCall): void => {
+				if (isGsdToolName(toolCall.name) && !isCursorBridgedGsdTool(toolCall.name)) {
+					throw new Error(unsupportedCursorGsdToolError(toolCall.name));
+				}
+				ensureStart();
+				toolCalls.set(toolCall.id, toolCall);
+				content.push(toolCall);
+				const index = text ? content.length : content.length - 1;
+				stream.push({ type: "toolcall_start", contentIndex: index });
+				stream.push({ type: "toolcall_end", contentIndex: index, toolCall });
+			};
+			const acceptEnvelope = (payload: string): void => {
+				let parsed: Record<string, unknown>;
+				try {
+					const value = objectValue(JSON.parse(payload));
+					if (!value) throw invalidCursorGsdToolEnvelopeError("payload must be a JSON object");
+					parsed = value;
+				} catch (error) {
+					if (error instanceof Error && error.message.startsWith("invalid cursor-agent")) throw error;
+					throw invalidCursorGsdToolEnvelopeError(error instanceof Error ? error.message : String(error));
+				}
+				const requestedName = stringValue(parsed.name);
+				if (!requestedName) throw invalidCursorGsdToolEnvelopeError("missing tool name");
+				const name = gsdToolBaseName(requestedName);
+				if (!isCursorBridgedGsdTool(name)) throw new Error(unsupportedCursorGsdToolError(requestedName));
+				const args = objectValue(parsed.arguments ?? parsed.input);
+				if (!args) throw invalidCursorGsdToolEnvelopeError(`missing arguments for ${name}`);
+				acceptToolCall({
+					type: "toolCall",
+					id: `cursor_gsd_${Date.now()}_${content.length}`,
+					name,
+					arguments: args,
+				});
+			};
+			const acceptText = (value: string, flush = false): void => {
+				envelopeBuffer += value;
+				for (;;) {
+					if (readingEnvelope) {
+						const closeIndex = envelopeBuffer.indexOf(GSD_TOOL_CALL_CLOSE);
+						if (closeIndex < 0) {
+							if (flush) throw invalidCursorGsdToolEnvelopeError(`missing ${GSD_TOOL_CALL_CLOSE}`);
+							return;
+						}
+						acceptEnvelope(envelopeBuffer.slice(0, closeIndex));
+						envelopeBuffer = envelopeBuffer.slice(closeIndex + GSD_TOOL_CALL_CLOSE.length);
+						readingEnvelope = false;
+						continue;
+					}
+
+					const openIndex = envelopeBuffer.indexOf(GSD_TOOL_CALL_OPEN);
+					if (openIndex >= 0) {
+						emitText(envelopeBuffer.slice(0, openIndex));
+						envelopeBuffer = envelopeBuffer.slice(openIndex + GSD_TOOL_CALL_OPEN.length);
+						readingEnvelope = true;
+						continue;
+					}
+
+					const heldSuffixLength = flush ? 0 : longestToolEnvelopePrefixSuffix(envelopeBuffer);
+					const visibleLength = envelopeBuffer.length - heldSuffixLength;
+					emitText(envelopeBuffer.slice(0, visibleLength));
+					envelopeBuffer = envelopeBuffer.slice(visibleLength);
+					return;
+				}
 			};
 			const handleLine = (line: string): void => {
 				const parsed = parseCursorAgentLine(line);
 				if (parsed.type === "ignore") return;
 				if (parsed.type === "error") throw new Error(parsed.message);
 				if (parsed.type === "text") {
-					ensureStart();
-					if (!textStarted) {
-						textStarted = true;
-						stream.push({ type: "text_start", contentIndex: 0, partial: partialMessage() });
-					}
-					text += parsed.text;
-					stream.push({ type: "text_delta", contentIndex: 0, delta: parsed.text, partial: partialMessage() });
+					acceptText(parsed.text);
 					return;
 				}
 				if (parsed.type === "usage") {
@@ -406,17 +522,12 @@ export function streamViaCursorAgent(
 					return;
 				}
 				if (parsed.type === "tool_call") {
-					ensureStart();
-					toolCalls.set(parsed.toolCall.id, parsed.toolCall);
-					content.push(parsed.toolCall);
-					const index = text ? content.length : content.length - 1;
-					const partial = partialMessage();
-					stream.push({ type: "toolcall_start", contentIndex: index, partial });
-					stream.push({ type: "toolcall_end", contentIndex: index, toolCall: parsed.toolCall, partial });
+					acceptToolCall(parsed.toolCall);
 					return;
 				}
 				if (parsed.type === "tool_result") {
 					const toolCall = toolCalls.get(parsed.toolCallId);
+					if (toolCall && isCursorBridgedGsdTool(toolCall.name)) return;
 					if (toolCall) toolCall.externalResult = parsed.result;
 				}
 			};
@@ -432,6 +543,7 @@ export function streamViaCursorAgent(
 			if (result.code !== 0) {
 				throw new Error((result.stderr || result.stdout || `cursor-agent exited with code ${result.code}`).trim());
 			}
+			acceptText("", true);
 
 			const finalContent: AssistantMessage["content"] = text ? [{ type: "text", text }, ...content] : content;
 			const finalMessage = buildAssistantMessage(model, finalContent, usage);
@@ -439,7 +551,7 @@ export function streamViaCursorAgent(
 				emitDone(stream, finalMessage, text);
 				return;
 			}
-			if (textStarted) stream.push({ type: "text_end", contentIndex: 0, content: text, partial: finalMessage });
+			if (textStarted) stream.push({ type: "text_end", contentIndex: 0, content: text });
 			stream.push({ type: "done", reason: "stop", message: finalMessage });
 			stream.end(finalMessage);
 		} catch (error) {

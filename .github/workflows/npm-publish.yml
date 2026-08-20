@@ -349,7 +349,7 @@ jobs:
         run: rustup target add ${{ matrix.target }}
 
       - name: Cache Rust build artifacts
-        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+        uses: Swatinem/rust-cache@258712b0b7b1ddf8bddc9fc3b0faca682b2736c3 # v2
         with:
           shared-key: native-${{ matrix.platform }}
           workspaces: |
@@ -730,12 +730,35 @@ jobs:
           RELEASE_VERSION: ${{ needs.prod-release-plan.outputs.version }}
         run: node scripts/verify-npm-release.mjs "${RELEASE_VERSION}"
 
-      - name: Push release commit and tag
+      # The tag goes first and on its own: npm is already published at this
+      # point, so the tag is what keeps the next release from recomputing the
+      # same version. Branch rulesets do not apply to tags, but they do apply
+      # to main - in v1.16.0 the combined push failed on main and took the tag
+      # down with it, leaving npm at 1.16.0 with no tag and no GitHub release.
+      - name: Push release tag
         env:
           RELEASE_VERSION: ${{ needs.prod-release-plan.outputs.version }}
+        run: git push origin "v${RELEASE_VERSION}"
+
+      - name: Push release commit to main
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_VERSION: ${{ needs.prod-release-plan.outputs.version }}
         run: |
-          git push origin main
-          git push origin "v${RELEASE_VERSION}"
+          if git push origin main; then
+            echo "Release commit pushed to main."
+            exit 0
+          fi
+          # main enforces a merge queue plus required checks and the Actions
+          # token is not on the ruleset bypass list, so a direct push is
+          # rejected. The tag and npm are already consistent, so land the
+          # version bump through the queue instead of failing the release.
+          BRANCH="release/v${RELEASE_VERSION}"
+          git push origin "HEAD:refs/heads/${BRANCH}"
+          gh pr create --base main --head "${BRANCH}" \
+            --title "release: v${RELEASE_VERSION}" \
+            --body "Version bump for v${RELEASE_VERSION}. Direct push to main was rejected by branch rules, so the release commit lands through the merge queue. npm, the \`v${RELEASE_VERSION}\` tag and the GitHub release are already published."
+          echo "::warning::Direct push to main was rejected; the v${RELEASE_VERSION} version bump is waiting in branch ${BRANCH} and must be merged."
 
       - name: Create GitHub Release
         env:
@@ -755,7 +778,7 @@ jobs:
         run: node scripts/release-discord-summary.cjs --tag "v${RELEASE_VERSION}" --post --allow-missing-webhook
 
       - name: Log in to GHCR
-        uses: docker/login-action@abd2ef45e78c5afb21d64d4ca52ee8550d9572c7 # v4.5.1
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
         with:
           registry: ghcr.io
           username: ${{ github.actor }}

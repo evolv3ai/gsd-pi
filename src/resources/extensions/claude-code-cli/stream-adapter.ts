@@ -809,7 +809,7 @@ export function pushWorkflowMcpReadinessProgressEvent(input: {
 		contentIndex = partial.content.length;
 		state.contentIndex = contentIndex;
 		partial.content.push({ type: "text", text: "" });
-		stream.push({ type: "text_start", contentIndex, partial });
+		stream.push({ type: "text_start", contentIndex });
 	}
 
 	const block = partial.content[contentIndex];
@@ -817,7 +817,7 @@ export function pushWorkflowMcpReadinessProgressEvent(input: {
 
 	const delta = block.text.length === 0 ? message : `\n${message}`;
 	block.text += delta;
-	stream.push({ type: "text_delta", contentIndex, delta, partial });
+	stream.push({ type: "text_delta", contentIndex, delta });
 }
 
 function emitConcurrentClaudeCodeProcessWarning(input: {
@@ -2137,6 +2137,31 @@ function delay(ms: number, signal?: AbortSignal): Promise<void> {
 	});
 }
 
+/** CLI print-mode drain kills leftover background Agent tasks after this many ms. */
+export const CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS_ENV = "CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS";
+/** `0` waits indefinitely. Operators override by setting the env var. */
+const DEFAULT_CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS = "0";
+const CLAUDE_CODE_PRINT_WIND_DOWN_RE =
+	/Background tasks still running after|print wind-down|CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS/i;
+
+/** `"0"` disables the CLI's 600s post-result background-task kill. */
+function withClaudeCodePrintBgWaitCeiling(
+	sourceEnv: NodeJS.ProcessEnv = process.env,
+): NodeJS.ProcessEnv {
+	const env = { ...sourceEnv };
+	if (!env[CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS_ENV]?.trim()) {
+		env[CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS_ENV] = DEFAULT_CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS;
+	}
+	return env;
+}
+
+/** Surface print wind-down / termination lines the SDK otherwise discards. */
+function logClaudeCodeSdkStderr(data: unknown): void {
+	const text = String(data);
+	if (!CLAUDE_CODE_PRINT_WIND_DOWN_RE.test(text)) return;
+	console.warn(`[claude-code] ${text.trimEnd()}`);
+}
+
 /**
  * Build the options object passed to the Claude Agent SDK's `query()` call.
  *
@@ -2147,6 +2172,9 @@ function delay(ms: number, signal?: AbortSignal): Promise<void> {
  * {@link resolveClaudePermissionMode} so interactive runs don't silently
  * bypass the SDK's permission gate. Callers that want the old always-bypass
  * behaviour pass `permissionMode: "bypassPermissions"` explicitly.
+ *
+ * Long-lived sessions default `CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS` to `"0"`
+ * unless already set, and attach an stderr sink for print wind-down warnings.
  */
 export function buildSdkOptions(
 	modelId: string,
@@ -2154,7 +2182,7 @@ export function buildSdkOptions(
 	overrides?: { permissionMode?: "bypassPermissions" | "acceptEdits" | "default" | "plan" },
 	extraOptions: Record<string, unknown> & { reasoning?: ThinkingLevel; gsdPhase?: string } = {},
 ): Record<string, unknown> {
-	const { reasoning, cwd, gsdPhase, ...sdkExtraOptions } = extraOptions;
+	const { reasoning, cwd, gsdPhase, env: extraEnv, stderr: extraStderr, ...sdkExtraOptions } = extraOptions;
 	const sdkCwd = typeof cwd === "string" && cwd.trim().length > 0 ? cwd : process.cwd();
 	// Claude Code runs in the milestone worktree for file/shell work, but workflow MCP
 	// config (.mcp.json) and server discovery live at the project root.
@@ -2351,6 +2379,10 @@ export function buildSdkOptions(
 		...(thinkingConfig ?? {}),
 		...(effort ? { effort } : {}),
 		...sdkExtraOptions,
+		env: withClaudeCodePrintBgWaitCeiling(
+			isRecord(extraEnv) ? { ...process.env, ...extraEnv as NodeJS.ProcessEnv } : process.env,
+		),
+		stderr: typeof extraStderr === "function" ? extraStderr : logClaudeCodeSdkStderr,
 	};
 }
 
@@ -2450,7 +2482,9 @@ function injectMilestoneStatusObservationToken(
 	workflowServerName: string | undefined,
 	token: string | null,
 ): void {
-	const childEnv = { ...process.env };
+	const childEnv = withClaudeCodePrintBgWaitCeiling(
+		isRecord(sdkOptions.env) ? sdkOptions.env as NodeJS.ProcessEnv : process.env,
+	);
 	delete childEnv[MILESTONE_STATUS_OBSERVATION_TOKEN_ENV];
 	if (token) childEnv[MILESTONE_STATUS_OBSERVATION_TOKEN_ENV] = token;
 	sdkOptions.env = childEnv;
@@ -2754,8 +2788,8 @@ async function pumpSdkMessages(
 							const assistantEvent = result.assistantEvent;
 							if (assistantEvent) {
 								stream.push(assistantEvent);
-								if (assistantEvent.type === "toolcall_start") {
-									const toolBlock = assistantEvent.partial.content[assistantEvent.contentIndex];
+								if (assistantEvent.type === "toolcall_start" && builder) {
+									const toolBlock = builder.message.content[assistantEvent.contentIndex];
 									if (toolBlock?.type === "toolCall") {
 										try {
 											await onExternalToolCall?.(toolBlock);
@@ -2843,7 +2877,7 @@ async function pumpSdkMessages(
 											type: "toolcall_end",
 											contentIndex: target.contentIndex,
 											toolCall: block,
-											partial: target.partial,
+
 										});
 										(block as ToolCallWithExternalResult).externalResult = extResult;
 										emittedExternalToolResultIds.add(block.id);
@@ -2861,7 +2895,7 @@ async function pumpSdkMessages(
 										type: "toolcall_end",
 										contentIndex: target.contentIndex,
 										toolCall: block,
-										partial: target.partial,
+
 									});
 									emittedExternalToolResultIds.add(block.id);
 								} else if (block.type === "serverToolUse") {
@@ -2880,7 +2914,7 @@ async function pumpSdkMessages(
 									stream.push({
 										type: "server_tool_use",
 										contentIndex: target.contentIndex,
-										partial: target.partial,
+
 									});
 									emittedExternalToolResultIds.add(block.id);
 								}

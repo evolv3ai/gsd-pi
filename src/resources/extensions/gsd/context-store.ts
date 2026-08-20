@@ -17,10 +17,10 @@ export interface DecisionQueryOpts {
 }
 
 export interface RequirementQueryOpts {
+	class?: string;
 	milestoneId?: string;
 	sliceId?: string;
 	status?: string;
-	class?: string;
 }
 
 function resolveReadAdapter(adapter?: DbAdapter): DbAdapter {
@@ -336,7 +336,7 @@ export function formatDecisionsForPrompt(decisions: Decision[]): string {
 	const header =
 		"| # | When | Scope | Decision | Choice | Rationale | Revisable? | Made By |";
 	const separator =
-		"|---|------|-------|----------|--------|-----------|------------|---------|";
+		"| --- | --- | --- | --- | --- | --- | --- | --- |";
 	const rows = decisions.map(
 		(d) =>
 			`| ${d.id} | ${d.when_context} | ${d.scope} | ${d.decision} | ${d.choice} | ${d.rationale} | ${d.revisable} | ${d.made_by ?? "agent"} |`,
@@ -756,6 +756,11 @@ export function queryRequirementsWithLimit(
 		params[":status"] = opts.status;
 	}
 
+	if (opts?.class) {
+		clauses.push("class = :class");
+		params[":class"] = opts.class;
+	}
+
 	// LIMIT applied at SQL level (never after materialization)
 	const limit = Math.min(opts?.limit ?? 200, 500);
 	const sql = `SELECT * FROM requirements WHERE ${clauses.join(" AND ")} ORDER BY id LIMIT :limit`;
@@ -793,6 +798,7 @@ export function queryDecisionsWithLimit(
 		"category = 'architecture'",
 		"json_valid(structured_fields)",
 		"json_extract(structured_fields, '$.sourceDecisionId') IS NOT NULL",
+		"IFNULL(json_extract(structured_fields, '$.deleted'), 0) != 1",
 	];
 	const params: Record<string, unknown> = {};
 

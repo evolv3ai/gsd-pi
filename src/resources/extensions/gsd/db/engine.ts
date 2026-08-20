@@ -89,6 +89,7 @@ import {
   applyMigrationV43MilestoneCompletion,
   applyMigrationV44MilestoneReopen,
   applyMigrationV45AuthorityRecovery,
+  applyMigrationV47SameLeaseAttemptSettlement,
 } from "../db-migration-steps.js";
 import {
   createCanonicalFoundationSchemaV31,
@@ -122,6 +123,7 @@ import {
   type SqliteFileIdentity,
 } from "../sqlite-readonly.js";
 import { processStartIdentity } from "../process-start-identity.js";
+import { isSqliteBusyError } from "../sqlite-errors.js";
 import {
   createSqliteProviderLoader,
   suppressSqliteWarning,
@@ -157,7 +159,7 @@ const providerLoader = createSqliteProviderLoader({
   nodeVersion: process.versions.node,
   writeStderr: (message: string) => process.stderr.write(message),
 });
-export const SCHEMA_VERSION = 46;
+export const SCHEMA_VERSION = 47;
 
 /**
  * PRAGMA application_id stamped on every gsd.db at V46 so binaries and
@@ -404,6 +406,7 @@ function initSchema(
         applyMigrationV43MilestoneCompletion(db);
         applyMigrationV44MilestoneReopen(db);
         applyMigrationV45AuthorityRecovery(db);
+        applyMigrationV47SameLeaseAttemptSettlement(db);
 
         // Fresh install — all tables are created above with the full current schema,
         // so it is safe to create all migration-specific indexes here.  For existing
@@ -774,6 +777,15 @@ function migrateSchema(
       applyMigrationV46StateCutoverStamp(db);
     }
 
+    if (currentVersion < 47) {
+      // V47 — same-lease Attempt settlement (#1740): recreate the
+      // dispatch-scope transition trigger so a worker holding its own lease
+      // can settle its own Attempt after its dispatch row is gone.
+      applyMigrationV47SameLeaseAttemptSettlement(db);
+      stampStateCutoverPragmas(db, 47);
+      recordSchemaVersion(db, 47);
+    }
+
     if (_migrationFaultForTest) throw new Error("migration fault injected for test");
 
     db.exec(startupTransactionOpen ? "RELEASE SAVEPOINT schema_migration" : "COMMIT");
@@ -796,6 +808,8 @@ let pendingStartupCleanup: StartupCleanupState | undefined;
 let pendingDatabaseMaintenanceCleanup: DatabaseMaintenanceCleanupState | undefined;
 let _exitHandlerRegistered = false;
 const _dbOpenState = createDbOpenState();
+const DB_OPEN_BUSY_BACKOFF_MS = [100, 200] as const;
+const DB_OPEN_BUSY_SLEEP = new Int32Array(new SharedArrayBuffer(4));
 let _databaseOpenAfterIntentCheckForTest: ((path: string) => void) | null = null;
 let _startupInitializationBoundaryForTest: ((path: string) => void) | null = null;
 type StartupRepairBoundaryPoint = "before-journal" | "after-journal" | "after-backup" | "before-vacuum";
@@ -2308,14 +2322,14 @@ function openDatabaseInternal(path: string, allowReplacementWrite: boolean): boo
       _databaseAdapterFileIdentities.set(adapter, strictFileIdentity(path, "canonical database"));
       _replacementObservationDatabases.add(adapter);
     } catch (error) {
-      _dbOpenState.recordError("open", error);
+      _dbOpenState.recordError(isSqliteBusyError(error) ? "locked" : "open", error);
       throw error;
     }
   } else {
     try {
       ({ raw: rawDb, identity: openedIdentity } = openCorrelatedRawDatabase(path, () => providerLoader.openRaw(path)));
     } catch (error) {
-      _dbOpenState.recordError("open", error);
+      _dbOpenState.recordError(isSqliteBusyError(error) ? "locked" : "open", error);
       throw error;
     }
     if (!rawDb) return false;
@@ -2345,7 +2359,7 @@ function openDatabaseInternal(path: string, allowReplacementWrite: boolean): boo
       }
     }
   } catch (err) {
-    _dbOpenState.recordError("initSchema", err);
+    _dbOpenState.recordError(isSqliteBusyError(err) ? "locked" : "initSchema", err);
     if (pendingStartupCleanup?.adapter !== adapter) {
       retainOrCloseFailedOpen(adapter, startupMaintenance, startupExclusiveOwnershipHeld);
     }
@@ -2359,7 +2373,7 @@ function openDatabaseInternal(path: string, allowReplacementWrite: boolean): boo
       _startupReopenCloseForTest?.(adapter);
       adapter.close();
     } catch (error) {
-      _dbOpenState.recordError("open", error);
+      _dbOpenState.recordError(isSqliteBusyError(error) ? "locked" : "open", error);
       quarantineStartupCleanup({
         adapter,
         claim: startupMaintenance.claim,
@@ -2385,7 +2399,7 @@ function openDatabaseInternal(path: string, allowReplacementWrite: boolean): boo
       completeDatabaseMaintenanceCleanup(startupMaintenance);
       startupMaintenance = undefined;
     } catch (error) {
-      _dbOpenState.recordError("open", error);
+      _dbOpenState.recordError(isSqliteBusyError(error) ? "locked" : "open", error);
       retainOrCloseFailedOpen(adapter, startupMaintenance, false, !runtimeAdapterOpened);
       throw error;
     }
@@ -2401,7 +2415,15 @@ function openDatabaseInternal(path: string, allowReplacementWrite: boolean): boo
 }
 
 export function openDatabase(path: string): boolean {
-  return openDatabaseInternal(path, false);
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      return openDatabaseInternal(path, false);
+    } catch (error) {
+      const backoffMs = DB_OPEN_BUSY_BACKOFF_MS[attempt];
+      if (!isSqliteBusyError(error) || backoffMs === undefined) throw error;
+      Atomics.wait(DB_OPEN_BUSY_SLEEP, 0, 0, backoffMs);
+    }
+  }
 }
 
 export function promoteDatabaseForReplacementRecovery(): void {

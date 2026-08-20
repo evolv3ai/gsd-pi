@@ -1,11 +1,12 @@
 // Project/App: gsd-pi
 // File Purpose: Observe and preserve externally changed projection bytes before canonical rendering.
 
-import { existsSync, mkdirSync, readFileSync, renameSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, renameSync, rmSync } from "node:fs";
 import { dirname, isAbsolute, join, relative, sep } from "node:path";
 
 import { atomicWriteBufferSync } from "./atomic-write.js";
 import { gsdProjectionRoot, normalizeRealPath } from "./paths.js";
+import { isTransientProjectionLockError } from "./projection-root-errors.js";
 import {
   computeProjectionSha,
   readCompatMarker,
@@ -71,6 +72,14 @@ function readProjectionBytes(path: string): Buffer | null {
   }
 }
 
+/**
+ * Whether a failed rename may fall back to copy+delete (#1762): cross-device
+ * links (EXDEV) and Windows transient sharing violations on the source handle.
+ */
+export function shouldCopyDeleteOnRenameFailure(error: unknown): boolean {
+  return (error as NodeJS.ErrnoException)?.code === "EXDEV" || isTransientProjectionLockError(error);
+}
+
 function preserveOne(
   basePath: string,
   absPath: string,
@@ -83,12 +92,33 @@ function preserveOne(
     mkdirSync(dirname(target), { recursive: true });
     const currentBytes = readProjectionBytes(absPath);
     if (currentBytes?.equals(observedBytes)) {
-      renameSync(absPath, target);
+      try {
+        renameSync(absPath, target);
+      } catch (error) {
+        // Cross-device links can't rename (EXDEV), and Windows can hold a
+        // transient share on the source — fall back to copy+delete instead of
+        // failing the journaled replay forever (#1762).
+        if (!shouldCopyDeleteOnRenameFailure(error)) throw error;
+        atomicWriteBufferSync(target, currentBytes);
+        // force: Windows can mark the source read-only while a share is held.
+        rmSync(absPath, { force: true });
+      }
     } else {
       atomicWriteBufferSync(target, observedBytes);
     }
     return { sourcePath: absPath, quarantinePath: target };
   });
+}
+
+/** Move one known-stale managed projection into the standard quarantine. */
+export function quarantineProjectionEvidence(
+  basePath: string,
+  absPath: string,
+): PreservedProjectionEvidence | null {
+  const observedBytes = readProjectionBytes(absPath);
+  if (!observedBytes) return null;
+  const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+  return preserveOne(basePath, absPath, stamp, observedBytes);
 }
 
 /**

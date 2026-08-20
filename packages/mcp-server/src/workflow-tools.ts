@@ -440,6 +440,17 @@ type WorkflowToolExecutors = {
     basePath: string,
     invocation: ExecutionInvocation,
   ) => Promise<unknown>;
+  executeTaskSettle: (
+    params: {
+      milestoneId: string;
+      sliceId: string;
+      taskId: string;
+      reason: string;
+      apply?: boolean;
+    },
+    basePath: string,
+    invocation: ExecutionInvocation,
+  ) => Promise<unknown>;
   executeSliceReopen: (
     params: {
       sliceId: string;
@@ -768,6 +779,7 @@ function isWorkflowToolExecutors(value: unknown): value is WorkflowToolExecutors
     "executeTaskComplete",
     "executeTaskReopen",
     "executeTaskRecoveryResume",
+    "executeTaskSettle",
     "executeSliceReopen",
     "executeSkipSlice",
     "executeMilestoneReopen",
@@ -1311,6 +1323,38 @@ async function runSerializedCanonicalReadOperation<T>(
   });
 }
 
+function mapCanonicalReadError(
+  operation: "list_decisions" | "get_decision" | "list_requirements" | "get_requirement",
+  message: string,
+  id?: string,
+): { content: Array<{ type: "text"; text: string }>; details: Record<string, unknown> } {
+  const dbUnavailable = message.includes("db_unavailable") || message.includes("not available");
+  const details: Record<string, unknown> = {
+    operation,
+    ...(id ? { id } : {}),
+    error: dbUnavailable ? "db_unavailable" : "query_error",
+  };
+  if (!dbUnavailable) {
+    details.message = message;
+  }
+
+  const actionLabel = operation === "list_decisions"
+    ? "listing decisions"
+    : operation === "get_decision"
+      ? "fetching decision"
+      : operation === "list_requirements"
+        ? "listing requirements"
+        : "fetching requirement";
+
+  return {
+    content: [{
+      type: "text" as const,
+      text: dbUnavailable ? "Error: GSD database is not available." : `Error ${actionLabel}: ${message}`,
+    }],
+    details,
+  };
+}
+
 async function enforceWorkflowWriteGate(
   toolName: string,
   projectDir: string,
@@ -1381,6 +1425,21 @@ async function handleTaskRecoveryResume(
       const { executeTaskRecoveryResume } = await getWorkflowToolExecutors();
       return executeTaskRecoveryResume(args, resolvedProjectDir, invocation);
     }),
+  );
+}
+
+async function handleTaskSettle(
+  projectDir: string,
+  args: Omit<z.infer<typeof taskSettleSchema>, "projectDir">,
+  invocation: ExecutionInvocation,
+): Promise<unknown> {
+  // Dry-run is read-only; only an applying settle crosses the write gate.
+  if (args.apply === true) {
+    await enforceWorkflowWriteGate("gsd_task_settle", projectDir, args.milestoneId);
+  }
+  const { executeTaskSettle } = await getWorkflowToolExecutors();
+  return adaptExecutorResult(
+    await runSerializedWorkflowOperation(() => executeTaskSettle(args, projectDir, invocation)),
   );
 }
 
@@ -1822,6 +1881,18 @@ const verificationEvidenceItemSchema = z.preprocess(
     verdict: z.string(),
     durationMs: z.number(),
   }),
+);
+
+const verificationEvidenceSchema = z.preprocess(
+  (value) => {
+    if (typeof value !== "string") return value;
+    try {
+      return JSON.parse(value);
+    } catch {
+      return value;
+    }
+  },
+  z.array(verificationEvidenceItemSchema),
 );
 
 const nonEmptyString = (field: string) =>
@@ -2346,7 +2417,7 @@ const taskCompleteParams = {
       "When true, the recommendation is recorded as the default, but auto-mode still pauses until the user resolves via /gsd escalate resolve.",
     ),
   }).optional().describe("ADR-011 Phase 2: optional escalation payload. Only honored when phases.mid_execution_escalation is true."),
-  verificationEvidence: z.array(verificationEvidenceItemSchema).optional().describe("Verification evidence entries"),
+  verificationEvidence: verificationEvidenceSchema.optional().describe("Verification evidence entries, or that array encoded as JSON"),
   reworkResolution: z.array(z.object({
     findingId: nonEmptyString("findingId"),
     status: z.enum(["resolved", "deferred-with-override"]),
@@ -2378,6 +2449,19 @@ const taskRecoveryResumeParams = {
 };
 const taskRecoveryResumeSchema = z.object(taskRecoveryResumeParams);
 
+const taskSettleParams = {
+  projectDir: projectDirParam,
+  milestoneId: nonEmptyString("milestoneId").describe("Milestone ID (e.g. M001)"),
+  sliceId: nonEmptyString("sliceId").describe("Slice ID (e.g. S01)"),
+  taskId: nonEmptyString("taskId").describe("Task ID (e.g. T01)"),
+  reason: nonEmptyString("reason").describe("Operator rationale recorded on the settled Attempt Result"),
+  apply: z.boolean().optional().describe("Actually settle; omit or false for a dry run that changes nothing"),
+  reconcileLifecycle: z.boolean().optional().describe(
+    "After settling (or if already interrupted), adopt ready/completed to match tasks.status without deleting SUMMARYs",
+  ),
+};
+const taskSettleSchema = z.object(taskSettleParams);
+
 const sliceReopenParams = {
   projectDir: projectDirParam,
   sliceId: nonEmptyString("sliceId").describe("Slice ID (e.g. S01)"),
@@ -2394,6 +2478,7 @@ const milestoneReopenParams = {
   reason: z.string().optional().describe("Why the milestone is being reopened"),
   actorName: z.string().optional().describe("Caller-provided actor identity for audit trail"),
   triggerReason: z.string().optional().describe("Caller-provided reason this action was triggered"),
+  keepCompleted: z.boolean().optional().describe("When true, unlock the milestone without resetting completed slices/tasks or deleting their SUMMARY projections. Default false (full cascade reset)."),
 };
 const milestoneReopenSchema = z.object(milestoneReopenParams);
 
@@ -2668,16 +2753,8 @@ export function registerWorkflowTools(
           };
         });
       } catch (err) {
-        const msg = err instanceof Error ? err.message : String(err);
-        const dbUnavailable = msg.includes("db_unavailable");
-        return {
-          content: [{ type: "text" as const, text: dbUnavailable ? "Error: GSD database is not available." : `Error listing decisions: ${msg}` }],
-          details: {
-            operation: "list_decisions",
-            error: dbUnavailable ? "db_unavailable" : "query_error",
-            ...(dbUnavailable ? {} : { message: msg }),
-          },
-        };
+        const message = err instanceof Error ? err.message : String(err);
+        return mapCanonicalReadError("list_decisions", message);
       }
     },
   );
@@ -2720,17 +2797,8 @@ export function registerWorkflowTools(
           };
         });
       } catch (err) {
-        const msg = err instanceof Error ? err.message : String(err);
-        const dbUnavailable = msg.includes("db_unavailable");
-        return {
-          content: [{ type: "text" as const, text: dbUnavailable ? "Error: GSD database is not available." : `Error fetching decision: ${msg}` }],
-          details: {
-            operation: "get_decision",
-            id: params.id,
-            error: dbUnavailable ? "db_unavailable" : "query_error",
-            ...(dbUnavailable ? {} : { message: msg }),
-          },
-        };
+        const message = err instanceof Error ? err.message : String(err);
+        return mapCanonicalReadError("get_decision", message, params.id);
       }
     },
   );
@@ -2829,29 +2897,21 @@ export function registerWorkflowTools(
           const limit = Math.min(params.limit ?? 200, 500);
           const results = queryRequirementsWithLimit(
             {
+              class: params.class ?? undefined,
               status: params.status ?? undefined,
               milestoneId: params.milestoneId ?? undefined,
               limit,
             },
             adapter,
           );
-          const filtered = params.class ? results.filter((r: any) => r.class === params.class) : results;
           return {
-            content: [{ type: "text" as const, text: `Found ${filtered.length} requirement(s).` }],
-            details: { operation: "list_requirements", count: filtered.length, requirements: filtered },
+            content: [{ type: "text" as const, text: `Found ${results.length} requirement(s).` }],
+            details: { operation: "list_requirements", count: results.length, requirements: results },
           };
         });
       } catch (err) {
-        const msg = err instanceof Error ? err.message : String(err);
-        const dbUnavailable = msg.includes("db_unavailable");
-        return {
-          content: [{ type: "text" as const, text: dbUnavailable ? "Error: GSD database is not available." : `Error listing requirements: ${msg}` }],
-          details: {
-            operation: "list_requirements",
-            error: dbUnavailable ? "db_unavailable" : "query_error",
-            ...(dbUnavailable ? {} : { message: msg }),
-          },
-        };
+        const message = err instanceof Error ? err.message : String(err);
+        return mapCanonicalReadError("list_requirements", message);
       }
     },
   );
@@ -2888,17 +2948,8 @@ export function registerWorkflowTools(
           };
         });
       } catch (err) {
-        const msg = err instanceof Error ? err.message : String(err);
-        const dbUnavailable = msg.includes("db_unavailable");
-        return {
-          content: [{ type: "text" as const, text: dbUnavailable ? "Error: GSD database is not available." : `Error fetching requirement: ${msg}` }],
-          details: {
-            operation: "get_requirement",
-            id: params.id,
-            error: dbUnavailable ? "db_unavailable" : "query_error",
-            ...(dbUnavailable ? {} : { message: msg }),
-          },
-        };
+        const message = err instanceof Error ? err.message : String(err);
+        return mapCanonicalReadError("get_requirement", message, params.id);
       }
     },
   );
@@ -3245,7 +3296,7 @@ export function registerWorkflowTools(
 
   server.tool(
     "gsd_reassess_roadmap",
-    "Reassess a milestone roadmap after a slice completes, writing ASSESSMENT.md and re-rendering ROADMAP.md.",
+    "Reassess a milestone roadmap after a slice completes, writing ROADMAP-ASSESSMENT.md and re-rendering ROADMAP.md.",
     reassessRoadmapParams,
     async (args: Record<string, unknown>, extra?: WorkflowMcpRequestExtra) => {
       const parsed = parseWorkflowArgs(reassessRoadmapSchema, args);
@@ -3434,6 +3485,21 @@ export function registerWorkflowTools(
   );
 
   server.tool(
+    "gsd_task_settle",
+    "Operator tool: settle a Task's orphaned running Attempt as interrupted. Dry-run by default — prints the exact rows it would change; mutation requires apply: true. Optional reconcileLifecycle adopts ready/completed to match tasks.status without deleting SUMMARYs.",
+    taskSettleParams,
+    async (args: Record<string, unknown>, extra?: WorkflowMcpRequestExtra) => {
+      const parsed = parseWorkflowArgs(taskSettleSchema, args);
+      const { projectDir, ...settleArgs } = parsed;
+      return handleTaskSettle(
+        projectDir,
+        settleArgs,
+        mcpExecutionInvocation("gsd_task_settle", extra),
+      );
+    },
+  );
+
+  server.tool(
     "gsd_slice_reopen",
     "Reopen a terminal Slice and all Tasks atomically in SQLite while preserving immutable history, revoking cancellation Waivers, and blocking progressed downstream Slices.",
     sliceReopenParams,
@@ -3466,7 +3532,7 @@ export function registerWorkflowTools(
 
   server.tool(
     "gsd_milestone_reopen",
-    "Reopen a terminal Milestone hierarchy atomically while preserving immutable history, then refresh readable projections.",
+    "Reopen a terminal Milestone hierarchy atomically while preserving immutable history, then refresh readable projections. Pass keepCompleted=true to unlock the milestone without resetting completed slices/tasks or deleting their SUMMARYs.",
     milestoneReopenParams,
     async (args: Record<string, unknown>, extra?: WorkflowMcpRequestExtra) => {
       const parsed = parseWorkflowArgs(milestoneReopenSchema, args);
@@ -3481,7 +3547,7 @@ export function registerWorkflowTools(
 
   server.tool(
     "gsd_reopen_milestone",
-    "Alias for gsd_milestone_reopen. Reopen a terminal Milestone hierarchy atomically, then refresh readable projections.",
+    "Alias for gsd_milestone_reopen. Reopen a terminal Milestone hierarchy atomically, then refresh readable projections. Pass keepCompleted=true to unlock without resetting completed work.",
     milestoneReopenParams,
     async (args: Record<string, unknown>, extra?: WorkflowMcpRequestExtra) => {
       logAliasUsage("gsd_reopen_milestone", "gsd_milestone_reopen");

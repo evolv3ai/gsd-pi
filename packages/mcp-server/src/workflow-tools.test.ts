@@ -1553,7 +1553,7 @@ describe("workflow MCP tools", () => {
     }
   });
 
-  it("gsd_task_complete accepts step-mode evidence when verification summary is omitted", async () => {
+  it("gsd_task_complete accepts JSON-stringified evidence when verification summary is omitted", async () => {
     const base = makeTmpBase();
     try {
       mkdirSync(join(base, ".gsd", "milestones", "M001", "slices", "S01"), { recursive: true });
@@ -1575,9 +1575,9 @@ describe("workflow MCP tools", () => {
         milestoneId: "M001",
         oneLiner: "Completed task",
         narrative: "Did the work",
-        verificationEvidence: [
+        verificationEvidence: JSON.stringify([
           { command: "npm test", exitCode: 0, verdict: "pass", durationMs: 1234 },
-        ],
+        ]),
       }, {
         requestId: "rpc-task-complete",
         _meta: { "claudecode/toolUseId": "toolu_task_complete" },
@@ -1805,6 +1805,10 @@ export const executeTaskRecoveryResume = async (params, projectDir, invocation) 
     writeFileSync(capturePath, JSON.stringify({ params, projectDir, invocation }, null, 2));
   }
   return { content: [{ type: "text", text: "mock task recovery resume" }] };
+};
+
+export const executeTaskSettle = async (params, projectDir, invocation) => {
+  return { content: [{ type: "text", text: "mock task settle" }] };
 };
 
 export const executeTaskComplete = async (params, projectDir, invocation) => {
@@ -3417,9 +3421,9 @@ export const executeTaskComplete = async (params, projectDir, invocation) => {
         },
       });
       assert.match((reassessAliasResult as any).content[0].text as string, /Reassessed roadmap for milestone M006 after S06/);
-      // Flat-phase: M006 "Roadmap reassessment" → phases/06-roadmap-reassessment/, S06 → 06-06-*
+      // Flat-phase roadmap reassessments are milestone-level artifacts.
       assert.ok(
-        existsSync(join(base, ".gsd", "phases", "06-roadmap-reassessment", "06-06-ASSESSMENT.md")),
+        existsSync(join(base, ".gsd", "phases", "06-roadmap-reassessment", "06-ROADMAP-ASSESSMENT.md")),
         "assessment artifact should exist on disk",
       );
       assert.ok(

@@ -26,6 +26,8 @@ import {
   cancelTask,
   grantTaskWaiver,
   readPendingTaskRecoveryContext,
+  readTaskRecoveryAttemptIds,
+  readTaskRecoveryResumeEligibility,
   readTaskRecoveryRoute,
   recordFailureAndSelectRecovery,
   recordTaskRequirementDisposition,
@@ -41,7 +43,10 @@ import { buildExecuteTaskPrompt, buildTaskRecoveryReplanPrompt } from "../auto-p
 import { buildCustomEngineIterationData } from "../auto/workflow-custom-engine-iteration.ts";
 import { handleReplanTask } from "../tools/replan-task.ts";
 import { resolveDispatch } from "../auto-dispatch.ts";
-import { verifyExpectedArtifact } from "../artifact-verification.ts";
+import { verifyExpectedArtifact, readTerminalTaskRecoveryAbort } from "../artifact-verification.ts";
+import { formatTextStatus } from "../commands/handlers/core.ts";
+import type { GSDState } from "../types.ts";
+import { refreshRecoveryDbForArtifact } from "../auto-recovery.ts";
 
 const tempDirs = new Set<string>();
 
@@ -1234,7 +1239,7 @@ test("durable budget use survives retries and exhausts to agent abort", async ()
     recoveryActionId: third.recoveryActionId,
     repairSummary: "Try to record a second authorization.",
     evidence: { source: "duplicate" },
-  }), /current agent-owned abort/i);
+  }), /already-resumed guard/i);
 
   const fourthFailure = seedRetryFailure(thirdFailure.attemptId, 4);
   assert.ok(fourthFailure.attemptId);
@@ -1252,13 +1257,13 @@ test("durable budget use survives retries and exhausts to agent abort", async ()
     recoveryActionId: third.recoveryActionId,
     repairSummary: "Try to reuse stale authorization.",
     evidence: { source: "stale" },
-  }), /current agent-owned abort/i);
+  }), /latest-attempt guard/i);
   assert.throws(() => resumeTaskRecovery({
     invocation: invocation("recovery/resume/non-abort"),
     recoveryActionId: first.recoveryActionId,
     repairSummary: "Try to resume a retry action.",
     evidence: { source: "invalid" },
-  }), /current agent-owned abort/i);
+  }), /abort-action guard/i);
 });
 
 test("deterministic repair abort resumes after restart and is consumed by one successor claim", () => {
@@ -1293,17 +1298,41 @@ test("deterministic repair abort resumes after restart and is consumed by one su
   );
   assert.equal(second.action, "abort");
   assert.equal(readTaskRecoveryRoute(secondFailure.attemptId)?.resumeAuthorized, false);
+  assert.deepEqual(readTaskRecoveryResumeEligibility(second.recoveryActionId), {
+    recoveryActionId: second.recoveryActionId,
+    eligible: true,
+    attemptId: secondFailure.attemptId,
+    resultId: secondFailure.resultId,
+  });
+  assert.equal(readTaskRecoveryRoute(secondFailure.attemptId)?.resumeEligibility?.eligible, true);
+  const status = formatTextStatus({
+    activeMilestone: { id: "M001", title: "Recovery" },
+    activeSlice: { id: "S01", title: "Recovery operation" },
+    activeTask: { id: "T01", title: "Recover atomically" },
+    phase: "executing",
+    recentDecisions: [],
+    blockers: [],
+    nextAction: "Resume recovery",
+    registry: [{ id: "M001", title: "Recovery", status: "active", dependsOn: [] }],
+  } as GSDState, firstFailure.basePath);
+  assert.match(status, new RegExp(`Task recovery: abort ${second.recoveryActionId} — resume eligible`));
 
   closeDatabase();
   assert.equal(openDatabase(firstFailure.dbPath), true);
+  const replacementInvocation = {
+    ...invocation("recovery/deterministic/resume"),
+    actorId: "replacement-agent-session",
+    traceId: "trace:replacement-agent-session",
+    turnId: "turn:replacement-agent-session",
+  };
   const resumed = resumeTaskRecovery({
-    invocation: invocation("recovery/deterministic/resume"),
+    invocation: replacementInvocation,
     recoveryActionId: second.recoveryActionId,
     repairSummary: "Recreated the missing worktree root and verified GSD can resolve it.",
     evidence: { command: "gsd doctor", exitCode: 0, verdict: "PASS" },
   });
   const replayedResume = resumeTaskRecovery({
-    invocation: invocation("recovery/deterministic/resume"),
+    invocation: replacementInvocation,
     recoveryActionId: second.recoveryActionId,
     repairSummary: "Recreated the missing worktree root and verified GSD can resolve it.",
     evidence: { command: "gsd doctor", exitCode: 0, verdict: "PASS" },
@@ -1348,12 +1377,249 @@ test("deterministic repair abort resumes after restart and is consumed by one su
     recoveryActionId: second.recoveryActionId,
     repairSummary: "Try to reuse a consumed repaired-abort authorization.",
     evidence: { command: "gsd doctor", exitCode: 0, verdict: "PASS" },
-  }), /current agent-owned abort/i);
+  }), /latest-attempt guard/i);
   assert.equal(Number(row(`
     SELECT COUNT(*) AS count
     FROM workflow_execution_attempts
     WHERE retry_of_attempt_id = :attempt_id
   `, { ":attempt_id": secondFailure.attemptId }).count), 1);
+});
+
+test("latest resumed abort supersedes an ancestor whose authorization was consumed", () => {
+  const firstFailure = seedFailedAttempt();
+  const route = (
+    key: string,
+    failure: { attemptId: string; resultId: string },
+  ) => recordFailureAndSelectRecovery({
+    invocation: invocation(key),
+    ...failure,
+    owner: "agent",
+    classification: { failureKind: "verification-failed" },
+    summary: "Host verification still fails after remediation.",
+    evidence: { command: "python3 -m pytest", exitCode: 1, verdict: "FAIL" },
+    rationale: "remediate the failed host verification",
+  });
+
+  route("recovery/repeated-verify/1", firstFailure);
+  const secondFailure = seedRetryFailure(firstFailure.attemptId, 2);
+  route("recovery/repeated-verify/2", secondFailure);
+  const thirdFailure = seedRetryFailure(secondFailure.attemptId, 3);
+  const ancestorAbort = route("recovery/repeated-verify/3", thirdFailure);
+  assert.equal(ancestorAbort.action, "abort");
+  resumeTaskRecovery({
+    invocation: invocation("recovery/repeated-verify/resume-ancestor"),
+    recoveryActionId: ancestorAbort.recoveryActionId,
+    repairSummary: "Applied and checked the first verification repair.",
+    evidence: { command: "python3 -m pytest", exitCode: 0, verdict: "PASS" },
+  });
+
+  const latestFailure = seedRetryFailure(thirdFailure.attemptId, 4);
+  const latestAbort = route("recovery/repeated-verify/4", latestFailure);
+  assert.equal(latestAbort.action, "abort");
+  resumeTaskRecovery({
+    invocation: invocation("recovery/repeated-verify/resume-latest"),
+    recoveryActionId: latestAbort.recoveryActionId,
+    repairSummary: "Applied and checked the second verification repair.",
+    evidence: { command: "python3 -m pytest", exitCode: 0, verdict: "PASS" },
+  });
+
+  assert.equal(readTaskRecoveryRoute(thirdFailure.attemptId)?.resumeAuthorized, false);
+  assert.equal(readTaskRecoveryRoute(latestFailure.attemptId)?.resumeAuthorized, true);
+  assert.equal(
+    readTerminalTaskRecoveryAbort("M001", "S01", "T01"),
+    null,
+    "the latest unconsumed resume authorization must allow its successor dispatch",
+  );
+});
+
+test("a terminal abort on a superseded Attempt stops dispatch and resumes (#1754 residual)", () => {
+  const firstFailure = seedFailedAttempt();
+  const route = (
+    key: string,
+    failure: { attemptId: string; resultId: string },
+    summary: string,
+  ) =>
+    recordFailureAndSelectRecovery({
+      invocation: invocation(key),
+      ...failure,
+      owner: "agent",
+      classification: { failureKind: "worktree-invalid" },
+      summary,
+      evidence: { source: "executor", diagnostic: summary },
+      rationale: "repair the deterministic worktree fault",
+    });
+
+  route("recovery/superseded/1", firstFailure, "Worktree root was missing before the repair.");
+  const secondDispatchId = insertClaimedDispatch(2);
+  const secondClaim = claimTaskAttempt({
+    invocation: invocation("fixture/claim/2"),
+    task: { milestoneId: "M001", sliceId: "S01", taskId: "T01" },
+    workerId: "worker-1",
+    milestoneLeaseToken: 7,
+    coordinationDispatchId: secondDispatchId,
+    retryOfAttemptId: firstFailure.attemptId,
+  });
+
+  const secondSettlement = settleTaskAttempt({
+    invocation: invocation("fixture/settle/2"),
+    attemptId: secondClaim.attemptId,
+    outcome: "interrupted",
+    failureClass: "stale-worker",
+    summary: "Replaced stale Task Attempt after milestone lease takeover",
+    output: {},
+  });
+  const aborted = route(
+    "recovery/superseded/2",
+    { attemptId: secondClaim.attemptId, resultId: secondSettlement.resultId },
+    "Worktree root was still missing after the repair attempt.",
+  );
+  assert.equal(aborted.action, "abort");
+
+  // A successor Attempt supersedes the aborted one. Current claim rules
+  // refuse to build on an unresumed abort, but pre-fix production minted
+  // exactly this state (#1754), so the residual is seeded the way those DBs
+  // carry it: a settled superseding Attempt whose claim predates any resume.
+  // The claim-authority and settled-shape triggers reject that insert today,
+  // so they are dropped for the seed, matching the fixture-surgery pattern
+  // used for immutable domain events above.
+  const thirdDispatchId = insertClaimedDispatch(3);
+  db().exec(`
+    DROP TRIGGER trg_workflow_attempt_route_authority_v39;
+    DROP TRIGGER trg_workflow_attempt_settlement_insert_shape_v36;
+    DROP TRIGGER trg_workflow_kernel_checkpoint_chain;
+    DROP TRIGGER trg_workflow_kernel_checkpoint_attempt_claim;
+  `);
+  const secondOperation = row(`
+    SELECT project_id, settle_operation_id, settle_project_revision, settle_authority_epoch
+    FROM workflow_execution_attempts WHERE attempt_id = :attempt_id
+  `, { ":attempt_id": secondClaim.attemptId });
+  db().prepare(`
+    INSERT INTO workflow_execution_attempts (
+      attempt_id, project_id, lifecycle_id, attempt_number, retry_of_attempt_id,
+      attempt_state, coordination_dispatch_id, worker_id, milestone_lease_token,
+      claimed_at, started_at, ended_at, claim_operation_id,
+      claim_project_revision, claim_authority_epoch, settle_outcome,
+      settle_operation_id, settle_project_revision, settle_authority_epoch
+    ) VALUES (
+      'attempt-superseding', :project_id, :lifecycle_id, 3, :retry_of,
+      'settled', :dispatch_id, 'worker-1', 7,
+      '2026-07-13T00:03:00.000Z', '2026-07-13T00:03:00.000Z', '2026-07-13T00:04:00.000Z',
+      :operation_id, :project_revision, :authority_epoch,
+      'succeeded', :operation_id, :project_revision, :authority_epoch
+    )
+  `).run({
+    ":project_id": secondOperation.project_id,
+    ":lifecycle_id": firstFailure.lifecycleId,
+    ":retry_of": secondClaim.attemptId,
+    ":dispatch_id": thirdDispatchId,
+    ":operation_id": secondOperation.settle_operation_id,
+    ":project_revision": secondOperation.settle_project_revision,
+    ":authority_epoch": secondOperation.settle_authority_epoch,
+  });
+  const routeHead = row(`
+    SELECT kernel_checkpoint_id, sequence
+    FROM workflow_kernel_checkpoints
+    WHERE lifecycle_id = :lifecycle_id
+    ORDER BY sequence DESC LIMIT 1
+  `, { ":lifecycle_id": firstFailure.lifecycleId });
+  db().prepare(`
+    INSERT INTO workflow_attempt_results (
+      result_id, project_id, lifecycle_id, attempt_id, outcome,
+      failure_class, summary, output_json, created_at,
+      operation_id, project_revision, authority_epoch
+    ) VALUES (
+      'result-superseding', :project_id, :lifecycle_id, 'attempt-superseding',
+      'succeeded', 'none', 'Superseding execution succeeded', '{}',
+      '2026-07-13T00:04:00.000Z', :operation_id, :project_revision, :authority_epoch
+    )
+  `).run({
+    ":project_id": secondOperation.project_id,
+    ":lifecycle_id": firstFailure.lifecycleId,
+    ":operation_id": secondOperation.settle_operation_id,
+    ":project_revision": secondOperation.settle_project_revision,
+    ":authority_epoch": secondOperation.settle_authority_epoch,
+  });
+  db().prepare(`
+    INSERT INTO workflow_kernel_checkpoints (
+      kernel_checkpoint_id, project_id, lifecycle_id, attempt_id,
+      next_stage, sequence, previous_kernel_checkpoint_id, created_at,
+      operation_id, project_revision, authority_epoch
+    ) VALUES
+      ('kernel-superseding-execute', :project_id, :lifecycle_id, 'attempt-superseding',
+       'execute', :execute_sequence, :route_head, '2026-07-13T00:03:00.000Z',
+       :operation_id, :project_revision, :authority_epoch),
+      ('kernel-superseding-verify', :project_id, :lifecycle_id, 'attempt-superseding',
+       'verify', :verify_sequence, 'kernel-superseding-execute', '2026-07-13T00:04:00.000Z',
+       :operation_id, :project_revision, :authority_epoch)
+  `).run({
+    ":project_id": secondOperation.project_id,
+    ":lifecycle_id": firstFailure.lifecycleId,
+    ":execute_sequence": Number(routeHead.sequence) + 1,
+    ":verify_sequence": Number(routeHead.sequence) + 2,
+    ":route_head": routeHead.kernel_checkpoint_id,
+    ":operation_id": secondOperation.settle_operation_id,
+    ":project_revision": secondOperation.settle_project_revision,
+    ":authority_epoch": secondOperation.settle_authority_epoch,
+  });
+  assert.equal(
+    row("SELECT attempt_id AS id FROM workflow_execution_attempts ORDER BY attempt_number DESC LIMIT 1").id,
+    "attempt-superseding",
+    "the aborted Attempt is superseded by a newer Attempt",
+  );
+
+  // The stop-guard sees the superseded Attempt's terminal abort, and the
+  // resume predicate accepts it instead of throwing (#1754 residual).
+  const terminal = readTerminalTaskRecoveryAbort("M001", "S01", "T01");
+  assert.equal(terminal?.recoveryActionId, aborted.recoveryActionId);
+  const recovery = refreshRecoveryDbForArtifact("execute-task", "M001/S01/T01", firstFailure.basePath);
+  assert.equal(recovery.ok, false);
+  assert.equal(recovery.ok ? undefined : recovery.reason, "execute-task-recovery-aborted");
+  const resumed = resumeTaskRecovery({
+    invocation: invocation("recovery/superseded/resume"),
+    recoveryActionId: aborted.recoveryActionId,
+    repairSummary: "Recreated the missing worktree root and verified GSD resolves it.",
+    evidence: { command: "gsd doctor", exitCode: 0, verdict: "PASS" },
+  });
+  assert.equal(resumed.status, "committed");
+  assert.equal(
+    readTerminalTaskRecoveryAbort("M001", "S01", "T01"),
+    null,
+    "a resume-authorized abort clears the stop-guard",
+  );
+});
+
+test("terminal recovery history remains discoverable when an Attempt leaves the live lifecycle join", () => {
+  const firstFailure = seedFailedAttempt();
+  const aborted = recordFailureAndSelectRecovery({
+    invocation: invocation("recovery/history/abort"),
+    attemptId: firstFailure.attemptId,
+    resultId: firstFailure.resultId,
+    owner: "agent",
+    classification: { failureKind: "fatal" },
+    summary: "The fatal executor fault requires a terminal abort.",
+    evidence: { source: "executor" },
+    rationale: "stop after the fatal executor fault",
+  });
+  assert.equal(aborted.action, "abort");
+
+  // Model an interruption-settled legacy row that is no longer reachable from
+  // the live Attempt join while its immutable failure/action history remains.
+  db().exec(`
+    PRAGMA foreign_keys = OFF;
+    DROP TRIGGER trg_workflow_attempt_delete;
+  `);
+  db().prepare("DELETE FROM workflow_execution_attempts WHERE attempt_id = :attempt_id").run({
+    ":attempt_id": firstFailure.attemptId,
+  });
+
+  assert.deepEqual(
+    readTaskRecoveryAttemptIds({ milestoneId: "M001", sliceId: "S01", taskId: "T01" }),
+    [firstFailure.attemptId],
+  );
+  assert.equal(
+    readTerminalTaskRecoveryAbort("M001", "S01", "T01")?.recoveryActionId,
+    aborted.recoveryActionId,
+  );
 });
 
 test("a pre-commit fault leaves no recovery residue and the same request retries cleanly", () => {

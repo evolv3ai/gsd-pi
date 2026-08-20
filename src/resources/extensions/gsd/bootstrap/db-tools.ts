@@ -2388,7 +2388,7 @@ export function registerDbTools(pi: ExtensionAPI): void {
 		description:
 			"Reassess the milestone roadmap after a slice completes. Structurally enforces preservation of completed slices — " +
 			"mutations to completed slice IDs are rejected with actionable error payloads. Writes assessment to DB, " +
-			"applies slice mutations, re-renders ROADMAP.md, and renders ASSESSMENT.md.",
+			"applies slice mutations, re-renders ROADMAP.md, and renders ROADMAP-ASSESSMENT.md.",
 		promptSnippet:
 			"Reassess a GSD roadmap with structural enforcement of completed slices",
 		promptGuidelines: [
@@ -2575,6 +2575,62 @@ export function registerDbTools(pi: ExtensionAPI): void {
 
 	registerWorkflowTool(pi, taskRecoveryResumeTool);
 
+	const taskSettleTool = {
+		name: "gsd_task_settle",
+		label: "Settle Task Attempt",
+		description:
+			"Operator tool: settle a Task's orphaned running Attempt as interrupted after a manual repair. " +
+			"Dry-run by default — prints the exact rows it would change; mutation requires apply: true. " +
+			"Human-gated: never called by auto mode.",
+		promptSnippet:
+			"Settle an orphaned running Task Attempt (dry-run first, apply: true to mutate)",
+		promptGuidelines: [
+			"Run without apply first and read the planned rows before mutating.",
+			"Only settles while the Attempt's own milestone lease is still held; a cross-process orphan whose lease is gone belongs to the next auto session's replacement-lease interrupt.",
+			"A second apply is a no-op — the tool is idempotent.",
+			"reconcileLifecycle adopts ready/completed to match tasks.status after the interrupted Attempt without deleting SUMMARYs.",
+		],
+		parameters: Type.Object(
+			{
+				milestoneId: Type.String({ minLength: 1, description: "Milestone ID (e.g. M001)" }),
+				sliceId: Type.String({ minLength: 1, description: "Slice ID (e.g. S01)" }),
+				taskId: Type.String({ minLength: 1, description: "Task ID (e.g. T01)" }),
+				reason: Type.String({
+					minLength: 1,
+					description: "Operator rationale recorded on the settled Attempt Result",
+				}),
+				apply: Type.Optional(
+					Type.Boolean({
+						description: "Actually settle. Omit or false for a dry run that changes nothing.",
+					}),
+				),
+				reconcileLifecycle: Type.Optional(
+					Type.Boolean({
+						description:
+							"After settling (or if already interrupted), adopt ready/completed to match tasks.status without deleting SUMMARYs.",
+					}),
+				),
+			},
+			{ additionalProperties: false },
+		),
+		execute: async (
+			toolCallId: string,
+			params: any,
+			_signal: AbortSignal | undefined,
+			_onUpdate: unknown,
+			ctx: unknown,
+		) => {
+			const { executeTaskSettle } = await loadWorkflowExecutors();
+			return executeTaskSettle(
+				params,
+				resolveWorkflowToolBasePath(ctx, params),
+				{ ...piExecutionInvocation("gsd_task_settle", toolCallId), actorType: "user" },
+			);
+		},
+	};
+
+	registerWorkflowTool(pi, taskSettleTool);
+
 	// ─── gsd_slice_reopen (gsd_reopen_slice alias) ─────────────────────────
 
 	const reopenSliceExecute = async (
@@ -2657,12 +2713,13 @@ export function registerDbTools(pi: ExtensionAPI): void {
 		name: "gsd_milestone_reopen",
 		label: "Reopen Milestone",
 		description:
-			"Reopen a terminal Milestone and its completed work in one revision- and Authority-Epoch-fenced SQLite operation while preserving immutable history, then remove stale readable summaries.",
+			"Reopen a terminal Milestone and its completed work in one revision- and Authority-Epoch-fenced SQLite operation while preserving immutable history, then remove stale readable summaries. Pass keepCompleted=true to unlock the milestone without resetting completed slices/tasks or deleting their SUMMARYs.",
 		promptSnippet:
 			"Reopen a terminal GSD Milestone atomically, then refresh readable projections",
 		promptGuidelines: [
 			"Use gsd_milestone_reopen when a terminal Milestone needs to be re-done (e.g. validation failure surfaced after closure).",
-			"All terminal slices and tasks reopen together — no partial reopen — while prior Attempts and evidence remain immutable.",
+			"Default is a full cascade: all terminal slices and tasks reopen together while prior Attempts and evidence remain immutable.",
+			"Pass keepCompleted=true to unlock the milestone for new work without resetting completed slices/tasks or deleting their SUMMARY projections.",
 			"Will fail if the Milestone is not currently terminal — there is nothing to reopen.",
 			"Exact invocation replays report duplicate; historical replays report superseded and cannot remove newer projections.",
 			"Use the canonical name gsd_milestone_reopen; gsd_reopen_milestone is only an alias.",
@@ -2673,6 +2730,12 @@ export function registerDbTools(pi: ExtensionAPI): void {
 				Type.String({
 					description:
 						"Why the milestone is being reopened (recorded in the audit trail)",
+				}),
+			),
+			keepCompleted: Type.Optional(
+				Type.Boolean({
+					description:
+						"When true, unlock the milestone without resetting completed slices/tasks or deleting their SUMMARY projections. Default false.",
 				}),
 			),
 			// Single-writer v3 audit trail (Stream 2): caller-provided actor identity + causation.
@@ -2800,12 +2863,13 @@ export function registerDbTools(pi: ExtensionAPI): void {
 			const { queryRequirementsWithLimit } = await import(
 				"../context-store.js"
 			);
-			const filtered = await withCanonicalReadAdapter(
+			const results = await withCanonicalReadAdapter(
 				basePath,
 				async (adapter) => {
 					const limit = Math.min(params.limit ?? 200, 500);
-					const results = queryRequirementsWithLimit(
+					return queryRequirementsWithLimit(
 						{
+							class: params.class ?? undefined,
 							status: params.status ?? undefined,
 							milestoneId: params.milestoneId ?? undefined,
 							sliceId: params.sliceId ?? undefined,
@@ -2813,11 +2877,6 @@ export function registerDbTools(pi: ExtensionAPI): void {
 						},
 						adapter,
 					);
-
-					// JS-level class filter (not in DB query)
-					return params.class
-						? results.filter((r: any) => r.class === params.class)
-						: results;
 				},
 			);
 
@@ -2825,13 +2884,13 @@ export function registerDbTools(pi: ExtensionAPI): void {
 				content: [
 					{
 						type: "text" as const,
-						text: `Found ${filtered.length} requirement(s).`,
+						text: `Found ${results.length} requirement(s).`,
 					},
 				],
 				details: {
 					operation: "list_requirements",
-					count: filtered.length,
-					requirements: filtered,
+					count: results.length,
+					requirements: results,
 				} as any,
 			};
 		} catch (err) {

@@ -322,6 +322,26 @@ With this configuration, a Haiku-4-5 subagent sees only `gsd-workflow` and `goog
 | `GSD_TOOL_LOOP_REPEATED_REPEATABLE_CAP` | (from preferences) | Per-turn per-tool cap for inherently repeatable tools. Overrides `tool_call_loop_guard.repeated_tool.repeatable_cap`. |
 | `GSD_TOOL_LOOP_EXEMPT_TOOLS` | (from preferences) | Comma-separated tool names exempted from the per-tool cap. Added to the built-in exempt defaults and any `tool_call_loop_guard.repeated_tool.exempt_tools`. |
 
+How to set `GSD_WEB_ALLOW_UNAUTHENTICATED_LAN` (copy-paste for each OS family):
+
+```bash
+# POSIX shell (bash, zsh)
+export GSD_WEB_ALLOW_UNAUTHENTICATED_LAN=1
+gsd --web --host 0.0.0.0 --no-auth
+```
+
+```powershell
+# PowerShell
+$env:GSD_WEB_ALLOW_UNAUTHENTICATED_LAN="1"
+gsd --web --host 0.0.0.0 --no-auth
+```
+
+```bat
+REM CMD
+set GSD_WEB_ALLOW_UNAUTHENTICATED_LAN=1
+gsd --web --host 0.0.0.0 --no-auth
+```
+
 ### Developer and test environment variables
 
 These are for contributors debugging locally or running specific test tiers — not for normal use. See [CONTRIBUTING.md](../../CONTRIBUTING.md).
@@ -671,6 +691,7 @@ verification_commands:
   - npm run test
 verification_auto_fix: true       # auto-retry on failure (default: true)
 verification_max_retries: 2       # max retry attempts (default: 2)
+verification_timeout_ms: 120000   # per-command spawn timeout (default: 120000)
 ```
 
 | Field | Type | Default | Description |
@@ -678,12 +699,13 @@ verification_max_retries: 2       # max retry attempts (default: 2)
 | `verification_commands` | string[] | `[]` | Simple executable commands to run after task execution |
 | `verification_auto_fix` | boolean | `true` | Auto-retry when verification fails |
 | `verification_max_retries` | number | `2` | Maximum auto-fix retry attempts |
+| `verification_timeout_ms` | number | `120000` | Per-command host-verification timeout in milliseconds. Unset keeps the 120s default. A timeout is reported as `failureClass: timeout`, never as exit 127. |
 
 Verification commands must be simple executable commands. Shell piping (`|`) is supported, but logical OR (`||`) is rejected. GSD also rejects redirects (`>` and `<`), semicolons, backticks, and command substitution (`$(...)`) because verification is run as a controlled command list, not as an arbitrary shell program.
 
 For task-level `verify` commands (`taskPlanVerify`), GSD splits checks on newlines. `&&` chains stay within a single shell invocation, so commands such as `cd path && npm test` preserve directory context.
 
-When `verification_commands` is empty and no task-level `verify` command is available, GSD can auto-discover project checks. JavaScript projects use `package.json` scripts in this order: `typecheck`, `lint`, `test`. Python projects use the `python-project` discovery source and run `python3 -m pytest` when GSD finds files matching pytest's default test file patterns (`test_*.py` or `*_test.py`) under `tests/` or an explicit pytest configuration marker: `pytest.ini`, `[tool.pytest]`, `[tool.pytest.*]`, `[pytest]`, or `[tool:pytest]` in `pyproject.toml`.
+When `verification_commands` is empty and no task-level `verify` command is available, GSD can auto-discover project checks. JavaScript projects use `package.json` scripts in this order: `typecheck`, `lint`, `test`. GSD selects the package manager from lock files in this order: `pnpm-lock.yaml`, `yarn.lock`, `bun.lockb` or `bun.lock`, then `package-lock.json`. If no lock file exists, it uses the supported manager named by the `packageManager` field and otherwise defaults to npm. Discovered scripts use each manager's command form: `npm test` for npm's test script, `npm run <script>` for other npm scripts, `<manager> <script>` for pnpm and Yarn, and `bun run <script>` for Bun. Python projects use the `python-project` discovery source and run `python3 -m pytest` when GSD finds files matching pytest's default test file patterns (`test_*.py` or `*_test.py`) under `tests/` or an explicit pytest configuration marker: `pytest.ini`, `[tool.pytest]`, `[tool.pytest.*]`, `[pytest]`, or `[tool:pytest]` in `pyproject.toml`.
 
 ### `workspace`
 

@@ -28,10 +28,12 @@ import type {
 import { KNOWN_UNIT_TYPES, UNIT_MANIFESTS } from "../unit-context-manifest.ts";
 import { getUnitToolSurfaceContract } from "../unit-tool-contracts.ts";
 import { shouldBlockAutoUnitToolCall } from "../auto-unit-tool-scope.ts";
+import { resolveSubagentRole } from "../subagent-role-resolver.ts";
 import type { UnitGsdToolName } from "../unit-registry.ts";
 import {
   buildExecuteTaskPrompt,
   buildGateEvaluatePrompt,
+  buildReactiveExecutePrompt,
   buildReassessRoadmapPrompt,
   buildWorkflowPreferencesPrompt,
   renderTaskRecoveryDispatchContext,
@@ -54,6 +56,23 @@ import { clearGSDPreferencesCache, getProjectGSDPreferencesPath } from "../prefe
 test("#4782 composer: returns empty string for unknown unit type", async () => {
   const out = await composeInlinedContext("never-dispatched", async () => "body");
   assert.strictEqual(out, "");
+});
+
+test("research tool guidance renders Claude Code agent types instead of internal roles", () => {
+  const out = composeToolSurfaceInstructions("research-slice", {
+    renderMode: "standalone",
+    sessionProvider: "claude-code",
+  });
+
+  assert.match(out, /\*\*Explore\*\*/);
+  assert.match(out, /\*\*Plan\*\*/);
+  assert.doesNotMatch(out, /\*\*scout\*\*|\*\*planner\*\*/);
+});
+
+test("subagent role resolution preserves registered roles and falls back predictably", () => {
+  assert.equal(resolveSubagentRole("scout", ["scout", "general-purpose"]), "scout");
+  assert.equal(resolveSubagentRole("scout", ["Explore", "general-purpose"]), "Explore");
+  assert.equal(resolveSubagentRole("tester", ["Explore", "general-purpose"]), "general-purpose");
 });
 
 test("#4782 composer: walks the manifest's inline list in declared order", async () => {
@@ -298,11 +317,11 @@ test("Context Mode composer: run-uat guidance steers to gsd_uat_exec in both ren
   assert.doesNotMatch(standalone, /`gsd_exec`/);
 });
 
-test("Context Mode composer: research-project guidance steers to scout orchestration", () => {
+test("Context Mode composer: research-project guidance steers to reconnaissance orchestration", () => {
   for (const renderMode of ["nested", "standalone"] as const) {
     const out = composeContextModeInstructions("research-project", { enabled: true, renderMode });
     assert.match(out, /research lane/i);
-    assert.match(out, /scout subagents/i);
+    assert.match(out, /reconnaissance subagents/i);
     assert.match(out, /\.gsd\/research\//);
     assert.match(out, /STACK\.md/);
     assert.match(out, /PITFALLS\.md/);
@@ -418,6 +437,8 @@ test("Tool Surface composer: planning-dispatch lists allowed subagents", () => {
   const out = composeToolSurfaceInstructions("plan-slice", { renderMode: "standalone" });
   assert.match(out, /\*\*scout\*\*/);
   assert.match(out, /\*\*planner\*\*/);
+  assert.match(out, /`gsd_exec`/);
+  assert.match(out, /active worktree/);
 });
 
 test("Tool Surface composer: planning_subagents updates plan-milestone dispatch guidance", (t) => {
@@ -590,6 +611,104 @@ test("execute-task prompt injects unresolved blocking rework findings", async (t
   assert.match(prompt, /Compile regression/);
   assert.match(prompt, /pnpm run typecheck:extensions/);
   assert.match(prompt, /reworkResolution/);
+});
+
+test("execute-task prompt resolves an inline slice task without a standalone task plan", async (t) => {
+  const base = makeFixtureBase();
+  t.after(() => cleanup(base));
+  invalidateAllCaches();
+
+  seed(base, "M001");
+  insertTask({ id: "T02", sliceId: "S01", milestoneId: "M001", title: "Inline task", status: "pending" });
+  writeFileSync(
+    join(base, ".gsd", "milestones", "M001", "slices", "S01", "S01-PLAN.md"),
+    [
+      "# S01: First",
+      "",
+      "<tasks>",
+      "- [ ] **T01**: Earlier task",
+      "- [ ] **T02**: Inline task",
+      "  - Files: `src/inline.ts`",
+      "  - Verify: pnpm test inline",
+      "</tasks>",
+      "",
+    ].join("\n"),
+  );
+
+  const prompt = await buildExecuteTaskPrompt("M001", "S01", "First", "T02", "Inline task", base);
+
+  assert.match(prompt, /Source: `\.gsd\/milestones\/M001\/slices\/S01\/S01-PLAN\.md`/);
+  assert.match(prompt, /\*\*T02\*\*: Inline task/);
+  assert.match(prompt, /src\/inline\.ts/);
+  assert.doesNotMatch(prompt, /Task plan not found at dispatch time/);
+  assert.doesNotMatch(prompt, /tasks\/T02-PLAN\.md/);
+});
+
+test("execute-task prompt prefers durable inline task planning state when no task file exists", async (t) => {
+  const base = makeFixtureBase();
+  t.after(() => cleanup(base));
+  invalidateAllCaches();
+
+  seed(base, "M001");
+  insertTask({
+    id: "T02",
+    sliceId: "S01",
+    milestoneId: "M001",
+    title: "Durable task",
+    status: "pending",
+    planning: {
+      description: "Implement the durable inline contract.",
+      estimate: "1h",
+      files: ["src/durable.ts"],
+      verify: "pnpm test durable",
+      inputs: [],
+      expectedOutput: ["src/durable.ts"],
+      observabilityImpact: "none",
+      fullPlanMd: "# T02: Durable task\n\nImplement the durable inline contract.\n",
+    },
+  });
+
+  const prompt = await buildExecuteTaskPrompt("M001", "S01", "First", "T02", "Durable task", base);
+
+  assert.match(prompt, /Source: durable task planning state for M001\/S01\/T02/);
+  assert.match(prompt, /Implement the durable inline contract/);
+  assert.doesNotMatch(prompt, /Task plan not found at dispatch time/);
+});
+
+test("reactive execute-task dispatch resolves inline slice task plans", async (t) => {
+  const base = makeFixtureBase();
+  t.after(() => cleanup(base));
+  invalidateAllCaches();
+
+  seed(base, "M001");
+  insertTask({ id: "T02", sliceId: "S01", milestoneId: "M001", title: "Inline reactive task", status: "pending" });
+  writeFileSync(
+    join(base, ".gsd", "milestones", "M001", "slices", "S01", "S01-PLAN.md"),
+    [
+      "# S01: First",
+      "",
+      "<tasks>",
+      "- [ ] **T02**: Inline reactive task",
+      "  - Files: `src/reactive-inline.ts`",
+      "  - Verify: pnpm test reactive-inline",
+      "</tasks>",
+      "",
+    ].join("\n"),
+  );
+
+  const prompt = await buildReactiveExecutePrompt(
+    "M001",
+    "Recovery",
+    "S01",
+    "First",
+    ["T02"],
+    base,
+  );
+
+  assert.match(prompt, /Source: `\.gsd\/milestones\/M001\/slices\/S01\/S01-PLAN\.md`/);
+  assert.match(prompt, /src\/reactive-inline\.ts/);
+  assert.doesNotMatch(prompt, /Task plan not found at dispatch time/);
+  assert.doesNotMatch(prompt, /tasks\/T02-PLAN\.md/);
 });
 
 test("execute-task recovery context gives repair, remediation, and replan distinct executor contracts", () => {

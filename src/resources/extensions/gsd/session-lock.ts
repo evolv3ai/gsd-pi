@@ -17,7 +17,7 @@
  */
 
 import { createRequire } from "node:module";
-import { existsSync, readFileSync, readdirSync, mkdirSync, unlinkSync, rmSync, statSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync, mkdirSync, unlinkSync, rmSync, rmdirSync, statSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { gsdRoot, normalizeRealPath } from "./paths.js";
 import { atomicWriteSync } from "./atomic-write.js";
@@ -38,7 +38,7 @@ export interface SessionLockData {
 }
 
 export type SessionLockResult =
-  | { acquired: true }
+  | { acquired: true; reentrant?: true }
   | { acquired: false; reason: string; existingPid?: number };
 
 export type SessionLockFailureReason =
@@ -66,13 +66,18 @@ interface ProperLockfileApi {
   ): () => void;
 }
 
+let _properLockfileOverride: ProperLockfileApi | undefined;
+
 // ─── Module State ───────────────────────────────────────────────────────────
 
 /** Release function from proper-lockfile — calling it releases the OS lock. */
 let _releaseFunction: (() => void) | null = null;
 
-/** The path we currently hold a lock on. */
+/** The physical target we currently hold an OS lock on. */
 let _lockedPath: string | null = null;
+
+/** Canonical project/process lock identity, stable across .gsd migration. */
+let _lockedOwner: string | null = null;
 
 /** Our PID at lock acquisition time. */
 let _lockPid: number = 0;
@@ -124,6 +129,57 @@ function lockPath(basePath: string): string {
   return join(gsdRoot(basePath), effectiveLockFile());
 }
 
+function canonicalLockTarget(basePath: string): string {
+  return normalizeRealPath(effectiveLockTarget(gsdRoot(basePath)));
+}
+
+function canonicalLockOwner(basePath: string): string {
+  return `${normalizeRealPath(basePath)}\0${effectiveLockFile()}`;
+}
+
+export interface LockDirectoryFs {
+  rmSync(path: string, options: { recursive: boolean; force: true }): void;
+  rmdirSync(path: string): void;
+  existsSync(path: string): boolean;
+}
+
+const defaultLockDirectoryFs: LockDirectoryFs = { rmSync, rmdirSync, existsSync };
+
+/**
+ * Remove a proper-lockfile directory. Node `fs.rmSync({ recursive: true })` can
+ * return without throwing while leaving the directory in place on Windows when
+ * the absolute path contains non-ASCII characters. After rmSync, verify with
+ * existsSync and fall back to rmdirSync; if the path still exists, throw with
+ * the path so callers cannot treat a no-op as success. (#1526)
+ */
+export function removeLockDirectory(
+  lockDir: string,
+  fsOps: LockDirectoryFs = defaultLockDirectoryFs,
+): void {
+  if (!fsOps.existsSync(lockDir)) return;
+  try {
+    fsOps.rmSync(lockDir, { recursive: true, force: true });
+  } catch {
+    // rmSync may throw or silently no-op; rmdirSync is the known-working fallback.
+  }
+  if (!fsOps.existsSync(lockDir)) return;
+  try {
+    fsOps.rmdirSync(lockDir);
+  } catch (error) {
+    throw new Error(
+      `Session lock directory still exists after rmSync/rmdirSync: ${lockDir}` +
+        ` (${error instanceof Error ? error.message : String(error)})`,
+    );
+  }
+  if (fsOps.existsSync(lockDir)) {
+    throw new Error(
+      `Session lock directory still exists after rmSync/rmdirSync: ${lockDir}. ` +
+        `Node fs.rmSync can no-op on Windows paths with non-ASCII characters. ` +
+        `Remove it manually: rmdir "${lockDir}"`,
+    );
+  }
+}
+
 // ─── Stray Lock Cleanup ─────────────────────────────────────────────────────
 
 /**
@@ -161,7 +217,7 @@ export function cleanupStrayLockFiles(basePath: string): void {
           try {
             const stat = statSync(fullPath);
             if (stat.isDirectory()) {
-              rmSync(fullPath, { recursive: true, force: true });
+              try { removeLockDirectory(fullPath); } catch { /* best-effort stray cleanup */ }
             }
           } catch { /* best-effort */ }
         }
@@ -197,8 +253,8 @@ function ensureExitHandler(_gsdDir: string): void {
       } catch { /* best-effort */ }
       try {
         const lockDir = join(dir + ".lock");
-        if (ownsRegisteredLock && existsSync(lockDir)) rmSync(lockDir, { recursive: true, force: true });
-      } catch { /* best-effort */ }
+        if (ownsRegisteredLock) removeLockDirectory(lockDir);
+      } catch { /* best-effort on process exit */ }
     }
   });
 }
@@ -246,13 +302,57 @@ function createLockCompromisedHandler(lockFilePath: string): () => void {
 /**
  * Assign module-level lock state after a successful lock acquisition.
  */
-function assignLockState(basePath: string, release: () => void, lockFilePath: string): void {
+function assignLockState(
+  lockOwner: string,
+  lockTarget: string,
+  release: () => void,
+  lockFilePath: string,
+): void {
   _releaseFunction = release;
-  _lockedPath = basePath;
+  _lockedOwner = lockOwner;
+  _lockedPath = lockTarget;
   _lockPid = process.pid;
   _lockCompromised = false;
   _lockAcquiredAt = Date.now();
   _snapshotLockPath = lockFilePath;
+}
+
+/**
+ * Replace a compromised lock without running stale-lock cleanup. A successful
+ * exclusive lockSync is the proof that the previous OS lock is no longer held.
+ */
+function recoverCompromisedLock(
+  basePath: string,
+  lockFilePath: string,
+  lockData: SessionLockData,
+): boolean {
+  let lockfile: ProperLockfileApi;
+  try {
+    lockfile = _properLockfileOverride ?? _require("proper-lockfile") as ProperLockfileApi;
+  } catch {
+    return false;
+  }
+
+  const lockTarget = canonicalLockTarget(basePath);
+  try {
+    const release = lockfile.lockSync(lockTarget, {
+      realpath: false,
+      stale: 1_800_000,
+      update: 10_000,
+      onCompromised: createLockCompromisedHandler(lockFilePath),
+    });
+    try {
+      atomicWriteSync(lockFilePath, JSON.stringify(lockData, null, 2));
+    } catch {
+      try { release(); } catch { /* best-effort */ }
+      return false;
+    }
+    assignLockState(canonicalLockOwner(basePath), lockTarget, release, lockFilePath);
+    ensureExitHandler(lockTarget);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 // ─── Public API ─────────────────────────────────────────────────────────────
@@ -269,18 +369,66 @@ function assignLockState(basePath: string, release: () => void, lockFilePath: st
 export function acquireSessionLock(basePath: string): SessionLockResult {
   const lp = lockPath(basePath);
 
-  // Re-entrant acquire on the same path: release our current OS lock first so
-  // proper-lockfile clears its update timer before we acquire a fresh lock.
-  if (_releaseFunction && _lockedPath === basePath) {
-    try { _releaseFunction(); } catch { /* may already be released */ }
-    _releaseFunction = null;
-    _lockedPath = null;
-    _lockPid = 0;
-    _lockCompromised = false;
-  }
-
-  // Ensure the directory exists
+  // Ensure the directory exists before canonicalizing the lock target.
   mkdirSync(dirname(lp), { recursive: true });
+
+  const lockTarget = canonicalLockTarget(basePath);
+  const lockOwner = canonicalLockOwner(basePath);
+  const lockData: SessionLockData = {
+    pid: process.pid,
+    startedAt: new Date().toISOString(),
+    unitType: "starting",
+    unitId: "bootstrap",
+    unitStartedAt: new Date().toISOString(),
+  };
+
+  // A healthy same-process re-entry already owns the OS lock. Keep that lock
+  // continuously held and only refresh its informational metadata.
+  if (_releaseFunction && !_lockCompromised && _lockedOwner === lockOwner) {
+    if (_lockedPath === lockTarget) {
+      atomicWriteSync(lp, JSON.stringify(lockData, null, 2));
+      return { acquired: true, reentrant: true };
+    }
+
+    // External-state migration can replace <project>/.gsd with a symlink while
+    // bootstrap already owns the original target. Acquire the new physical
+    // target before releasing the old one so exclusion remains continuous.
+    let lockfile: ProperLockfileApi;
+    try {
+      lockfile = _properLockfileOverride ?? _require("proper-lockfile") as ProperLockfileApi;
+    } catch {
+      _lockedPath = lockTarget;
+      atomicWriteSync(lp, JSON.stringify(lockData, null, 2));
+      return { acquired: true, reentrant: true };
+    }
+
+    try {
+      mkdirSync(lockTarget, { recursive: true });
+      const previousRelease = _releaseFunction;
+      const release = lockfile.lockSync(lockTarget, {
+        realpath: false,
+        stale: 1_800_000,
+        update: 10_000,
+        onCompromised: createLockCompromisedHandler(lp),
+      });
+      try {
+        atomicWriteSync(lp, JSON.stringify(lockData, null, 2));
+      } catch (error) {
+        try { release(); } catch { /* best-effort */ }
+        throw error;
+      }
+      assignLockState(lockOwner, lockTarget, release, lp);
+      ensureExitHandler(lockTarget);
+      try { previousRelease(); } catch { /* best-effort: new target is already held */ }
+      return { acquired: true, reentrant: true };
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : String(error);
+      return {
+        acquired: false,
+        reason: `Could not transfer session lock after state-path migration: ${detail}`,
+      };
+    }
+  }
 
   // Clean up numbered lock file variants from cloud sync conflicts (#1315)
   cleanupStrayLockFiles(basePath);
@@ -292,25 +440,13 @@ export function acquireSessionLock(basePath: string): SessionLockResult {
     markWorkerStoppingByPid(normalizeRealPath(basePath), existingPreflight.pid);
   }
 
-  // Write our lock data first (the content is informational; the OS lock is the real guard)
-  const lockData: SessionLockData = {
-    pid: process.pid,
-    startedAt: new Date().toISOString(),
-    unitType: "starting",
-    unitId: "bootstrap",
-    unitStartedAt: new Date().toISOString(),
-  };
-
   let lockfile: ProperLockfileApi;
   try {
-    lockfile = _require("proper-lockfile") as ProperLockfileApi;
+    lockfile = _properLockfileOverride ?? _require("proper-lockfile") as ProperLockfileApi;
   } catch {
     // proper-lockfile not available — fall back to PID-based check
     return acquireFallbackLock(basePath, lp, lockData);
   }
-
-  const gsdDir = gsdRoot(basePath);
-  const lockTarget = effectiveLockTarget(gsdDir);
 
   // #3218: Pre-flight stale lock cleanup — if the .lock/ directory exists but
   // no auto.lock metadata is present (or the PID is dead), remove the lock
@@ -323,7 +459,14 @@ export function acquireSessionLock(basePath: string): SessionLockResult {
     if (deadPid) markWorkerStoppingByPid(normalizeRealPath(basePath), deadPid);
     const isOrphan = !existingData || !!deadPid;
     if (isOrphan) {
-      try { rmSync(lockDir, { recursive: true, force: true }); } catch { /* best-effort */ }
+      try {
+        removeLockDirectory(lockDir);
+      } catch (error) {
+        return {
+          acquired: false,
+          reason: error instanceof Error ? error.message : String(error),
+        };
+      }
       try { if (existsSync(lp)) unlinkSync(lp); } catch { /* best-effort */ }
     }
   }
@@ -342,7 +485,7 @@ export function acquireSessionLock(basePath: string): SessionLockResult {
       onCompromised: createLockCompromisedHandler(lp),
     });
 
-    assignLockState(basePath, release, lp);
+    assignLockState(lockOwner, lockTarget, release, lp);
 
     // Safety net: clean up lock dir on process exit if _releaseFunction
     // wasn't called (e.g., normal exit after clean completion) (#1245).
@@ -365,7 +508,7 @@ export function acquireSessionLock(basePath: string): SessionLockResult {
     if (!existingData || (existingPid && !isPidAlive(existingPid))) {
       try {
         const lockDir = join(lockTarget + ".lock");
-        if (existsSync(lockDir)) rmSync(lockDir, { recursive: true, force: true });
+        removeLockDirectory(lockDir);
         if (existsSync(lp)) unlinkSync(lp);
 
         // Retry acquisition after cleanup
@@ -375,14 +518,17 @@ export function acquireSessionLock(basePath: string): SessionLockResult {
           update: 10_000,
           onCompromised: createLockCompromisedHandler(lp),
         });
-        assignLockState(basePath, release, lp);
+        assignLockState(lockOwner, lockTarget, release, lp);
 
         // Safety net — uses centralized handler to avoid double-registration
         ensureExitHandler(lockTarget);
 
         atomicWriteSync(lp, JSON.stringify(lockData, null, 2));
         return { acquired: true };
-      } catch {
+      } catch (retryErr) {
+        if (retryErr instanceof Error && retryErr.message.includes("Session lock directory still exists")) {
+          return { acquired: false, reason: retryErr.message };
+        }
         // Retry also failed — fall through to the error path
       }
     }
@@ -407,8 +553,19 @@ function acquireFallbackLock(
   lp: string,
   lockData: SessionLockData,
 ): SessionLockResult {
+  const lockTarget = canonicalLockTarget(basePath);
+  const lockOwner = canonicalLockOwner(basePath);
   // Check if an existing lock is held by a live process
   const existing = readExistingLockData(lp);
+  if (
+    _lockedOwner === lockOwner &&
+    _lockPid === process.pid &&
+    existing?.pid === process.pid
+  ) {
+    _lockedPath = lockTarget;
+    atomicWriteSync(lp, JSON.stringify(lockData, null, 2));
+    return { acquired: true, reentrant: true };
+  }
   if (existing && existing.pid !== process.pid) {
     if (isPidAlive(existing.pid)) {
       return {
@@ -422,7 +579,8 @@ function acquireFallbackLock(
 
   // Write our lock data
   atomicWriteSync(lp, JSON.stringify(lockData, null, 2));
-  _lockedPath = basePath;
+  _lockedOwner = lockOwner;
+  _lockedPath = lockTarget;
   _lockPid = process.pid;
 
   return { acquired: true };
@@ -438,7 +596,7 @@ export function updateSessionLock(
   unitId: string,
   sessionFile?: string,
 ): void {
-  if (_lockedPath !== basePath && _lockedPath !== null) return;
+  if (_lockedOwner !== canonicalLockOwner(basePath) && _lockedOwner !== null) return;
 
   const lp = lockPath(basePath);
   try {
@@ -475,15 +633,9 @@ export function getSessionLockStatus(basePath: string): SessionLockStatus {
     // Retry reads to tolerate transient filesystem hiccups (#2324).
     const existing = readExistingLockDataWithRetry(lp);
     if (existing && existing.pid === process.pid) {
-      // Lock file still ours — try to re-acquire the OS lock
-      try {
-        const result = acquireSessionLock(basePath);
-        if (result.acquired) {
-          logWarning("session", "Lock recovered after onCompromised — lock file PID matched, re-acquired.");
-          return { valid: true, recovered: true };
-        }
-      } catch {
-        // Re-acquisition failed — fall through to return false
+      if (recoverCompromisedLock(basePath, lp, existing)) {
+        logWarning("session", "Lock recovered after onCompromised — lock file PID matched, re-acquired.");
+        return { valid: true, recovered: true };
       }
     }
     return {
@@ -495,7 +647,11 @@ export function getSessionLockStatus(basePath: string): SessionLockStatus {
   }
 
   // If we have an OS-level lock, we're still the owner
-  if (_releaseFunction && _lockedPath === basePath) {
+  if (
+    _releaseFunction &&
+    _lockedOwner === canonicalLockOwner(basePath) &&
+    _lockedPath === canonicalLockTarget(basePath)
+  ) {
     return { valid: true };
   }
 
@@ -556,11 +712,8 @@ export function releaseSessionLock(basePath: string): void {
   // In parallel worker mode, this is .gsd/parallel/<MID>.lock/ (#2184).
   const gsdDir = gsdRoot(basePath);
   const lockTarget = effectiveLockTarget(gsdDir);
-  try {
-    const lockDir = join(lockTarget + ".lock");
-    if (ownsPrimaryLock && existsSync(lockDir)) rmSync(lockDir, { recursive: true, force: true });
-  } catch {
-    // Non-fatal
+  if (ownsPrimaryLock) {
+    removeLockDirectory(join(lockTarget + ".lock"));
   }
   // Also clean the per-milestone parallel directory itself if it exists
   if (ownsPrimaryLock && lockTarget !== gsdDir) {
@@ -581,8 +734,8 @@ export function releaseSessionLock(basePath: string): void {
     } catch { /* best-effort */ }
     try {
       const lockDir = join(dir + ".lock");
-      if (ownsRegisteredLock && existsSync(lockDir)) rmSync(lockDir, { recursive: true, force: true });
-    } catch { /* best-effort */ }
+      if (ownsRegisteredLock) removeLockDirectory(lockDir);
+    } catch { /* best-effort registry cleanup */ }
   }
   _lockDirRegistry.clear();
 
@@ -590,6 +743,7 @@ export function releaseSessionLock(basePath: string): void {
   cleanupStrayLockFiles(basePath);
 
   _lockedPath = null;
+  _lockedOwner = null;
   _lockPid = 0;
   _lockCompromised = false;
   _lockAcquiredAt = 0;
@@ -634,12 +788,8 @@ export function removeStaleSessionLock(basePath: string): boolean {
 
   let removed = false;
   if (existsSync(lockDir)) {
-    try {
-      rmSync(lockDir, { recursive: true, force: true });
-      removed = true;
-    } catch {
-      /* best-effort */
-    }
+    removeLockDirectory(lockDir);
+    removed = true;
   }
   if (existsSync(lp)) {
     try {
@@ -656,7 +806,11 @@ export function removeStaleSessionLock(basePath: string): boolean {
  * Returns true if we currently hold a session lock for the given path.
  */
 export function isSessionLockHeld(basePath: string): boolean {
-  return _lockedPath === basePath && _lockPid === process.pid;
+  return (
+    _lockedOwner === canonicalLockOwner(basePath) &&
+    _lockedPath === canonicalLockTarget(basePath) &&
+    _lockPid === process.pid
+  );
 }
 
 /**
@@ -665,6 +819,13 @@ export function isSessionLockHeld(basePath: string): boolean {
  */
 export function _getRegisteredLockDirs(): string[] {
   return [..._lockDirRegistry];
+}
+
+/** Override proper-lockfile for deterministic lock lifecycle tests. */
+export function _setProperLockfileForTests(lockfile: ProperLockfileApi | undefined): () => void {
+  const previous = _properLockfileOverride;
+  _properLockfileOverride = lockfile;
+  return () => { _properLockfileOverride = previous; };
 }
 
 // ─── Internal Helpers ───────────────────────────────────────────────────────

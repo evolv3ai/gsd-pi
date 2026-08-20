@@ -5,13 +5,15 @@ import {
   existsSync,
   lstatSync,
   mkdirSync,
+  readFileSync,
   readdirSync,
   renameSync,
 } from "node:fs";
-import { basename, join } from "node:path";
+import { basename, isAbsolute, join, resolve } from "node:path";
 
 import {
   _getAdapter,
+  clearTaskSummaryProjectionState,
   getAllMilestones,
   getMilestoneSlices,
   getSliceTasks,
@@ -32,6 +34,10 @@ import { invalidateStateCache } from "../../state.js";
 import type { GSDState } from "../../types.js";
 import { isAfter, latestExplicitReopenAt } from "../../milestone-reopen-events.js";
 import { isCanonicalStagedTaskSummaryProjection } from "../../task-summary-projection-classification.js";
+import { readLatestTaskAttempt } from "../../task-execution-domain-operation.js";
+import { quarantineProjectionEvidence } from "../../projection-observation.js";
+import { computeProjectionSha, deriveCompatProjectionKey, readCompatMarker } from "../../compat/compat-marker.js";
+import { stripProjectionStamp } from "../../markdown-renderer.js";
 import type { DriftContext, DriftHandler, DriftRecord } from "../types.js";
 
 type DiskSliceIdDivergenceDrift = Extract<
@@ -114,12 +120,123 @@ function hasExplicitReopenAfter(
   return Date.parse(reopenAt) > Date.parse(completedDispatchAt);
 }
 
+/**
+ * Disk-existence check for a staged task SUMMARY artifact row (#1771): the
+ * recorded path, or the currently-resolved projection path. Mirrors the
+ * sibling disk-check branch below so a stale DB row whose file never existed
+ * cannot fail-close into a phantom divergence wedge.
+ */
+function stagedTaskSummaryExistsOnDisk(
+  basePath: string,
+  milestoneId: string,
+  sliceId: string,
+  taskId: string,
+  rowPath: string,
+): boolean {
+  const candidates = [
+    isAbsolute(rowPath) ? rowPath : resolve(basePath, rowPath),
+    resolveTaskFile(basePath, milestoneId, sliceId, taskId, "SUMMARY"),
+  ];
+  return candidates.some((candidate) => candidate !== null && existsSync(candidate));
+}
+
+/**
+ * Whether the task ever ran: a SUMMARY row on a task that was previously
+ * executed (and is now pending again) is dead bookkeeping (#1771), while a
+ * row on a task that never ran is an unproven failure-path write and must
+ * stay a blocker (ADR-017/#414).
+ */
+function taskHasAttemptHistory(milestoneId: string, sliceId: string, taskId: string): boolean {
+  if (!isDbAvailable()) return false;
+  const row = _getAdapter()!.prepare(`
+    SELECT 1 AS present
+    FROM workflow_item_lifecycles lifecycle
+    JOIN workflow_execution_attempts attempt
+      ON attempt.lifecycle_id = lifecycle.lifecycle_id
+     AND attempt.project_id = lifecycle.project_id
+    WHERE lifecycle.item_kind = 'task'
+      AND lifecycle.milestone_id = :milestone_id
+      AND lifecycle.slice_id = :slice_id
+      AND lifecycle.task_id = :task_id
+    LIMIT 1
+  `).get({
+    ":milestone_id": milestoneId,
+    ":slice_id": sliceId,
+    ":task_id": taskId,
+  });
+  return row !== undefined;
+}
+
+function isAbandonedStagedTaskSummary(
+  record: ArtifactDbStatusDivergenceDrift,
+  basePath: string,
+): boolean {
+  if (!record.sliceId || !record.taskId || record.artifactType !== "SUMMARY") return false;
+  const task = getSliceTasks(record.milestoneId, record.sliceId)
+    .find((candidate) => candidate.id === record.taskId);
+  if (task?.status !== "in_progress") return false;
+  const attempt = readLatestTaskAttempt({
+    milestoneId: record.milestoneId,
+    sliceId: record.sliceId,
+    taskId: record.taskId,
+  });
+  if (attempt?.state !== "settled" || attempt.outcome === "succeeded") return false;
+
+  const projectionPath = resolveTaskSummaryDriftPath(basePath, record);
+  const canonicalPath = resolveTaskFile(
+    basePath,
+    record.milestoneId,
+    record.sliceId,
+    record.taskId,
+    "SUMMARY",
+  );
+  if (!projectionPath || !canonicalPath || resolve(projectionPath) !== resolve(canonicalPath)) return false;
+  let content: string;
+  try {
+    content = readFileSync(projectionPath, "utf8");
+  } catch {
+    return false;
+  }
+  if (
+    task.full_summary_md &&
+    stripProjectionStamp(content) === stripProjectionStamp(task.full_summary_md)
+  ) return true;
+
+  const projectionKey = deriveCompatProjectionKey(
+    projectionPath,
+    [gsdProjectionRoot(basePath), join(basePath, ".gsd")],
+  );
+  return readCompatMarker(basePath).projections[projectionKey]?.sha === computeProjectionSha(content);
+}
+
+function resolveTaskSummaryDriftPath(
+  basePath: string,
+  record: ArtifactDbStatusDivergenceDrift,
+): string | null {
+  if (record.artifactPath) {
+    if (isAbsolute(record.artifactPath)) return record.artifactPath;
+    const candidates = [
+      join(gsdProjectionRoot(basePath), record.artifactPath),
+      join(basePath, ".gsd", record.artifactPath),
+    ];
+    const existing = candidates.find((candidate) => existsSync(candidate));
+    if (existing) return existing;
+  }
+  if (!record.sliceId || !record.taskId) return null;
+  return resolveTaskFile(
+    basePath,
+    record.milestoneId,
+    record.sliceId,
+    record.taskId,
+    "SUMMARY",
+  );
+}
+
 function addUniqueDrift(
   drifts: ArtifactDbStatusDivergenceDrift[],
   seen: Set<string>,
   drift: ArtifactDbStatusDivergenceDrift,
-): void {
-  const key = [
+): void {  const key = [
     drift.milestoneId,
     drift.sliceId ?? "",
     drift.taskId ?? "",
@@ -203,6 +320,16 @@ function detectArtifactDbStatusDriftForMilestone(
         continue;
       }
       if (isClosedStatus(task.status)) continue;
+      // (#1771) A DB row whose file never existed, on a task that ran before
+      // and is back to pending, is dead bookkeeping — ignore it instead of
+      // wedging the project. A row on a task that never ran stays a blocker.
+      if (
+        task.status === "pending" &&
+        taskHasAttemptHistory(milestoneId, slice.id, task.id) &&
+        !stagedTaskSummaryExistsOnDisk(basePath, milestoneId, slice.id, task.id, row.path)
+      ) {
+        continue;
+      }
       if (isCanonicalStagedTaskSummaryProjection(basePath, {
         path: row.path,
         milestoneId: row.milestone_id,
@@ -559,13 +686,13 @@ function diskSliceIdDivergenceGuidance(record: DiskSliceIdDivergenceDrift): stri
   );
 }
 
-export function repairArtifactDbDrift(
+export async function repairArtifactDbDrift(
   record:
     | DiskSliceIdDivergenceDrift
     | ArtifactDbStatusDivergenceDrift
     | CompletedMilestoneReopenedDrift,
   ctx: DriftContext,
-): void {
+): Promise<void> {
   if (record.kind === "disk-slice-id-divergence") {
     if (record.disposition === "delete-empty") {
       removeProjectionTreeSync(record.sliceDir);
@@ -584,6 +711,16 @@ export function repairArtifactDbDrift(
     throw new Error(completedMilestoneReopenedGuidance(record));
   }
 
+  if (isAbandonedStagedTaskSummary(record, ctx.basePath)) {
+    const projectionPath = resolveTaskSummaryDriftPath(ctx.basePath, record);
+    if (projectionPath) quarantineProjectionEvidence(ctx.basePath, projectionPath);
+    clearTaskSummaryProjectionState(record.milestoneId, record.sliceId!, record.taskId!);
+    clearPathCache();
+    clearParseCache();
+    invalidateStateCache();
+    return;
+  }
+
   throw new Error(
     `Artifact/DB status drift in ${record.milestoneId}` +
       `${record.sliceId ? `/${record.sliceId}` : ""}` +
@@ -598,6 +735,7 @@ export function describeArtifactDbDriftBlocker(
     | DiskSliceIdDivergenceDrift
     | ArtifactDbStatusDivergenceDrift
     | CompletedMilestoneReopenedDrift,
+  ctx?: DriftContext,
 ): string | null {
   if (record.kind === "disk-slice-id-divergence") {
     if (record.disposition !== "block-meaningful") return null;
@@ -607,6 +745,8 @@ export function describeArtifactDbDriftBlocker(
   if (record.kind === "completed-milestone-reopened") {
     return completedMilestoneReopenedGuidance(record);
   }
+
+  if (ctx && isAbandonedStagedTaskSummary(record, ctx.basePath)) return null;
 
   return (
     `Artifact/DB status drift in ${record.milestoneId}` +

@@ -3,18 +3,31 @@
 // Discovery order (D003): task plan verify → preference → package.json scripts.
 // First non-empty source wins.
 
-import { spawnSync, type SpawnSyncReturns } from "node:child_process";
-import { existsSync, readFileSync, readdirSync, type Dirent } from "node:fs";
-import { join, basename } from "node:path";
+import { spawnSync } from "node:child_process";
+import {
+  closeSync,
+  existsSync,
+  fstatSync,
+  mkdtempSync,
+  openSync,
+  readFileSync,
+  readSync,
+  readdirSync,
+  rmSync,
+  type Dirent,
+} from "node:fs";
+import { join, basename, delimiter } from "node:path";
+import { tmpdir } from "node:os";
 import type { AuditWarning, RuntimeError, SkippedCheck, VerificationCheck, VerificationResult } from "./types.js";
 import { DEFAULT_COMMAND_TIMEOUT_MS } from "./constants.js";
 import { rewriteCommandWithRtk } from "../shared/rtk.js";
-import { normalizePythonCommand } from "./python-resolver.js";
+import { normalizePythonCommand, resolveVenvInterpreter, venvBinDirectory, formatPythonInvocation } from "./python-resolver.js";
 import {
   isWorkflowSurfaceAliasTool,
   isWorkflowToolSurfaceName,
   stripMcpToolPrefix,
 } from "./workflow-tool-surface.js";
+import { detectPackageManager, buildScriptCommand } from "./package-manager.js";
 
 /** Maximum bytes of stdout/stderr to retain per command (10 KB). */
 const MAX_OUTPUT_BYTES = 10 * 1024;
@@ -26,6 +39,26 @@ function truncate(value: string | null | undefined, maxBytes: number): string {
   // Slice conservatively then trim to last full character
   const buf = Buffer.from(value, "utf-8").subarray(0, maxBytes);
   return buf.toString("utf-8") + "\n…[truncated]";
+}
+
+function readBoundedCommandOutput(path: string): string {
+  const fd = openSync(path, "r");
+  try {
+    const size = fstatSync(fd).size;
+    if (size <= MAX_OUTPUT_BYTES) return readFileSync(path, "utf-8");
+
+    const marker = Buffer.from("\n…[truncated]\n", "utf-8");
+    const retainedBytes = MAX_OUTPUT_BYTES - marker.byteLength;
+    const headBytes = Math.floor(retainedBytes / 2);
+    const tailBytes = retainedBytes - headBytes;
+    const head = Buffer.allocUnsafe(headBytes);
+    const tail = Buffer.allocUnsafe(tailBytes);
+    readSync(fd, head, 0, headBytes, 0);
+    readSync(fd, tail, 0, tailBytes, size - tailBytes);
+    return Buffer.concat([head, marker, tail]).toString("utf-8");
+  } finally {
+    closeSync(fd);
+  }
 }
 
 // ─── Command Discovery ──────────────────────────────────────────────────────
@@ -114,10 +147,7 @@ export function discoverCommands(options: DiscoverCommandsOptions): DiscoveredCo
   // 1. Task plan verify field (commands are untrusted — sanitize)
   if (taskPlanVerify) {
     const commands: string[] = [];
-    const candidates = taskPlanVerify
-      .split(/\r?\n/)
-      .map(c => c.trim())
-      .filter(Boolean);
+    const candidates = splitUnquotedLines(taskPlanVerify);
     for (const candidate of candidates) {
       const normalized = candidate.replace(INTERPRETER_PREFIX_RE, "").trim();
       const validation = validateVerificationCommand(normalized);
@@ -143,16 +173,13 @@ export function discoverCommands(options: DiscoverCommandsOptions): DiscoveredCo
     }
   }
 
-  // 1b. Prose task verify backed by passing structured task evidence (#1591).
-  // Task-specific evidence must not be silently replaced by unrelated
-  // project-wide preference commands.
-  if (
+  // A prose verification requirement may be satisfied by the structured
+  // evidence staged for this Task. Keep this decision next to preference
+  // fallback below so unrelated project-wide checks cannot replace it (#1431).
+  const taskEvidenceSatisfiesVerify =
     hasTaskPlanProse &&
     !hasUnsafeTaskPlanCommand &&
-    hasQualifyingTaskEvidence(options.taskEvidence)
-  ) {
-    return { commands: [], source: "task-plan-prose", skipped: [] };
-  }
+    hasQualifyingTaskEvidence(options.taskEvidence);
 
   // 2. Preference commands (test-shaped ones are gated on test files existing)
   if (options.preferenceCommands && options.preferenceCommands.length > 0) {
@@ -160,6 +187,9 @@ export function discoverCommands(options: DiscoverCommandsOptions): DiscoveredCo
       .map(c => c.trim())
       .filter(Boolean);
     if (filtered.length > 0) {
+      if (taskEvidenceSatisfiesVerify) {
+        return { commands: [], source: "task-plan-prose", skipped: [] };
+      }
       let testFilesPresent: boolean | null = null;
       const testsExist = (): boolean => (testFilesPresent ??= hasDiscoverableTestFiles(options.cwd));
       const runnable: string[] = [];
@@ -178,6 +208,10 @@ export function discoverCommands(options: DiscoverCommandsOptions): DiscoveredCo
     }
   }
 
+  if (taskEvidenceSatisfiesVerify) {
+    return { commands: [], source: "task-plan-prose", skipped: [] };
+  }
+
   // 3. package.json scripts
   const pkgPath = join(options.cwd, "package.json");
   if (existsSync(pkgPath)) {
@@ -185,10 +219,11 @@ export function discoverCommands(options: DiscoverCommandsOptions): DiscoveredCo
       const raw = readFileSync(pkgPath, "utf-8");
       const pkg = JSON.parse(raw);
       if (pkg && typeof pkg === "object" && pkg.scripts && typeof pkg.scripts === "object") {
+        const pm = detectPackageManager(options.cwd) ?? "npm";
         const commands: string[] = [];
         for (const key of PACKAGE_SCRIPT_KEYS) {
           if (typeof pkg.scripts[key] === "string") {
-            commands.push(`npm run ${key}`);
+            commands.push(buildScriptCommand(pm, key));
           }
         }
         if (commands.length > 0) {
@@ -245,8 +280,9 @@ function discoverPythonPytestCommand(cwd: string): string | null {
     return null;
   }
 
+  const pytestCommand = resolvedPytestCommand(cwd);
   if (hasPytestConfig || hasPythonTestFiles) {
-    return "python3 -m pytest";
+    return pytestCommand;
   }
 
   try {
@@ -257,13 +293,18 @@ function discoverPythonPytestCommand(cwd: string): string | null {
       pyproject.includes("[pytest]") ||
       pyproject.includes("[tool:pytest]")
     ) {
-      return "python3 -m pytest";
+      return pytestCommand;
     }
   } catch {
     // Ignore unreadable pyproject.toml and fall through.
   }
 
   return null;
+}
+
+function resolvedPytestCommand(cwd: string): string {
+  const venv = resolveVenvInterpreter(cwd);
+  return venv ? `${formatPythonInvocation(venv)} -m pytest` : "python3 -m pytest";
 }
 
 function hasPythonTests(dir: string): boolean {
@@ -355,9 +396,6 @@ function isAllowedExitCodeEchoSuffix(suffix: string): boolean {
 
 /** Returns true when command text contains unquoted shell control syntax. */
 function hasUnsafeShellSyntax(cmd: string): boolean {
-  // Command substitution remains unsafe even when quoted with double quotes.
-  if (cmd.includes("$(") || cmd.includes("`")) return true;
-
   let inSingle = false;
   let inDouble = false;
   let escaped = false;
@@ -380,6 +418,10 @@ function hasUnsafeShellSyntax(cmd: string): boolean {
       inDouble = !inDouble;
       continue;
     }
+    // Backtick / $( substitute unless inside single quotes. Double quotes do
+    // not protect them — that matches POSIX shell semantics (#1724).
+    if (!inSingle && ch === "`") return true;
+    if (!inSingle && ch === "$" && cmd[i + 1] === "(") return true;
     if (!inSingle && !inDouble && ch === "|" && cmd[i + 1] === "|") {
       return true;
     }
@@ -398,6 +440,48 @@ function hasUnsafeShellSyntax(cmd: string): boolean {
  * Split a candidate string on unquoted `;` into individual statements.
  * Used to re-classify prose-vs-command for candidates rejected as unsafe.
  */
+/** Split verify text on newlines that are not inside quotes (#1798). */
+export function splitUnquotedLines(text: string): string[] {
+  const lines: string[] = [];
+  let current = "";
+  let inSingle = false;
+  let inDouble = false;
+  let escaped = false;
+
+  for (let i = 0; i < text.length; i += 1) {
+    const ch = text[i];
+    if (escaped) {
+      current += ch;
+      escaped = false;
+      continue;
+    }
+    if (ch === "\\" && !inSingle) {
+      current += ch;
+      escaped = true;
+      continue;
+    }
+    if (ch === "'" && !inDouble) {
+      inSingle = !inSingle;
+      current += ch;
+      continue;
+    }
+    if (ch === "\"" && !inSingle) {
+      inDouble = !inDouble;
+      current += ch;
+      continue;
+    }
+    if (ch === "\n" && !inSingle && !inDouble) {
+      if (current.endsWith("\r")) current = current.slice(0, -1);
+      lines.push(current);
+      current = "";
+      continue;
+    }
+    current += ch;
+  }
+  lines.push(current);
+  return lines.map(s => s.trim()).filter(Boolean);
+}
+
 function splitUnquotedStatements(cmd: string): string[] {
   const statements: string[] = [];
   let current = "";
@@ -559,12 +643,12 @@ const PROSE_MARKER_WORDS = new Set([
 
 /**
  * Does a known-command-prefixed string read as prose rather than a command?
- * True when there is no flag/sub-command structure but there are English
- * function words — e.g. "git log shows the scaffold commit authored by ...".
+ * True when there are English function words after the command word —
+ * e.g. "git log shows the scaffold commit authored by ...".
+ * Flags after the command word do not suppress this check (#1671).
  */
 function readsAsProseAfterCommandWord(tokens: string[]): boolean {
   if (tokens.length < 4) return false;
-  if (tokens.some(t => t.startsWith("-"))) return false;
   return tokens
     .slice(1)
     .some(t => PROSE_MARKER_WORDS.has(t.toLowerCase().replace(/[.,;:!?]+$/, "")));
@@ -712,7 +796,7 @@ export interface VerificationTarget {
   preferenceCommands?: string[];
 }
 
-function verificationChildEnvironment(): NodeJS.ProcessEnv {
+function verificationChildEnvironment(cwd: string): NodeJS.ProcessEnv {
   const env = { ...process.env };
   for (const key of [
     "GSD_PROJECT_ROOT",
@@ -722,6 +806,11 @@ function verificationChildEnvironment(): NodeJS.ProcessEnv {
     "GSD_SLICE_WORKER_TOKEN",
   ]) {
     delete env[key];
+  }
+  const venv = resolveVenvInterpreter(cwd);
+  if (venv) {
+    const bin = venvBinDirectory(venv);
+    env.PATH = `${bin}${delimiter}${env.PATH ?? ""}`;
   }
   return env;
 }
@@ -748,6 +837,20 @@ function mergeDiscoverySource(
     if (sources.includes(source)) return source;
   }
   return "none";
+}
+
+function isSpawnTimeout(
+  result: { signal: NodeJS.Signals | null },
+  error: NodeJS.ErrnoException & { killed?: boolean },
+): boolean {
+  if (error.code === "ETIMEDOUT") return true;
+  if (error.killed && (result.signal === "SIGTERM" || result.signal === "SIGKILL")) return true;
+  return /etimedout|timed out/i.test(error.message);
+}
+
+function isCommandNotFound(error: NodeJS.ErrnoException): boolean {
+  if (error.code === "ENOENT") return true;
+  return /enoent|not found/i.test(error.message);
 }
 
 /**
@@ -782,7 +885,7 @@ export function runVerificationGate(options: RunVerificationGateOptions): Verifi
 
   for (const command of commands) {
     const start = Date.now();
-    const rewrittenCommand = normalizePythonCommand(rewriteCommandWithRtk(command));
+    const rewrittenCommand = normalizePythonCommand(rewriteCommandWithRtk(command), options.cwd);
     // Pass the command string as an argument to the shell explicitly
     // to avoid Node.js DEP0190 (spawnSync with shell: true and no args).
     const shellBin = process.platform === "win32" ? "cmd" : "sh";
@@ -794,29 +897,61 @@ export function runVerificationGate(options: RunVerificationGateOptions): Verifi
           "verification-gate",
           rewrittenCommand,
         ];
-    const result: SpawnSyncReturns<string> = spawnSync(shellBin, shellArgs, {
-      cwd: options.cwd,
-      env: verificationChildEnvironment(),
-      stdio: "pipe",
-      encoding: "utf-8",
-      timeout: options.commandTimeoutMs ?? DEFAULT_COMMAND_TIMEOUT_MS,
-    });
+    const outputDir = mkdtempSync(join(tmpdir(), "gsd-verification-"));
+    const stdoutPath = join(outputDir, "stdout");
+    const stderrPath = join(outputDir, "stderr");
+    const stdoutFd = openSync(stdoutPath, "w");
+    const stderrFd = openSync(stderrPath, "w");
+    let result: ReturnType<typeof spawnSync>;
+    let stdout: string;
+    let capturedStderr: string;
+    try {
+      result = spawnSync(shellBin, shellArgs, {
+        cwd: options.cwd,
+        env: verificationChildEnvironment(options.cwd),
+        stdio: ["ignore", stdoutFd, stderrFd],
+        timeout: options.commandTimeoutMs ?? DEFAULT_COMMAND_TIMEOUT_MS,
+      });
+      stdout = readBoundedCommandOutput(stdoutPath);
+      capturedStderr = readBoundedCommandOutput(stderrPath);
+    } finally {
+      closeSync(stdoutFd);
+      closeSync(stderrFd);
+      rmSync(outputDir, { recursive: true, force: true });
+    }
     const durationMs = Date.now() - start;
 
     let exitCode: number;
     let stderr: string;
 
+    let failureClass: VerificationCheck["failureClass"];
     if (result.error) {
-      // Command not found or spawn failure
-      exitCode = 127;
-      stderr = truncate(
-        (result.stderr || "") + "\n" + (result.error as Error).message,
-        MAX_OUTPUT_BYTES,
-      );
+      const spawnError = result.error as NodeJS.ErrnoException & { killed?: boolean };
+      if (isSpawnTimeout(result, spawnError)) {
+        const limitMs = options.commandTimeoutMs ?? DEFAULT_COMMAND_TIMEOUT_MS;
+        exitCode = 124;
+        failureClass = "timeout";
+        stderr = truncate(
+          `${capturedStderr}\ntimed out after ${limitMs}ms. Raise verification_timeout_ms if this command is expected to run longer.`.trim(),
+          MAX_OUTPUT_BYTES,
+        );
+      } else if (isCommandNotFound(spawnError)) {
+        exitCode = 127;
+        stderr = truncate(
+          capturedStderr + "\n" + spawnError.message,
+          MAX_OUTPUT_BYTES,
+        );
+      } else {
+        exitCode = result.status ?? 1;
+        stderr = truncate(
+          capturedStderr + "\n" + spawnError.message,
+          MAX_OUTPUT_BYTES,
+        );
+      }
     } else {
       // status is null when killed by signal — treat as failure
       exitCode = result.status ?? 1;
-      stderr = truncate(result.stderr, MAX_OUTPUT_BYTES);
+      stderr = capturedStderr;
     }
 
     const warning = countSearchWarning(command, exitCode);
@@ -824,9 +959,10 @@ export function runVerificationGate(options: RunVerificationGateOptions): Verifi
     checks.push({
       command,
       exitCode,
-      stdout: truncate(result.stdout, MAX_OUTPUT_BYTES),
+      stdout,
       stderr: truncate(appendStderrWarning(stderr, warning), MAX_OUTPUT_BYTES),
       durationMs,
+      ...(failureClass ? { failureClass } : {}),
     });
   }
 

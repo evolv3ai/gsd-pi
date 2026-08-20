@@ -47,6 +47,7 @@ import {
 } from './paths.js';
 import { findMilestoneIds } from './guided-flow.js';
 import { milestoneIdToPhaseNum } from './layout-policy.js';
+import { stripIdPrefix } from './strip-id-prefix.js';
 import { parseProjectionRoadmap as parseRoadmap, parseProjectionPlan as parsePlan } from './schemas/parsers.js';
 import { parseContextDependsOn, parseSummary } from './files.js';
 import { logWarning } from './workflow-logger.js';
@@ -717,7 +718,8 @@ export function migrateHierarchyToDb(
     if (hasRoadmap) {
       roadmapContent = readFileSync(roadmapPath!, 'utf-8');
       roadmap = parseRoadmap(roadmapContent);
-      milestoneTitle = roadmap.title;
+      // #1592: H1 is `${id}: ${title}`; store the title without the id prefix.
+      milestoneTitle = stripIdPrefix(roadmap.title, milestoneId);
     }
 
     // Determine milestone status
@@ -732,7 +734,7 @@ export function migrateHierarchyToDb(
     if (!milestoneTitle && hasContext) {
       const contextContent = readFileSync(contextPath!, 'utf-8');
       const h1Match = contextContent.match(/^#\s+(.+)/m);
-      if (h1Match) milestoneTitle = h1Match[1].trim();
+      if (h1Match) milestoneTitle = stripIdPrefix(h1Match[1].trim(), milestoneId);
     }
 
     // Determine depends_on from CONTEXT frontmatter

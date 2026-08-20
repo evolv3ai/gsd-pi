@@ -182,14 +182,14 @@ test("handleAgentEvent: message_end keeps question segments when final payload m
 	await handleAgentEvent(host, {
 		type: "message_update",
 		message: first,
-		assistantMessageEvent: { type: "text_delta", contentIndex: 0, delta: prior, partial: first },
+		assistantMessageEvent: { type: "text_delta", contentIndex: 0, delta: prior },
 	} as any);
 
 	const replaced = makeMessage([{ type: "text", text: waitAck }]);
 	await handleAgentEvent(host, {
 		type: "message_update",
 		message: replaced,
-		assistantMessageEvent: { type: "text_delta", contentIndex: 0, delta: waitAck, partial: replaced },
+		assistantMessageEvent: { type: "text_delta", contentIndex: 0, delta: waitAck },
 	} as any);
 
 	const final = makeMessage([
@@ -231,7 +231,7 @@ test("handleAgentEvent: suppresses redundant holding-here sub-turn after discuss
 	await handleAgentEvent(host, {
 		type: "message_update",
 		message: first,
-		assistantMessageEvent: { type: "text_delta", contentIndex: 0, delta: prior, partial: first },
+		assistantMessageEvent: { type: "text_delta", contentIndex: 0, delta: prior },
 	} as any);
 
 	// Claude Code can replace sub-turn text at the same content index.
@@ -239,7 +239,7 @@ test("handleAgentEvent: suppresses redundant holding-here sub-turn after discuss
 	await handleAgentEvent(host, {
 		type: "message_update",
 		message: replaced,
-		assistantMessageEvent: { type: "text_delta", contentIndex: 0, delta: waitAck, partial: replaced },
+		assistantMessageEvent: { type: "text_delta", contentIndex: 0, delta: waitAck },
 	} as any);
 
 	const final = makeMessage([
@@ -757,7 +757,7 @@ test("handleAgentEvent: Claude Code MCP post-tool text does not erase user-facin
 	await handleAgentEvent(host, {
 		type: "message_update",
 		message: first,
-		assistantMessageEvent: { type: "server_tool_use", contentIndex: 1, partial: first },
+		assistantMessageEvent: { type: "server_tool_use", contentIndex: 1 },
 	} as any);
 
 	assert.match(stripAnsi(chatContainer.render(100).join("\n")), /still waiting on your actual answer/);
@@ -773,6 +773,33 @@ test("handleAgentEvent: Claude Code MCP post-tool text does not erase user-facin
 	const rendered = stripAnsi(chatContainer.render(100).join("\n"));
 	assert.match(rendered, /still waiting on your actual answer/);
 	assert.match(rendered, /stay parked here/);
+});
+
+test("handleAgentEvent: message_update renders streamed text without waiting for the render debounce", async () => {
+	initTheme("dark", false);
+	const chatContainer = new Container();
+	const host = createStreamingHost(chatContainer);
+	const message = {
+		id: "a-immediate",
+		role: "assistant",
+		provider: "claude-code",
+		model: "claude-opus-4-8",
+		timestamp: 1,
+		stopReason: "stop",
+		content: [{ type: "text", text: "Immediate streamed output." }],
+	};
+
+	await handleAgentEvent(host, { type: "message_start", message: { ...message, content: [] } } as any);
+	await handleAgentEvent(host, {
+		type: "message_update",
+		message,
+		assistantMessageEvent: { type: "text_delta", contentIndex: 0, delta: "Immediate streamed output.", partial: message },
+	} as any);
+
+	// The segment walker must run synchronously on message_update — only the
+	// render request may be debounced. Sub-turn replacement and suppression
+	// logic depends on observing every intermediate state.
+	assert.match(stripAnsi(chatContainer.render(100).join("\n")), /Immediate streamed output/);
 });
 
 test("handleAgentEvent: message_end keeps the current handoff reply visible", async () => {

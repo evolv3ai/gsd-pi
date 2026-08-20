@@ -1,5 +1,6 @@
 import { clearParseCache } from "../files.js";
 import { assertVerifyIsShellCheckable } from "../verification-gate.js";
+import { normalizeVerifyCommandForVenv } from "../python-resolver.js";
 import { isClosedStatus } from "../status-guards.js";
 import { isNonEmptyString, validateStringArray } from "../validation.js";
 import { getGateIdsForTurn } from "../gate-registry.js";
@@ -36,6 +37,7 @@ import {
   planningOperationPayload,
 } from "../planning-domain-operation.js";
 import type { PlanningInvocation } from "../planning-invocation.js";
+import { executeTaskIllegalPlanToolsError } from "../execute-task-plan-tool-guard.js";
 
 export interface PlanTaskParams {
   milestoneId: string;
@@ -140,9 +142,16 @@ function validateParams(params: PlanTaskParams): PlanTaskParams {
     throw new Error("observabilityImpact must be a non-empty string when provided");
   }
 
+  const files = validateStringArray(params.files, "files");
+  const illegalToolsError = executeTaskIllegalPlanToolsError(
+    { description: params.description, files },
+    `task ${params.taskId}`,
+  );
+  if (illegalToolsError) throw new Error(illegalToolsError);
+
   return {
     ...params,
-    files: validateStringArray(params.files, "files"),
+    files,
     inputs: validateStringArray(params.inputs, "inputs"),
     expectedOutput: validateStringArray(params.expectedOutput, "expectedOutput"),
     ...(params.targetRepositories !== undefined
@@ -165,6 +174,7 @@ export async function handlePlanTask(
   let params: PlanTaskParams;
   try {
     params = validateParams(rawParams);
+    params = { ...params, verify: normalizeVerifyCommandForVenv(params.verify, basePath) };
   } catch (err) {
     return { error: `validation failed: ${(err as Error).message}` };
   }

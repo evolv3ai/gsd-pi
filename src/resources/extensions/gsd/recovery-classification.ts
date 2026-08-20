@@ -11,6 +11,7 @@ import {
   isTransientProjectionLockError,
   ProjectionLockTransientError,
 } from "./projection-root-errors.js";
+import { PROJECTION_LOCK_TRANSIENT_BACKOFF_MS } from "./recovery-policy.js";
 
 export type RecoveryFailureKind =
   | "tool-schema"
@@ -44,6 +45,8 @@ export interface RecoveryClassification {
   exitReason: string;
   remediation: string;
   providerClass?: ErrorClass["kind"];
+  /** Bounded backoff schedule for transient classes (#1690); the loop picks by attempt. */
+  backoffMs?: readonly number[];
 }
 
 export function classifyFailure(input: RecoveryClassificationInput): RecoveryClassification {
@@ -58,7 +61,11 @@ export function classifyFailure(input: RecoveryClassificationInput): RecoveryCla
         ? "illegal-transition"
         : input.error instanceof ProjectionLockTransientError
           ? "projection-lock-transient"
-        : input.failureKind ?? inferFailureKind(message);
+          : input.error instanceof Error && isTransientProjectionLockError(input.error)
+            // Check the Error (not just its message) so a wrapped transient's
+            // cause chain classifies identically to a bare one (#1762).
+            ? "projection-lock-transient"
+          : input.failureKind ?? inferFailureKind(message);
 
   if (failureKind === "provider") {
     const providerClass = classifyError(message, input.retryAfterMs);
@@ -68,7 +75,7 @@ export function classifyFailure(input: RecoveryClassificationInput): RecoveryCla
       action: transient ? "retry" : "escalate",
       reason: message,
       exitReason: `provider-${providerClass.kind}`,
-      remediation: recoveryRemediation(transient ? "provider-transient" : "provider-permanent"),
+      remediation: recoveryRemediation(transient ? "provider-transient" : "provider-permanent", message),
       providerClass: providerClass.kind,
     };
   }
@@ -79,7 +86,10 @@ export function classifyFailure(input: RecoveryClassificationInput): RecoveryCla
     action,
     reason: label ? `${label}${unitSuffix(input)}: ${message}` : message,
     exitReason: failureKind,
-    remediation: recoveryRemediation(failureKind),
+    remediation: recoveryRemediation(failureKind, message),
+    ...(failureKind === "projection-lock-transient"
+      ? { backoffMs: PROJECTION_LOCK_TRANSIENT_BACKOFF_MS }
+      : {}),
   };
 }
 

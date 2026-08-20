@@ -9,6 +9,7 @@ import { tmpdir } from "node:os";
 import {
   openDatabase,
   closeDatabase,
+  _getAdapter,
   insertMilestone,
   insertSlice,
 } from "../gsd-db.ts";
@@ -22,7 +23,7 @@ import {
   markStuck,
   markPaused,
   markCanceled,
-  markLatestActiveForWorkerCanceled,
+  markActiveForWorkerCanceled,
   getRecentForUnit,
   getLatestForUnit,
   getActiveForWorker,
@@ -249,7 +250,7 @@ test("markStuck and markCanceled set their respective statuses", (t) => {
   assert.equal(getLatestForUnit("M001/S01/T01")!.status, "canceled");
 });
 
-test("markLatestActiveForWorkerCanceled cancels only the latest active dispatch for a worker", (t) => {
+test("markActiveForWorkerCanceled cancels every active dispatch for a worker (#1773)", (t) => {
   const base = makeBase();
   t.after(() => cleanup(base));
   const { workerId, leaseToken } = setup(base);
@@ -260,7 +261,9 @@ test("markLatestActiveForWorkerCanceled cancels only the latest active dispatch 
   });
   assert.equal(first.ok, true);
   if (!first.ok) return;
-  markCompleted(first.dispatchId);
+  _getAdapter()!.prepare(
+    "UPDATE unit_dispatches SET status = 'pending' WHERE id = :id",
+  ).run({ ":id": first.dispatchId });
 
   const second = recordDispatchClaim({
     traceId: "tc-2", workerId, milestoneLeaseToken: leaseToken,
@@ -268,14 +271,24 @@ test("markLatestActiveForWorkerCanceled cancels only the latest active dispatch 
   });
   assert.equal(second.ok, true);
   if (!second.ok) return;
-  markRunning(second.dispatchId);
 
-  assert.equal(markLatestActiveForWorkerCanceled(workerId, "signal-exit"), true);
-  assert.equal(getLatestForUnit("M001/S01")!.status, "completed");
-  const latest = getLatestForUnit("M001/S01/T01")!;
-  assert.equal(latest.status, "canceled");
-  assert.equal(latest.exit_reason, "signal-exit");
-  assert.equal(markLatestActiveForWorkerCanceled(workerId, "signal-exit"), false);
+  const third = recordDispatchClaim({
+    traceId: "tc-3", workerId, milestoneLeaseToken: leaseToken,
+    milestoneId: "M001", unitType: "validate-milestone", unitId: "M001",
+  });
+  assert.equal(third.ok, true);
+  if (!third.ok) return;
+  markRunning(third.dispatchId);
+
+  // Pending, claimed, and running rows are all canceled — sweeping only the
+  // latest or only one status leaves older work orphaned forever.
+  assert.equal(markActiveForWorkerCanceled(workerId, "signal-exit"), true);
+  assert.equal(getLatestForUnit("M001/S01")!.status, "canceled");
+  assert.equal(getLatestForUnit("M001/S01/T01")!.status, "canceled");
+  const running = getLatestForUnit("M001")!;
+  assert.equal(running.status, "canceled");
+  assert.equal(running.exit_reason, "signal-exit");
+  assert.equal(markActiveForWorkerCanceled(workerId, "signal-exit"), false);
 });
 
 test("terminal transitions do not overwrite an already terminal dispatch", (t) => {

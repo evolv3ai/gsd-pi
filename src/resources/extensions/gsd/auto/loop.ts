@@ -35,6 +35,7 @@ import {
 } from "./unit-phase.js";
 import { debugLog } from "../debug-logger.js";
 import { markBlockedStopReason } from "../stop-notice.js";
+import { isTransientProjectionLockError } from "../projection-root-errors.js";
 import {
   formatWedgeTripNotice,
   recordNonAdvancingOutcome,
@@ -49,15 +50,13 @@ import {
   markCompleted as markDispatchCompleted,
   markFailed as markDispatchFailed,
   getRecentForUnit as getRecentDispatchesForUnit,
-  markLatestActiveForWorkerCanceled,
 } from "../db/unit-dispatches.js";
 import {
   claimMilestoneLease,
   refreshMilestoneLease,
-  forceReleaseLeasesForWorker,
   milestoneLeaseTtlSeconds,
 } from "../db/milestone-leases.js";
-import { heartbeatAutoWorker, getAutoWorker, markWorkerCrashed } from "../db/auto-workers.js";
+import { heartbeatAutoWorker, isDeadLocalAutoWorker } from "../db/auto-workers.js";
 import { resolveUokFlags } from "../uok/flags.js";
 import { scheduleSidecarQueue } from "../uok/execution-graph.js";
 import { normalizeRealPath } from "../paths.js";
@@ -145,28 +144,11 @@ import {
   readTaskRecoveryRoute,
   recordFailureAndSelectRecovery,
 } from "../task-recovery-domain-operation.js";
-import { verifyExpectedArtifact } from "../artifact-verification.js";
-
-/**
- * Returns true if workerId is an active worker in this project whose OS
- * process no longer exists. Used to detect dead lease holders before
- * the heartbeat TTL expires. EPERM means the process is alive (we lack
- * permission to signal it); any other kill(pid,0) error means dead.
- */
-function isDeadLocalLeaseHolder(workerId: string, projectRoot: string): boolean {
-  const worker = getAutoWorker(workerId);
-  if (!worker) return false;
-  if (worker.status !== "active") return false;
-  if (worker.project_root_realpath !== projectRoot) return false;
-  if (!Number.isInteger(worker.pid) || worker.pid <= 0) return true;
-  if (worker.pid === process.pid) return false;
-  try {
-    process.kill(worker.pid, 0);
-    return false;
-  } catch (err) {
-    return (err as NodeJS.ErrnoException).code !== "EPERM";
-  }
-}
+import {
+  readTerminalTaskRecoveryAbort,
+  verifyExpectedArtifact,
+} from "../artifact-verification.js";
+import { IS_DISPATCH_OWNER_DEAD, RECLAIM_DEAD_DISPATCH_OWNER } from "./unit-run.js";
 
 function resolveCompletionStopFromState(
   stateSnapshot: GSDState | undefined,
@@ -210,6 +192,11 @@ const ORCHESTRATION_MISSING_REASON =
 const TASK_EXECUTION_CUTOVER_DEPS = {
   claimTaskAttempt,
   readLatestTaskAttempt,
+  readTerminalTaskRecoveryAbort: (task: {
+    milestoneId: string;
+    sliceId: string;
+    taskId: string;
+  }) => readTerminalTaskRecoveryAbort(task.milestoneId, task.sliceId, task.taskId),
   readTaskAttempt,
   readTaskRecoveryRoute,
   readTaskTechnicalVerdict,
@@ -493,6 +480,7 @@ export async function autoLoop(
     lastDispatchPhase: null,
   };
   let consecutiveErrors = 0;
+  let consecutiveProjectionLockPauses = 0;
   let consecutiveCooldowns = 0;
   const recentErrorMessages: string[] = [];
   const workerHeartbeatDeps = {
@@ -616,15 +604,15 @@ export async function autoLoop(
     const closeRun = async (
       outcome: IterationRunOutcome,
       reason: string,
-    ): Promise<void> => {
-      if (runClosed) return;
+    ): Promise<string | null> => {
+      if (runClosed) return null;
       const unit = (observedUnitType && observedUnitId
         ? { unitType: observedUnitType, unitId: observedUnitId }
         : null)
         ?? (iterData
           ? { unitType: iterData.unitType, unitId: iterData.unitId }
           : null);
-      if (!unit && dispatchId === null) return;
+      if (!unit && dispatchId === null) return null;
       runClosed = true;
       dispatchSettled = await settleIterationRun(
         {
@@ -644,6 +632,22 @@ export async function autoLoop(
           abandonActiveUnit: s.orchestration?.abandonActiveUnit?.bind(s.orchestration),
         },
       );
+      if (outcome === "retry" && s.orchestration?.getStatus().phase === "stopped") {
+        const stopReason = `liveness backstop tripped during retry closeout for ${unit?.unitType ?? "orchestration"} ${unit?.unitId ?? s.currentMilestoneId ?? "workflow"}`;
+        await deferStopAuto(ctx, pi, markBlockedStopReason(stopReason));
+        return stopReason;
+      }
+      return null;
+    };
+    const finishRetryCloseoutStop = (reason: string): void => {
+      finishIncompleteIteration({
+        status: "stopped",
+        reason,
+        unitType: iterData?.unitType,
+        unitId: iterData?.unitId,
+        failureClass: "closeout",
+      });
+      finishTurn("stopped", "closeout", reason, null);
     };
     let iterationEndEmitted = false;
     const emitIterationEnd = (details: Record<string, unknown> = {}): void => {
@@ -662,6 +666,7 @@ export async function autoLoop(
         emitIterationEnd: () => emitIterationEnd(),
         logIterationComplete: () => debugLog("autoLoop", { phase: "iteration-complete", iteration }),
       });
+      consecutiveProjectionLockPauses = 0;
     };
     const finishIncompleteIteration = (details: Record<string, unknown>): void => {
       emitIterationEnd(details);
@@ -923,6 +928,8 @@ export async function autoLoop(
             markDispatchRunning,
             logClaimRejected: logDispatchClaimRejected,
             logClaimFailed: logDispatchClaimFailed,
+            isDispatchOwnerDead: IS_DISPATCH_OWNER_DEAD,
+            reclaimDeadDispatchOwner: RECLAIM_DEAD_DISPATCH_OWNER,
           });
           if (claim.kind !== "opened") {
             const reason = claim.kind === "skip" || claim.kind === "degraded"
@@ -997,8 +1004,8 @@ export async function autoLoop(
             throw new Error(`Could not terminalize custom-engine dispatch ${customDispatchId} after unit break`);
           }
           dispatchSettled = customDispatchSettled;
-          await pauseForTaskRecoveryAbort(breakReason);
           await closeRun("failed", breakReason);
+          await pauseForTaskRecoveryAbort(breakReason);
           finishIncompleteIteration({
             status: "stopped",
             reason: breakReason,
@@ -1019,7 +1026,11 @@ export async function autoLoop(
             throw new Error(`Could not terminalize custom-engine dispatch ${customDispatchId} before unit retry`);
           }
           dispatchSettled = customDispatchSettled;
-          await closeRun("canceled", unitPhaseResult.reason);
+          const retryStopReason = await closeRun("retry", unitPhaseResult.reason);
+          if (retryStopReason) {
+            finishRetryCloseoutStop(retryStopReason);
+            break;
+          }
           finishIncompleteIteration({
             status: "retry",
             reason: unitPhaseResult.reason,
@@ -1423,41 +1434,86 @@ export async function autoLoop(
 
           if (orchestrationResult.kind === "paused") {
             s.pendingOrchestrationDispatch = null;
-            // ADR-047: transient-retry pauses (classifyFailure "retry" routes)
-            // previously looped invisibly — this branch neither incremented the
-            // error budget nor fed the liveness ledger, so a never-healing
-            // transient with identical text spun forever. Count them against
-            // the loop's EXISTING consecutive-error budget (reset by
-            // completeIteration on a genuinely advancing turn); exhaustion
-            // stops through the blocked path and records the outcome in the
-            // backstop ledger so a repeat exhaustion trips the wedge.
-            consecutiveErrors++;
             const pausedMsg = orchestrationResult.reason ?? "orchestration transient pause";
-            recentErrorMessages.push(pausedMsg.length > 120 ? pausedMsg.slice(0, 120) + "..." : pausedMsg);
-            const pausedDecision = decideIterationErrorRecovery({
-              consecutiveErrors,
-              recentErrorMessages,
-              currentErrorMessage: pausedMsg,
-            });
-            if (pausedDecision.action === "stop") {
-              ctx.ui.notify(pausedDecision.notifyMessage, "error");
-              await deferStopAuto(ctx, pi, markBlockedStopReason(pausedDecision.stopMessage));
-              finishTurn("stopped", "execution", pausedMsg, "transient-retry-exhausted");
-              finishIncompleteIteration({
-                status: "stopped",
-                reason: pausedMsg,
-                failureClass: "execution",
+            const backoffMs = orchestrationResult.backoffMs;
+            const projectionLockTransient = isTransientProjectionLockError(pausedMsg)
+              && backoffMs !== undefined
+              && backoffMs.length > 0;
+            let pauseAttempt: number;
+            if (projectionLockTransient) {
+              // Projection-root contention owns a longer class-specific schedule.
+              // It must not consume the generic three-error budget: doing so made
+              // every entry after 2s unreachable. Stop only after every scheduled
+              // wait has run, and keep the exhaustion out of ADR-047 because an
+              // unchanged lock error is not evidence of a deterministic wedge.
+              consecutiveProjectionLockPauses++;
+              pauseAttempt = consecutiveProjectionLockPauses;
+              if (pauseAttempt > backoffMs.length) {
+                const stopMessage =
+                  `projection root remained busy after ${backoffMs.length} transient retries`;
+                ctx.ui.notify(`Auto-mode stopped: ${stopMessage}.`, "error");
+                await deferStopAuto(ctx, pi, markBlockedStopReason(stopMessage));
+                finishTurn("stopped", "execution", pausedMsg, null);
+                finishIncompleteIteration({
+                  status: "stopped",
+                  reason: pausedMsg,
+                  failureClass: "execution",
+                });
+                break;
+              }
+            } else {
+              consecutiveProjectionLockPauses = 0;
+              // ADR-047: other transient-retry pauses still consume the generic
+              // consecutive-error budget and feed the liveness ledger.
+              consecutiveErrors++;
+              pauseAttempt = consecutiveErrors;
+              recentErrorMessages.push(pausedMsg.length > 120 ? pausedMsg.slice(0, 120) + "..." : pausedMsg);
+              const pausedDecision = decideIterationErrorRecovery({
+                consecutiveErrors,
+                recentErrorMessages,
+                currentErrorMessage: pausedMsg,
               });
-              break;
+              if (pausedDecision.action === "stop") {
+                ctx.ui.notify(pausedDecision.notifyMessage, "error");
+                await deferStopAuto(ctx, pi, markBlockedStopReason(pausedDecision.stopMessage));
+                finishTurn("stopped", "execution", pausedMsg, "transient-retry-exhausted");
+                finishIncompleteIteration({
+                  status: "stopped",
+                  reason: pausedMsg,
+                  failureClass: "execution",
+                });
+                break;
+              }
+              if (pausedDecision.action === "invalidate-and-retry") {
+                deps.invalidateAllCaches();
+              }
             }
-            if (pausedDecision.action === "invalidate-and-retry") {
-              deps.invalidateAllCaches();
+            // #1690 defect A: a transient pause carries the policy's bounded
+            // backoff schedule — wait it out before re-entry instead of
+            // immediately retrying a lock that needs time to clear.
+            if (backoffMs && backoffMs.length > 0) {
+              const waitMs = backoffMs[Math.min(Math.max(pauseAttempt, 1), backoffMs.length) - 1]!;
+              ctx.ui.notify(
+                `Transient pause (${pausedMsg}) — waiting ${Math.round(waitMs / 1000)}s before retrying.`,
+                "warning",
+              );
+              await new Promise<void>((resolve) => setTimeout(resolve, waitMs));
             }
             finishIncompleteIteration({
               status: "paused",
               reason: orchestrationResult.reason,
             });
-            finishTurn("skipped", "execution", pausedMsg, "orchestration-transient-pause");
+            // #1690 defect B: a projection-lock transient pause must not feed
+            // the deterministic strike counter — N identical os-error-32
+            // strings would false-trip the liveness wedge. Other pause classes
+            // keep the ADR-047 ledger behavior; projection locks stop through
+            // their class-specific budget above.
+            finishTurn(
+              "skipped",
+              "execution",
+              pausedMsg,
+              isTransientProjectionLockError(pausedMsg) ? null : "orchestration-transient-pause",
+            );
             continue;
           }
 
@@ -1669,10 +1725,8 @@ export async function autoLoop(
       });
       if (leaseBeforeClaim.kind === "blocked" && leaseBeforeClaim.holderWorkerId) {
         const holderWorkerId = leaseBeforeClaim.holderWorkerId;
-        if (isDeadLocalLeaseHolder(holderWorkerId, s.canonicalProjectRoot)) {
-          markLatestActiveForWorkerCanceled(holderWorkerId, "crash-recovered");
-          markWorkerCrashed(holderWorkerId);
-          forceReleaseLeasesForWorker(holderWorkerId);
+        if (isDeadLocalAutoWorker(holderWorkerId, s.canonicalProjectRoot)) {
+          RECLAIM_DEAD_DISPATCH_OWNER(holderWorkerId);
           const retryLease = ensureDispatchLease(s, iterData.mid, {
             claimMilestoneLease,
             logLeaseRecovered: logDispatchLeaseRecovered,
@@ -1704,6 +1758,8 @@ export async function autoLoop(
         markDispatchRunning,
         logClaimRejected: logDispatchClaimRejected,
         logClaimFailed: logDispatchClaimFailed,
+        isDispatchOwnerDead: IS_DISPATCH_OWNER_DEAD,
+        reclaimDeadDispatchOwner: RECLAIM_DEAD_DISPATCH_OWNER,
       });
       let dispatchDecision = decideDispatchClaim(
         dispatchClaim.kind === "opened"
@@ -1725,6 +1781,8 @@ export async function autoLoop(
             markDispatchRunning,
             logClaimRejected: logDispatchClaimRejected,
             logClaimFailed: logDispatchClaimFailed,
+            isDispatchOwnerDead: IS_DISPATCH_OWNER_DEAD,
+            reclaimDeadDispatchOwner: RECLAIM_DEAD_DISPATCH_OWNER,
           });
           dispatchDecision = decideDispatchClaim(
             dispatchClaim.kind === "opened"
@@ -1854,7 +1912,11 @@ export async function autoLoop(
         break;
       }
       if (unitPhaseResult.action === "retry") {
-        await closeRun("canceled", unitPhaseResult.reason);
+        const retryStopReason = await closeRun("retry", unitPhaseResult.reason);
+        if (retryStopReason) {
+          finishRetryCloseoutStop(retryStopReason);
+          break;
+        }
         finishIncompleteIteration({
           status: "retry",
           reason: unitPhaseResult.reason,
@@ -1875,7 +1937,16 @@ export async function autoLoop(
         unitId: iterData.unitId,
       });
       try {
-        finalizeResult = await runFinalize(ic, iterData, loopState, sidecarItem);
+        finalizeResult = await runFinalize(ic, iterData, loopState, sidecarItem, async () => {
+          await (deps.taskPublicationBoundary ?? publishVerifiedTaskExecution)({
+            unitType: unitIterData.unitType,
+            unitId: unitIterData.unitId,
+            workerId: s.workerId,
+            traceId: flowId,
+            turnId,
+            basePath: s.basePath,
+          }, VERIFIED_TASK_PUBLICATION_DEPS);
+        });
       } catch (err) {
         const error = formatDispatchExceptionSummary({ error: err });
         journalReporter.emit("post-unit-finalize-end", {
@@ -1947,7 +2018,11 @@ export async function autoLoop(
       }
       if (finalizeDecision.action === "retry") {
         abortActiveUnitTurn(ctx);
-        await closeRun("retry", finalizeDecision.ledgerErrorSummary);
+        const retryStopReason = await closeRun("retry", finalizeDecision.ledgerErrorSummary);
+        if (retryStopReason) {
+          finishRetryCloseoutStop(retryStopReason);
+          break;
+        }
         finishIncompleteIteration({
           status: "retry",
           reason: "finalize-retry",
@@ -1957,33 +2032,6 @@ export async function autoLoop(
         });
         finishTurn("retry", "closeout", finalizeDecision.ledgerErrorSummary, "finalize-retry");
         continue;
-      }
-
-      if (iterData.unitType === "execute-task") {
-        try {
-          await (deps.taskPublicationBoundary ?? publishVerifiedTaskExecution)({
-            unitType: iterData.unitType,
-            unitId: iterData.unitId,
-            workerId: s.workerId,
-            traceId: flowId,
-            turnId,
-            basePath: s.basePath,
-          }, VERIFIED_TASK_PUBLICATION_DEPS);
-        } catch (publishErr) {
-          const publishReason = publishErr instanceof Error ? publishErr.message : String(publishErr);
-          await closeRun("failed", publishReason);
-          ctx.ui.notify(publishReason, "error");
-          finishIncompleteIteration({
-            status: "stopped",
-            reason: publishReason,
-            unitType: iterData.unitType,
-            unitId: iterData.unitId,
-            failureClass: "closeout",
-          });
-          finishTurn("stopped", "closeout", publishReason, "task-publication-failed");
-          await deferStopAuto(ctx, pi, publishReason);
-          break;
-        }
       }
 
       await closeRun("completed", "iteration-complete");

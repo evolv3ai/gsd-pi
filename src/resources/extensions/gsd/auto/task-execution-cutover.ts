@@ -22,6 +22,7 @@ import { classifyFailure } from "../recovery-classification.js";
 import type { PublishVerifiedTaskCompletionInput } from "../task-completion-compatibility-adapter.js";
 import { internalExecutionInvocation } from "../execution-invocation.js";
 import type { TaskTechnicalVerdictSnapshot } from "../task-verification-domain-operation.js";
+import { describeHostVerificationRationale } from "../verification-verdict.js";
 import type { UnitPhaseResult } from "./workflow-unit-dispatch.js";
 
 export interface TaskExecutionCutoverInput {
@@ -37,6 +38,9 @@ export interface TaskExecutionCutoverInput {
 
 export interface TaskExecutionCutoverDeps {
   readLatestTaskAttempt(task: ClaimTaskAttemptInput["task"]): TaskExecutionAttemptSnapshot | null;
+  readTerminalTaskRecoveryAbort(
+    task: ClaimTaskAttemptInput["task"],
+  ): { recoveryActionId: string } | null;
   readTaskAttempt(attemptId: string): TaskExecutionAttemptSnapshot | null;
   readTaskRecoveryRoute(attemptId: string): Pick<
     TaskRecoveryRouteSnapshot,
@@ -48,23 +52,44 @@ export interface TaskExecutionCutoverDeps {
   routeTaskFailure(input: RouteFailureInput): TaskRecoveryReceipt;
 }
 
+type TaskRecoveryDecision = Pick<
+  TaskRecoveryReceipt,
+  "status" | "recoveryActionId" | "action" | "resumeAuthorized"
+>;
+
+function readHistoricalTerminalAbortDecision(
+  input: TaskExecutionCutoverInput,
+  deps: TaskExecutionCutoverDeps,
+): TaskRecoveryDecision | null {
+  const terminal = deps.readTerminalTaskRecoveryAbort(parseTaskIdentity(input.unitId));
+  if (!terminal) return null;
+  return {
+    status: "replayed",
+    recoveryActionId: terminal.recoveryActionId,
+    action: "abort",
+    resumeAuthorized: false,
+  };
+}
+
 function routeStoredTechnicalFailure(
   input: TaskExecutionCutoverInput,
   attempt: TaskExecutionAttemptSnapshot,
   verdict: TaskTechnicalVerdictSnapshot,
   deps: TaskExecutionCutoverDeps,
-): TaskRecoveryReceipt {
+): TaskRecoveryDecision {
   if (!attempt.resultId) throw new Error("Host verification Attempt Result is missing");
   if (verdict.verdict === "pass") {
     throw new Error("Task recovery cannot route a passing Technical Verdict");
   }
+  const terminal = readHistoricalTerminalAbortDecision(input, deps);
+  if (terminal) return terminal;
   return deps.routeTaskFailure({
     invocation: internalExecutionInvocation(`internal:auto:attempt.route:${attempt.resultId}`),
     attemptId: attempt.attemptId,
     resultId: attempt.resultId,
     owner: "agent",
     classification: { failureKind: "verification-failed" },
-    summary: "Built-in host verification did not pass",
+    summary: `Host verification ${verdict.verdict} for ${verdict.verdictId}`,
     evidence: {
       unitType: input.unitType,
       unitId: input.unitId,
@@ -72,7 +97,16 @@ function routeStoredTechnicalFailure(
       evidenceId: verdict.evidenceId,
       verdict: verdict.verdict,
     },
-    rationale: "Route built-in host verification through the durable recovery policy",
+    rationale: describeHostVerificationRationale({
+      verdict: verdict.verdict,
+      checkName: `${input.unitType} ${input.unitId}`,
+      observed: verdict.verdict,
+      expected: "pass",
+      evidenceRef: `${verdict.evidenceId} (verdict ${verdict.verdictId})`,
+      nextAction: verdict.verdict === "inconclusive"
+        ? "To become conclusive, inspect that evidence and resume with matching verification."
+        : undefined,
+    }),
   });
 }
 
@@ -169,15 +203,22 @@ function interruptStaleAttempt(
   predecessor: TaskExecutionAttemptSnapshot,
   identity: ReturnType<typeof requireTaskClaimIdentity>,
   deps: TaskExecutionCutoverDeps,
-): TaskRecoveryReceipt {
-  if (identity.milestoneLeaseToken <= predecessor.milestoneLeaseToken) {
+): TaskRecoveryDecision {
+  if (identity.milestoneLeaseToken < predecessor.milestoneLeaseToken) {
+    // A strictly older token means the running Attempt belongs to a newer
+    // session; this stale session must not settle it, only refuse.
     throw new Error("execute-task cannot replace an active running Attempt without a newer milestone lease");
   }
-  const summary = "Replaced stale Task Attempt after milestone lease takeover";
+  const sameSession = identity.milestoneLeaseToken === predecessor.milestoneLeaseToken;
+  const summary = sameSession
+    ? "Replaced stale Task Attempt during same-session re-dispatch"
+    : "Replaced stale Task Attempt after milestone lease takeover";
   const recovery = taskRecoveryClassification(input, "stale-worker", new Error(summary));
   const settlement = deps.settleTaskAttempt({
     invocation: internalExecutionInvocation(
-      `internal:auto:attempt.interrupt:${predecessor.attemptId}:${identity.workerId}:${identity.milestoneLeaseToken}`,
+      sameSession
+        ? `internal:auto:attempt.settle:${predecessor.attemptId}:same-session`
+        : `internal:auto:attempt.interrupt:${predecessor.attemptId}:${identity.workerId}:${identity.milestoneLeaseToken}`,
       { actorId: identity.workerId },
     ),
     attemptId: predecessor.attemptId,
@@ -199,10 +240,14 @@ function interruptStaleAttempt(
         rationale: recovery.rationale,
       },
     },
-    recovery: {
-      workerId: identity.workerId,
-      milestoneLeaseToken: identity.milestoneLeaseToken,
-    },
+    ...(sameSession
+      ? {}
+      : {
+          recovery: {
+            workerId: identity.workerId,
+            milestoneLeaseToken: identity.milestoneLeaseToken,
+          },
+        }),
   });
   return routeTaskFailure(
     input,
@@ -230,7 +275,7 @@ function settleRunningAttempt(
   summary: string,
   deps: TaskExecutionCutoverDeps,
   error: unknown = new Error(summary),
-): TaskRecoveryReceipt {
+): TaskRecoveryDecision {
   const attempt = deps.readTaskAttempt(attemptId);
   let resultId = attempt?.resultId;
   const recovery = attempt?.resultRecovery ?? taskRecoveryClassification(
@@ -310,7 +355,9 @@ function routeTaskFailure(
   summary: string,
   recovery: TaskResultRecoveryClassification,
   deps: TaskExecutionCutoverDeps,
-): TaskRecoveryReceipt {
+): TaskRecoveryDecision {
+  const terminal = readHistoricalTerminalAbortDecision(input, deps);
+  if (terminal) return terminal;
   return deps.routeTaskFailure({
     invocation: internalExecutionInvocation(`internal:auto:attempt.route:${resultId}`),
     attemptId,
@@ -342,7 +389,7 @@ function taskRecoveryAbortResult(recoveryActionId: string): UnitPhaseResult {
 }
 
 function applyRecoveryDecision(
-  recovery: TaskRecoveryReceipt,
+  recovery: TaskRecoveryDecision,
 ): UnitPhaseResult {
   switch (recovery.action) {
     case "retry":
@@ -361,6 +408,15 @@ function applyRecoveryDecision(
   }
 }
 
+function isNewlyRecordedBlocker(
+  attempt: TaskExecutionAttemptSnapshot | null,
+): boolean {
+  return attempt?.state === "settled" &&
+    attempt.outcome === "failed" &&
+    attempt.nextStage === "route" &&
+    attempt.resultFailureClass === "blocker-discovered";
+}
+
 function reconcileNext(
   input: TaskExecutionCutoverInput,
   attemptId: string,
@@ -375,6 +431,7 @@ function reconcileNext(
   if (attempt?.state === "settled") {
     input.markCanonicalDispatchSettled();
     if ((attempt.outcome === "failed" || attempt.outcome === "interrupted") && attempt.nextStage === "route") {
+      if (isNewlyRecordedBlocker(attempt)) return result;
       if (!attempt.resultId) throw new Error("Task recovery requires the settled Attempt Result identity");
       const summary = attempt.resultSummary ?? "Task executor recorded a failed Result";
       return applyRecoveryDecision(routeTaskFailure(
@@ -413,90 +470,113 @@ export async function runWithTaskExecutionAttempt(
   const task = parseTaskIdentity(input.unitId);
   const identity = requireTaskClaimIdentity(input);
   const predecessor = deps.readLatestTaskAttempt(task);
-  let retryOfAttemptId: string | undefined;
-  if (predecessor?.state === "running") {
-    if (isClaimReplay(predecessor, identity)) {
-      retryOfAttemptId = predecessor.retryOfAttemptId;
-    } else {
-      const recovery = interruptStaleAttempt(input, predecessor, identity, deps);
-      const decision = applyRecoveryDecision(recovery);
-      if (decision.action === "break" || recovery.status === "committed") return decision;
-      retryOfAttemptId = predecessor.attemptId;
-    }
-  } else if (predecessor) {
-    const terminalRecovery = deps.readTaskRecoveryRoute(predecessor.attemptId);
-    if (
-      terminalRecovery?.recoveryOwner === "agent" &&
-      terminalRecovery.action === "abort" &&
-      !terminalRecovery.resumeAuthorized
-    ) {
-      return taskRecoveryAbortResult(terminalRecovery.recoveryActionId);
-    }
-    if (isTaskAttemptAwaitingVerification(predecessor)) {
-      return { action: "next", data: {} };
-    }
-    if (predecessor.nextStage === "route") {
-      if (predecessor.outcome === "succeeded") {
-        const recovery = terminalRecovery;
-        if (!recovery) {
-          const verdict = deps.readTaskTechnicalVerdict(predecessor.attemptId);
-          if (!verdict) {
-            throw new Error("Task recovery route is missing its failed Technical Verdict");
-          }
-          return applyRecoveryDecision(routeStoredTechnicalFailure(input, predecessor, verdict, deps));
-        }
-        if (recovery.recoveryOwner !== "agent") {
-          return { action: "next", data: {} };
-        }
-      } else {
-        if (!predecessor.resultId) {
-          throw new Error("Task recovery requires the predecessor Result identity");
-        }
-        const summary = predecessor.resultSummary ?? "Task executor recorded a failed Result";
-        const recovery = routeTaskFailure(
-          input,
-          predecessor.attemptId,
-          predecessor.resultId,
-          summary,
-          predecessor.resultRecovery ?? taskRecoveryClassification(
-            input,
-            predecessor.resultFailureClass ?? "executor-result-failed",
-            new Error(summary),
-          ),
-          deps,
-        );
-        const decision = applyRecoveryDecision(recovery);
-        if (decision.action === "break" || recovery.status === "committed") return decision;
-      }
-    }
-    retryOfAttemptId = predecessor.attemptId;
-  }
-  const claim = deps.claimTaskAttempt({
-    invocation: internalExecutionInvocation(
-      `internal:auto:attempt.claim:${identity.dispatchId}`,
-      {
-        actorId: identity.workerId,
-      },
-    ),
-    task,
-    workerId: identity.workerId,
-    milestoneLeaseToken: identity.milestoneLeaseToken,
-    coordinationDispatchId: identity.dispatchId,
-    ...(retryOfAttemptId ? { retryOfAttemptId } : {}),
-  });
-
+  const terminalAbort = deps.readTerminalTaskRecoveryAbort(task);
+  if (terminalAbort) return taskRecoveryAbortResult(terminalAbort.recoveryActionId);
+  let claim: ClaimTaskAttemptReceipt | undefined;
   let result: UnitPhaseResult;
   try {
+    let retryOfAttemptId: string | undefined;
+    if (predecessor?.state === "running") {
+      if (isClaimReplay(predecessor, identity)) {
+        retryOfAttemptId = predecessor.retryOfAttemptId;
+      } else {
+        const recovery = interruptStaleAttempt(input, predecessor, identity, deps);
+        const decision = applyRecoveryDecision(recovery);
+        if (decision.action === "break" || recovery.status === "committed") return decision;
+        retryOfAttemptId = predecessor.attemptId;
+      }
+    } else if (predecessor) {
+      const terminalRecovery = deps.readTaskRecoveryRoute(predecessor.attemptId);
+      if (
+        terminalRecovery?.recoveryOwner === "agent" &&
+        terminalRecovery.action === "abort" &&
+        !terminalRecovery.resumeAuthorized
+      ) {
+        return taskRecoveryAbortResult(terminalRecovery.recoveryActionId);
+      }
+      if (isTaskAttemptAwaitingVerification(predecessor)) {
+        return { action: "next", data: {} };
+      }
+      if (predecessor.nextStage === "route") {
+        if (predecessor.outcome === "succeeded") {
+          const recovery = terminalRecovery;
+          if (!recovery) {
+            const verdict = deps.readTaskTechnicalVerdict(predecessor.attemptId);
+            if (!verdict) {
+              throw new Error("Task recovery route is missing its failed Technical Verdict");
+            }
+            return applyRecoveryDecision(routeStoredTechnicalFailure(input, predecessor, verdict, deps));
+          }
+          if (recovery.recoveryOwner !== "agent") {
+            return { action: "next", data: {} };
+          }
+        } else {
+          if (!predecessor.resultId) {
+            throw new Error("Task recovery requires the predecessor Result identity");
+          }
+          const summary = predecessor.resultSummary ?? "Task executor recorded a failed Result";
+          const recovery = routeTaskFailure(
+            input,
+            predecessor.attemptId,
+            predecessor.resultId,
+            summary,
+            predecessor.resultRecovery ?? taskRecoveryClassification(
+              input,
+              predecessor.resultFailureClass ?? "executor-result-failed",
+              new Error(summary),
+            ),
+            deps,
+          );
+          const decision = applyRecoveryDecision(recovery);
+          if (decision.action === "break" || recovery.status === "committed") return decision;
+        }
+      }
+      retryOfAttemptId = predecessor.attemptId;
+    }
+    claim = deps.claimTaskAttempt({
+      invocation: internalExecutionInvocation(
+        `internal:auto:attempt.claim:${identity.dispatchId}`,
+        {
+          actorId: identity.workerId,
+        },
+      ),
+      task,
+      workerId: identity.workerId,
+      milestoneLeaseToken: identity.milestoneLeaseToken,
+      coordinationDispatchId: identity.dispatchId,
+      ...(retryOfAttemptId ? { retryOfAttemptId } : {}),
+    });
+
     result = await run();
   } catch (error) {
     const summary = error instanceof Error ? error.message : String(error);
+    // Once an Attempt is claimed, every executor failure must settle it before
+    // returning. Failures before a claim exists keep propagating untouched.
+    const attemptId = claim?.attemptId
+      ?? (predecessor?.state === "running" && isClaimReplay(predecessor, identity)
+        ? predecessor.attemptId
+        : undefined);
+    if (!attemptId) throw error;
+    if (isNewlyRecordedBlocker(deps.readTaskAttempt(attemptId))) {
+      input.markCanonicalDispatchSettled();
+      return { action: "next", data: {} };
+    }
     return applyRecoveryDecision(
-      settleRunningAttempt(input, claim.attemptId, "executor-error", summary, deps, error),
+      settleRunningAttempt(input, attemptId, "executor-error", summary, deps, error),
     );
   }
 
+  // Every pre-claim path returns from inside the try and the catch always
+  // returns or rethrows, so reaching here means the claim exists.
+  if (!claim) throw new Error("execute-task lost its claimed Attempt");
+
   if (result.action === "next") {
     return reconcileNext(input, claim.attemptId, result, deps);
+  }
+
+  if (isNewlyRecordedBlocker(deps.readTaskAttempt(claim.attemptId))) {
+    input.markCanonicalDispatchSettled();
+    return result;
   }
 
   const recovery = settleRunningAttempt(
