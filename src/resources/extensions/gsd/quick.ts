@@ -30,6 +30,82 @@ interface QuickReturnState {
   description: string;
 }
 
+export interface QuickOptions {
+  description: string;
+  discuss: boolean;
+  research: boolean;
+  validate: boolean;
+  full: boolean;
+}
+
+const QUICK_FLAG_RE = /(^|\s)--(discuss|research|validate|full)(?=\s|$)/g;
+
+/** Parse composable right-sizing flags without including them in the task description. */
+export function parseQuickArgs(raw: string): QuickOptions {
+  const explicitFull = /(^|\s)--full(?=\s|$)/.test(raw);
+  const discuss = explicitFull || /(^|\s)--discuss(?=\s|$)/.test(raw);
+  const research = explicitFull || /(^|\s)--research(?=\s|$)/.test(raw);
+  const validate = explicitFull || /(^|\s)--validate(?=\s|$)/.test(raw);
+  const description = raw.replace(QUICK_FLAG_RE, " ").replace(/\s+/g, " ").trim();
+
+  return {
+    description,
+    discuss,
+    research,
+    validate,
+    full: explicitFull || (discuss && research && validate),
+  };
+}
+
+/** Build the optional pipeline instructions injected into the quick-task prompt. */
+export function buildQuickQualityInstructions(
+  options: QuickOptions,
+  taskDir: string,
+  taskNum: number,
+): string {
+  if (!options.discuss && !options.research && !options.validate) return "";
+
+  const planPath = `${taskDir}/${taskNum}-PLAN.md`;
+  const lines = [
+    "## Right-sized quality pipeline",
+    "",
+    "Complete the enabled pre-execution stages before editing, then complete any post-execution stage before writing the summary.",
+  ];
+
+  if (options.discuss) {
+    lines.push(
+      "",
+      "### Discussion",
+      "Before planning, identify material ambiguities or design choices. Ask focused questions and wait for the user's answers when a choice could change the outcome; otherwise state the assumptions you will use.",
+    );
+  }
+
+  if (options.research) {
+    lines.push(
+      "",
+      "### Research",
+      `Before planning, use a scout subagent to investigate relevant code, implementation approaches, and pitfalls. Summarize the findings and chosen approach in \`${taskDir}/${taskNum}-RESEARCH.md\`.`,
+    );
+  }
+
+  lines.push(
+    "",
+    "### Plan",
+    `Write a concise implementation plan with verification steps to \`${planPath}\` before editing.`,
+  );
+
+  if (options.validate) {
+    lines.push(
+      "Use a reviewer subagent to check that plan for correctness, completeness, scope, and test coverage. Address its findings before execution.",
+      "",
+      "### Post-execution verification",
+      "After implementation, use a tester or reviewer subagent to verify the finished work independently. Fix any findings and rerun the relevant checks before writing the quick-task summary.",
+    );
+  }
+
+  return lines.join("\n");
+}
+
 let pendingQuickReturn: QuickReturnState | null = null;
 const pendingQuickReturnMisses = new Map<string, string>();
 
@@ -342,11 +418,12 @@ export async function handleQuick(
     return;
   }
 
-  // Parse description from args
-  let description = args.trim();
+  // Parse description and optional right-sizing flags from args
+  const quickOptions = parseQuickArgs(args);
+  const { description } = quickOptions;
   if (!description) {
     ctx.ui.notify(
-      "Usage: /gsd quick <task description>\n\nExample: /gsd quick fix login button not responding on mobile",
+      "Usage: /gsd quick [--discuss] [--research] [--validate] [--full] <task description>\n\nExample: /gsd quick --validate fix login button not responding on mobile",
       "info",
     );
     return;
@@ -421,6 +498,7 @@ export async function handleQuick(
   const summaryPath = `${taskDirRel}/${taskNum}-SUMMARY.md`;
   const prompt = loadPrompt("quick-task", {
     description,
+    qualityInstructions: buildQuickQualityInstructions(quickOptions, taskDirRel, taskNum),
     taskDir: taskDirRel,
     branch: actualBranch,
     summaryPath,

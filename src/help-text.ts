@@ -171,6 +171,20 @@ const SUBCOMMAND_HELP: Record<string, string> = {
     '  gsd read memory --json --project ~/code/myapp --query auth',
   ].join('\n'),
 
+  quick: [
+    'Usage: gsd quick [headless flags] <task description>',
+    '',
+    'Execute a quick task without the TUI. This is an alias for:',
+    '  gsd headless quick <task description>',
+    '',
+    'Use --output-format json for a structured result containing the task',
+    'number, slug, branch, summary artifact, resulting commit SHAs, and exit code.',
+    '',
+    'Examples:',
+    '  gsd quick "fix the login button on mobile"',
+    '  gsd quick --output-format json "update the setup instructions"',
+  ].join('\n'),
+
   headless: [
     'Usage: gsd headless [flags] [command] [args...]',
     '',
@@ -192,6 +206,7 @@ const SUBCOMMAND_HELP: Record<string, string> = {
     'Commands:',
     '  auto                 Run all queued units continuously (default)',
     '  next                 Run one unit',
+    '  quick <task>         Execute a quick task with atomic commits and a summary artifact',
     '  status               Show progress dashboard',
     '  new-milestone        Create a milestone from a specification document',
     '  query                JSON snapshot: state + next dispatch + costs (no LLM)',
@@ -205,11 +220,12 @@ const SUBCOMMAND_HELP: Record<string, string> = {
     'Output formats:',
     '  text         Human-readable progress on stderr (default)',
     '  json         Collect events silently, emit structured HeadlessJsonResult on stdout at exit',
-    '  stream-json  Stream JSONL events to stdout in real time (same as --json)',
+    '  stream-json  Stream JSONL events, ending with a headless_result event (same as --json)',
     '',
     'Examples:',
     '  gsd headless                                    Run /gsd auto',
     '  gsd headless next                               Run one unit',
+    '  gsd headless --output-format json quick "fix typo"  Run a quick task with a structured result',
     '  gsd headless --output-format json auto           Structured JSON result on stdout',
     '  gsd headless --json status                      Machine-readable JSONL stream',
     '  gsd headless --timeout 60000                    With 1-minute timeout',
@@ -264,6 +280,7 @@ export function printHelp(version: string): void {
   process.stdout.write('  sessions                 List and resume a past session\n')
   process.stdout.write('  worktree <cmd>           Manage worktrees (list, merge, clean, remove)\n')
   process.stdout.write('  auto [args]              Run auto-mode without TUI (pipeable)\n')
+  process.stdout.write('  quick <task>             Execute a quick task without TUI\n')
   process.stdout.write('  headless [cmd] [args]    Run /gsd commands without TUI (default: auto)\n')
   process.stdout.write('  graph <subcommand>       Manage knowledge graph (build, query, status, diff)\n')
   process.stdout.write('  hermes install           Install the Hermes Agent plugin\n')

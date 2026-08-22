@@ -3,7 +3,7 @@
 
 import test, { describe } from 'node:test'
 import assert from 'node:assert/strict'
-import { buildHeadlessAutoArgs, parseCliArgs } from '../cli-web-branch.ts'
+import { buildHeadlessCommandArgs, parseCliArgs } from '../cli-web-branch.ts'
 
 function parse(...args: string[]) {
   return parseCliArgs(['node', 'gsd', ...args])
@@ -25,14 +25,14 @@ describe('parseCliArgs — modes', () => {
   })
 })
 
-describe('buildHeadlessAutoArgs', () => {
+describe('buildHeadlessCommandArgs', () => {
   test('preserves auto positional args without a model override', () => {
-    const args = buildHeadlessAutoArgs({ messages: ['auto', 'next'] })
+    const args = buildHeadlessCommandArgs({ messages: ['auto', 'next'] })
     assert.deepEqual(args, ['auto', 'next'])
   })
 
   test('forwards --model before auto positional args', () => {
-    const args = buildHeadlessAutoArgs({
+    const args = buildHeadlessCommandArgs({
       model: 'claude-code/sonnet',
       messages: ['auto', 'next'],
     })
@@ -40,7 +40,7 @@ describe('buildHeadlessAutoArgs', () => {
   })
 
   test('forwards --thinking before auto positional args', () => {
-    const args = buildHeadlessAutoArgs({
+    const args = buildHeadlessCommandArgs({
       thinking: 'medium',
       messages: ['auto', 'next'],
     })
@@ -128,6 +128,11 @@ describe('parseCliArgs — short flags and basic options', () => {
     assert.deepEqual(flags.messages, ['headless', '--bare', 'auto'])
   })
 
+  test('quick task text and headless output flags pass through together', () => {
+    const flags = parse('quick', '--output-format', 'json', 'fix the login button')
+    assert.deepEqual(flags.messages, ['quick', '--output-format', 'json', 'fix the login button'])
+  })
+
   test('--bare is accepted at top level (the RPC child argv from headless/MCP forwarding)', () => {
     // headless.ts and the MCP/daemon session managers spawn the RPC child as
     // `node cli.js --mode rpc ... --bare`; that argv hits this parser directly.
@@ -140,12 +145,12 @@ describe('parseCliArgs — short flags and basic options', () => {
     assert.equal(parse('-p').bare, undefined)
   })
 
-  test('`auto` does not pass through: --model/--thinking are parsed so buildHeadlessAutoArgs can reorder them', () => {
+  test('`auto` does not pass through: --model/--thinking are parsed so buildHeadlessCommandArgs can reorder them', () => {
     const flags = parse('auto', '--model', 'test-model', '--thinking', 'medium')
     assert.deepEqual(flags.messages, ['auto'])
     assert.equal(flags.model, 'test-model')
     assert.equal(flags.thinking, 'medium')
-    assert.deepEqual(buildHeadlessAutoArgs(flags), ['--model', 'test-model', '--thinking', 'medium', 'auto'])
+    assert.deepEqual(buildHeadlessCommandArgs(flags), ['--model', 'test-model', '--thinking', 'medium', 'auto'])
   })
 })
 

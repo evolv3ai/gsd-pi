@@ -85,7 +85,7 @@ export async function checkTmuxKeyboardSetup(): Promise<string | undefined> {
 		runTmuxShow("extended-keys-format"),
 	]);
 
-	if (extendedKeys !== "on" && extendedKeys !== "always") {
+	if (extendedKeys === "off") {
 		return "tmux extended-keys is off. Modified Enter keys may not work. Add `set -g extended-keys on` to ~/.tmux.conf and restart tmux.";
 	}
 

@@ -54,6 +54,7 @@ const PASSTHROUGH_SUBCOMMANDS = new Set([
   'list',
   'read',
   'remove',
+  'quick',
   'sessions',
   'update',
   'upgrade',
@@ -157,7 +158,7 @@ export function parseCliArgs(argv: string[]): CliFlags {
   return flags
 }
 
-export function buildHeadlessAutoArgs(flags: Pick<CliFlags, 'messages' | 'model' | 'thinking'>): string[] {
+export function buildHeadlessCommandArgs(flags: Pick<CliFlags, 'messages' | 'model' | 'thinking'>): string[] {
   const args: string[] = []
   if (flags.model) args.push('--model', flags.model)
   if (flags.thinking) args.push('--thinking', flags.thinking)

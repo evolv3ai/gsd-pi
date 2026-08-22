@@ -28,16 +28,16 @@ See [CHANGELOG.md](./CHANGELOG.md) for release-by-release fixes and [Legacy Rele
 ## Latest Release Highlights
 
 <!-- release-highlights:start -->
-Latest release: **v1.16.0**
+Latest release: **v1.16.1**
 
-- **gsd:** Verify-after-write receipts for save-tool units (#1802).
-- **gsd:** Settle orphaned task attempts and add gsd_task_settle operator tool (#1777).
-- **gsd:** Collapse auto-mode onto the unit_dispatches UnitRun (ADR-048).
-- **pi-ai:** Add MAI Code 1.1 Flash routing.
-- **models:** Add Claude Opus 5 across catalogs and registries.
-- **gsd:** Delete leftover filesystem-state read path.
-- **gsd:** Remove unused MEDIUM files and package deps (#1760).
-- **gsd:** Drop unused root packaging hoists and @types/picomatch (#1767).
+- **issue:** Fix(gsd): prevent slice plans from assigning phase-owned lifecycle mutations to execute-task (#1899).
+- **issue:** Branch isolation makes recorded integration branch disappear in unborn repositories (#1900).
+- **Fixed:** Restore broken star history chart (#1902).
+- **issue:** Re-entrant session lock acquisition releases ownership and wedges auto-mode (#1901).
+- **issue:** Migration staging resolves to live repo .gsd (#1866) (#1879).
+- **issue:** Post-unit gates audit stale HEAD and ignore evidence-backed GSD-only task verification (#1898).
+- **issue:** No sanctioned task lifecycle reconcile after repair (#1749) (#1893).
+- **issue:** Phase-dir slug drift and lock rmSync no-op (#1526) (#1892).
 
 <!-- release-highlights:end -->
 
@@ -179,6 +179,13 @@ Then use slash commands inside the GSD session:
 /gsd status
 ```
 
+For automation, quick tasks also have a non-interactive entry point with a
+structured result and meaningful exit code:
+
+```bash
+gsd quick --output-format json "Describe the task"
+```
+
 ## What GSD Pi Does
 
 - Plans work into milestones, slices, and tasks.
@@ -227,11 +234,11 @@ Join the [GSD Discord community](https://discord.gg/vY2bv3FrzX).
 
 ## Star History
 
-<a href="https://www.star-history.com/?repos=open-gsd%2Fgsd-pi&type=date&legend=top-left">
+<a href="https://star-history.dera.page/#open-gsd/gsd-pi&type=date&legend=top-left">
  <picture>
-   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/chart?repos=open-gsd/gsd-pi&type=date&theme=dark&legend=top-left" />
-   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/chart?repos=open-gsd/gsd-pi&type=date&legend=top-left" />
-   <img alt="Star History Chart" src="https://api.star-history.com/chart?repos=open-gsd/gsd-pi&type=date&legend=top-left" />
+   <source media="(prefers-color-scheme: dark)" srcset="https://star-history.dera.page/svg?repos=open-gsd/gsd-pi&type=date&theme=dark&legend=top-left" />
+   <source media="(prefers-color-scheme: light)" srcset="https://star-history.dera.page/svg?repos=open-gsd/gsd-pi&type=date&legend=top-left" />
+   <img alt="Star History Chart" src="https://star-history.dera.page/svg?repos=open-gsd/gsd-pi&type=date&legend=top-left" />
  </picture>
 </a>
 

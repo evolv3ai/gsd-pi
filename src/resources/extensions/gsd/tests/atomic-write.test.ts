@@ -338,6 +338,47 @@ test("projection directory fallback rejects a symlinked .gsd projection root", (
   assert.equal(existsSync(join(outside, "phases")), false);
 });
 
+test("initial projection bootstrap locks .gsd when the worktree root is the process CWD", (t) => {
+  const base = mkdtempSync(join(tmpdir(), "gsd-dir-cwd-bootstrap-"));
+  t.after(() => rmSync(base, { recursive: true, force: true }));
+  const moduleUrl = new URL("../managed-projection-history.ts", import.meta.url).href;
+  const loaderPath = new URL("./resolve-ts.mjs", import.meta.url).pathname;
+  const script = `
+    const { _createInitialProjectionDirectoryForTest } = await import(${JSON.stringify(moduleUrl)});
+    const { mkdirSync } = await import("node:fs");
+    const { join, relative } = await import("node:path");
+    const expectedProjectionRoot = join(process.cwd(), ".gsd");
+    let acquiredRoot = null;
+    _createInitialProjectionDirectoryForTest(
+      join(expectedProjectionRoot, "phases", "22-m022"),
+      (projectionRoot) => {
+        acquiredRoot = projectionRoot;
+        return {
+          createDirectory: (logicalPath) => mkdirSync(join(projectionRoot, logicalPath), { recursive: true }),
+          close: () => {},
+        };
+      },
+    );
+    if (relative(expectedProjectionRoot, acquiredRoot) !== "") {
+      throw new Error(\`expected projection lock on \${expectedProjectionRoot}, got \${acquiredRoot}\`);
+    }
+  `;
+
+  const result = spawnSync(process.execPath, [
+    "--import", loaderPath,
+    "--experimental-strip-types",
+    "--input-type=module",
+    "--eval", script,
+  ], {
+    cwd: base,
+    encoding: "utf8",
+    env: process.env,
+  });
+
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(existsSync(join(base, ".gsd", "phases", "22-m022")), true);
+});
+
 test("copyProjectionFileSync fallback rejects a source-parent swap during the proof", (t) => {
   const base = mkdtempSync(join(tmpdir(), "gsd-copy-parent-swap-"));
   t.after(() => rmSync(base, { recursive: true, force: true }));

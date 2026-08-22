@@ -27,7 +27,11 @@ import {
   isWorkflowToolSurfaceName,
   stripMcpToolPrefix,
 } from "./workflow-tool-surface.js";
-import { detectPackageManager, buildScriptCommand } from "./package-manager.js";
+import {
+  detectPackageManager,
+  buildScriptCommand,
+  normalizeWindowsPackageManagerCommand,
+} from "./package-manager.js";
 
 /** Maximum bytes of stdout/stderr to retain per command (10 KB). */
 const MAX_OUTPUT_BYTES = 10 * 1024;
@@ -885,7 +889,9 @@ export function runVerificationGate(options: RunVerificationGateOptions): Verifi
 
   for (const command of commands) {
     const start = Date.now();
-    const rewrittenCommand = normalizePythonCommand(rewriteCommandWithRtk(command), options.cwd);
+    const rewrittenCommand = normalizeWindowsPackageManagerCommand(
+      normalizePythonCommand(rewriteCommandWithRtk(command), options.cwd),
+    );
     // Pass the command string as an argument to the shell explicitly
     // to avoid Node.js DEP0190 (spawnSync with shell: true and no args).
     const shellBin = process.platform === "win32" ? "cmd" : "sh";

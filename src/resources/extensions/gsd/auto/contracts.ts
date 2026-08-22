@@ -9,6 +9,7 @@
 // and lifecycle-interface types remain here.
 
 import type { GSDState } from "../types.js";
+import type { RecoveryFailureKind } from "../recovery-classification.js";
 
 export interface AutoSessionContext {
   basePath: string;
@@ -81,7 +82,12 @@ export type AutoAdvanceResult =
       stateSnapshot?: GSDState;
       terminalOutcome?: AutoTerminalOutcome;
     }
-  | { kind: "paused"; reason: string; backoffMs?: readonly number[] }
+  | {
+      kind: "paused";
+      reason: string;
+      failureKind: RecoveryFailureKind;
+      backoffMs?: readonly number[];
+    }
   | { kind: "error"; reason: string };
 
 export interface AutoOrchestrationModule {

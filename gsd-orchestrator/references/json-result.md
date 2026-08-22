@@ -17,6 +17,9 @@ echo "$RESULT" | jq '.nextAction'
 
 **Important:** Progress text goes to stderr. The JSON result goes to stdout. Redirect stderr to `/dev/null` when parsing stdout.
 
+With `--json` or `--output-format stream-json`, the final JSONL record has
+`type: "headless_result"` and carries the same fields after the streamed events.
+
 ## Field Reference
 
 ### Top-Level Fields
@@ -33,6 +36,8 @@ echo "$RESULT" | jq '.nextAction'
 | `milestone` | `string \| undefined` | Active milestone ID (e.g. `"M001"`). |
 | `phase` | `string \| undefined` | Current GSD phase at session end (e.g. `"executing"`, `"blocked"`, `"complete"`). |
 | `nextAction` | `string \| undefined` | Recommended next action from the state machine (e.g. `"dispatch"`, `"complete"`). |
+| `task` | `{ number, slug, description } \| undefined` | Quick-task identity for `quick` runs. |
+| `branch` | `string \| undefined` | Branch used to execute a quick task. |
 | `artifacts` | `string[] \| undefined` | Paths to artifacts created or modified during the session. |
 | `commits` | `string[] \| undefined` | Git commit SHAs created during the session. |
 
@@ -117,6 +122,13 @@ echo "$RESULT" | jq -r '.artifacts[]?'
 
 # List commits made
 echo "$RESULT" | jq -r '.commits[]?'
+```
+
+### Quick Task Result
+
+```bash
+RESULT=$(gsd quick --output-format json "fix typo" 2>/dev/null)
+echo "$RESULT" | jq '{task, branch, artifacts, commits, exitCode}'
 ```
 
 ## Example Result

@@ -164,7 +164,7 @@ export function QuickPanel() {
         <div className="space-y-2">
           <h4 className="text-[11px] font-medium text-muted-foreground uppercase tracking-wide">Usage</h4>
           <div className="rounded-md border border-border/50 bg-background/50 px-3 py-2 font-mono text-[11px] text-foreground/80">
-            /gsd quick &lt;description&gt;
+            /gsd quick [--discuss] [--research] [--validate] [--full] &lt;description&gt;
           </div>
         </div>
 
@@ -187,7 +187,8 @@ export function QuickPanel() {
 
         <div className="rounded-md border border-info/15 bg-info/5 px-3 py-2 text-[11px] text-info/90">
           Quick tasks run as standalone units — they don&apos;t affect milestone progress, slices, or the plan. Use them
-          for work that should happen now without ceremony.
+          for work that should happen now without ceremony. Add <code>--discuss</code>, <code>--research</code>, or
+          <code>--validate</code> when a task needs more rigor; <code>--full</code> enables all three.
         </div>
       </div>
     </div>

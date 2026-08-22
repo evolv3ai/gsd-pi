@@ -44,6 +44,12 @@ import {
 
 import type { OutputFormat, HeadlessJsonResult } from './headless-types.js'
 import { VALID_OUTPUT_FORMATS } from './headless-types.js'
+import {
+  captureQuickTaskGitState,
+  collectQuickTaskResult,
+  parseQuickTaskNotification,
+} from './headless-quick-result.js'
+import type { QuickTaskMetadata, QuickTaskResultDetails } from './headless-quick-result.js'
 
 import {
   handleExtensionUIRequest,
@@ -279,6 +285,29 @@ export function parseHeadlessArgs(argv: string[]): HeadlessOptions {
 // ---------------------------------------------------------------------------
 
 export async function runHeadless(options: HeadlessOptions): Promise<void> {
+  if (options.command === 'quick' && options.commandArgs.join(' ').trim().length === 0) {
+    process.stderr.write('[headless] Error: quick requires a task description.\n')
+    process.stderr.write('[headless] Usage: gsd headless quick "<task description>"\n')
+    if (options.outputFormat === 'json') {
+      const result: HeadlessJsonResult = {
+        status: 'error',
+        exitCode: EXIT_ERROR,
+        duration: 0,
+        cost: {
+          total: 0,
+          input_tokens: 0,
+          output_tokens: 0,
+          cache_read_tokens: 0,
+          cache_write_tokens: 0,
+        },
+        toolCalls: 0,
+        events: 0,
+      }
+      process.stdout.write(JSON.stringify(result) + '\n')
+    }
+    process.exit(EXIT_ERROR)
+  }
+
   const maxRestarts = options.maxRestarts ?? 3
   let restartCount = 0
 
@@ -287,6 +316,12 @@ export async function runHeadless(options: HeadlessOptions): Promise<void> {
 
     // Success or blocked — exit normally
     if (result.exitCode === EXIT_SUCCESS || result.exitCode === EXIT_BLOCKED) {
+      process.exit(result.exitCode)
+    }
+
+    // A quick task mutates the repository and must never be replayed after a
+    // failed result: retrying could create a second task/branch/commit.
+    if (options.command === 'quick') {
       process.exit(result.exitCode)
     }
 
@@ -317,6 +352,8 @@ async function runHeadlessOnce(options: HeadlessOptions, restartCount: number): 
   let interrupted = false
   const startTime = Date.now()
   const isNewMilestone = options.command === 'new-milestone'
+  const isQuickTask = options.command === 'quick'
+  const quickTaskGitState = isQuickTask ? captureQuickTaskGitState(process.cwd()) : undefined
 
   // new-milestone involves codebase investigation + artifact writing — needs more time
   if (isNewMilestone && options.timeout === 300_000) {
@@ -410,6 +447,14 @@ async function runHeadlessOnce(options: HeadlessOptions, restartCount: number): 
     }
   }
 
+  // Selective DB-only orphan cleanup: direct one-shot path with no RPC child,
+  // extension bootstrap, or projection reconciliation.
+  if (options.command === 'discard-milestone') {
+    const { handleDiscardMilestone } = await import('./headless-discard-milestone.js')
+    const result = await handleDiscardMilestone(process.cwd(), options.commandArgs)
+    process.exit(result.exitCode)
+  }
+
   // Recover: apply a verified legacy import and assess or execute its recovery
   // action, with no RPC child needed. This is the one mutating headless
   // subcommand, for CI and automation without an interactive TTY-bound runtime.
@@ -493,6 +538,8 @@ async function runHeadlessOnce(options: HeadlessOptions, restartCount: number): 
   let cumulativeCacheReadTokens = 0
   let cumulativeCacheWriteTokens = 0
   let lastSessionId: string | undefined
+  let quickTaskMetadata: QuickTaskMetadata | undefined
+  let quickTaskDetails: QuickTaskResultDetails | undefined
 
   // Verbose text-mode state
   const toolStartTimes = new Map<string, number>()
@@ -502,13 +549,11 @@ async function runHeadlessOnce(options: HeadlessOptions, restartCount: number): 
   let inTextBlock = false
   let inThinkingBlock = false
 
-  // Emit HeadlessJsonResult to stdout for --output-format json batch mode
-  function emitBatchJsonResult(): void {
-    if (options.outputFormat !== 'json') return
+  function buildStructuredResult(): HeadlessJsonResult {
     const duration = Date.now() - startTime
     const finalStatus = classifyHeadlessFinalStatus({ blocked, exitCode, totalEvents, recentEvents })
     const status: HeadlessJsonResult['status'] = finalStatus === 'complete' ? 'success' : finalStatus
-    const result: HeadlessJsonResult = {
+    return {
       status,
       exitCode,
       sessionId: lastSessionId,
@@ -522,8 +567,22 @@ async function runHeadlessOnce(options: HeadlessOptions, restartCount: number): 
       },
       toolCalls: toolCallCount,
       events: totalEvents,
+      task: quickTaskDetails?.task ?? quickTaskMetadata?.task,
+      branch: quickTaskDetails?.branch ?? quickTaskMetadata?.branch,
+      artifacts: quickTaskDetails?.artifacts ?? (quickTaskMetadata ? [quickTaskMetadata.artifact] : undefined),
+      commits: quickTaskDetails?.commits,
     }
-    process.stdout.write(JSON.stringify(result) + '\n')
+  }
+
+  // Batch JSON emits one object; stream-json emits the same terminal result as
+  // a typed JSONL event after the raw RPC event stream.
+  function emitStructuredResult(): void {
+    const result = buildStructuredResult()
+    if (options.outputFormat === 'json') {
+      process.stdout.write(JSON.stringify(result) + '\n')
+    } else if (options.outputFormat === 'stream-json') {
+      process.stdout.write(JSON.stringify({ type: 'headless_result', ...result }) + '\n')
+    }
   }
 
   function trackEvent(event: Record<string, unknown>): void {
@@ -616,6 +675,9 @@ async function runHeadlessOnce(options: HeadlessOptions, restartCount: number): 
     trackEvent(eventObj)
 
     const eventType = String(eventObj.type ?? '')
+    if (isQuickTask && !quickTaskMetadata && eventType === 'extension_ui_request' && eventObj.method === 'notify') {
+      quickTaskMetadata = parseQuickTaskNotification(String(eventObj.message ?? ''))
+    }
     if (eventType === 'tool_execution_start') {
       const toolCallId = String(eventObj.toolCallId ?? eventObj.id ?? '')
       if (toolCallId && isInteractiveHeadlessTool(String(eventObj.toolName ?? ''))) {
@@ -870,7 +932,7 @@ async function runHeadlessOnce(options: HeadlessOptions, restartCount: number): 
     }
 
     // Quick commands: resolve on first agent_end
-    if (eventObj.type === 'agent_end' && isQuickCommand(options.command, options.commandArgs) && !completed) {
+    if (eventObj.type === 'agent_end' && (isQuickTask || isQuickCommand(options.command, options.commandArgs)) && !completed) {
       completed = true
       resolveCompletion()
       return
@@ -900,10 +962,8 @@ async function runHeadlessOnce(options: HeadlessOptions, restartCount: number): 
     })
     if (timeoutTimer) clearTimeout(timeoutTimer)
     if (idleTimer) clearTimeout(idleTimer)
-    // Emit batch JSON result if in json mode before exiting
-    if (options.outputFormat === 'json') {
-      emitBatchJsonResult()
-    }
+    // Preserve a terminal machine-readable result for both JSON output modes.
+    emitStructuredResult()
     process.exit(exitCode)
   }
   // Use prependListener so our handler runs before pi-coding-agent's
@@ -1084,6 +1144,20 @@ async function runHeadlessOnce(options: HeadlessOptions, restartCount: number): 
 
   await client.stop()
 
+  if (isQuickTask) {
+    if (!quickTaskMetadata || !quickTaskGitState) {
+      if (exitCode !== EXIT_BLOCKED) exitCode = EXIT_ERROR
+      process.stderr.write('[headless] Error: Quick task did not start; no task metadata was reported.\n')
+    } else {
+      const quickResult = collectQuickTaskResult(process.cwd(), quickTaskGitState, quickTaskMetadata)
+      quickTaskDetails = quickResult.details
+      if (!quickResult.ok) {
+        if (exitCode !== EXIT_BLOCKED) exitCode = EXIT_ERROR
+        process.stderr.write(`[headless] Error: ${quickResult.error}\n`)
+      }
+    }
+  }
+
   // Summary
   const duration = ((Date.now() - startTime) / 1000).toFixed(1)
   const status = classifyHeadlessFinalStatus({ blocked, exitCode, totalEvents, recentEvents })
@@ -1119,7 +1193,7 @@ async function runHeadlessOnce(options: HeadlessOptions, restartCount: number): 
   }
 
   // Emit structured JSON result in batch mode
-  emitBatchJsonResult()
+  emitStructuredResult()
 
   return { exitCode, interrupted, totalEvents, toolCallCount, recentEvents: [...recentEvents], status }
 }

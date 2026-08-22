@@ -15,6 +15,7 @@ Session startup flags such as `--model ID` and `--thinking LEVEL` can be supplie
 | `new-milestone` | Create milestone from specification (requires `--context`) |
 | `dispatch <phase>` | Force-dispatch: research, plan, execute, complete, reassess, uat, replan |
 | `discuss` | Start guided milestone/slice discussion |
+| `discard-milestone <ids...> --orphan-only` | Atomically discard DB-only orphan reservations after fail-closed preflight; emits before/after JSON |
 
 ## State Inspection
 

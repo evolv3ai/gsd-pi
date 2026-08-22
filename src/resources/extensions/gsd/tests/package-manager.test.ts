@@ -7,7 +7,11 @@ import assert from "node:assert/strict";
 import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { detectPackageManager, buildScriptCommand } from "../package-manager.js";
+import {
+  detectPackageManager,
+  buildScriptCommand,
+  normalizeWindowsPackageManagerCommand,
+} from "../package-manager.js";
 
 describe("package-manager: detectPackageManager", () => {
   let tmp: string;
@@ -125,5 +129,29 @@ describe("package-manager: buildScriptCommand", () => {
 
   test("bun build → bun run build (explicit run)", () => {
     assert.equal(buildScriptCommand("bun", "build"), "bun run build");
+  });
+});
+
+describe("package-manager: normalizeWindowsPackageManagerCommand", () => {
+  test("makes a forward-slash relative pnpm.cmd path native and explicitly relative", () => {
+    assert.equal(
+      normalizeWindowsPackageManagerCommand("app/pnpm.cmd --dir app test", "win32"),
+      ".\\app\\pnpm.cmd --dir app test",
+    );
+  });
+
+  test("preserves non-Windows commands", () => {
+    assert.equal(
+      normalizeWindowsPackageManagerCommand("app/pnpm.cmd --dir app test", "linux"),
+      "app/pnpm.cmd --dir app test",
+    );
+  });
+
+  test("preserves bare and already-native Windows package-manager commands", () => {
+    assert.equal(normalizeWindowsPackageManagerCommand("pnpm test", "win32"), "pnpm test");
+    assert.equal(
+      normalizeWindowsPackageManagerCommand(".\\app\\pnpm.cmd --dir app test", "win32"),
+      ".\\app\\pnpm.cmd --dir app test",
+    );
   });
 });

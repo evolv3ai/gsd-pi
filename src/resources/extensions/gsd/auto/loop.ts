@@ -35,7 +35,6 @@ import {
 } from "./unit-phase.js";
 import { debugLog } from "../debug-logger.js";
 import { markBlockedStopReason } from "../stop-notice.js";
-import { isTransientProjectionLockError } from "../projection-root-errors.js";
 import {
   formatWedgeTripNotice,
   recordNonAdvancingOutcome,
@@ -1436,9 +1435,9 @@ export async function autoLoop(
             s.pendingOrchestrationDispatch = null;
             const pausedMsg = orchestrationResult.reason ?? "orchestration transient pause";
             const backoffMs = orchestrationResult.backoffMs;
-            const projectionLockTransient = isTransientProjectionLockError(pausedMsg)
-              && backoffMs !== undefined
-              && backoffMs.length > 0;
+            const projectionLockTransient =
+              orchestrationResult.failureKind === "projection-lock-transient";
+            const projectionLockBackoffMs = projectionLockTransient ? backoffMs ?? [] : [];
             let pauseAttempt: number;
             if (projectionLockTransient) {
               // Projection-root contention owns a longer class-specific schedule.
@@ -1448,9 +1447,9 @@ export async function autoLoop(
               // unchanged lock error is not evidence of a deterministic wedge.
               consecutiveProjectionLockPauses++;
               pauseAttempt = consecutiveProjectionLockPauses;
-              if (pauseAttempt > backoffMs.length) {
+              if (pauseAttempt > projectionLockBackoffMs.length) {
                 const stopMessage =
-                  `projection root remained busy after ${backoffMs.length} transient retries`;
+                  `projection root remained busy after ${projectionLockBackoffMs.length} transient retries`;
                 ctx.ui.notify(`Auto-mode stopped: ${stopMessage}.`, "error");
                 await deferStopAuto(ctx, pi, markBlockedStopReason(stopMessage));
                 finishTurn("stopped", "execution", pausedMsg, null);
@@ -1512,7 +1511,7 @@ export async function autoLoop(
               "skipped",
               "execution",
               pausedMsg,
-              isTransientProjectionLockError(pausedMsg) ? null : "orchestration-transient-pause",
+              projectionLockTransient ? null : "orchestration-transient-pause",
             );
             continue;
           }

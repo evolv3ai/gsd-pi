@@ -47,6 +47,20 @@ Step mode — execute exactly one unit (task/slice/milestone step), then exit. R
 gsd headless --output-format json next
 ```
 
+### `quick <task>`
+
+Execute a lightweight task with GSD branch, artifact, and commit guarantees. The
+short form `gsd quick` is an alias for the headless command.
+
+```bash
+gsd quick --output-format json "fix the login button on mobile"
+gsd headless --output-format json quick "update the setup instructions"
+```
+
+The JSON result includes `task`, `branch`, `artifacts`, and `commits`. Quick
+tasks are not automatically retried because replaying a repository mutation
+could duplicate work.
+
 ### `new-milestone`
 
 Create a milestone from a specification document.

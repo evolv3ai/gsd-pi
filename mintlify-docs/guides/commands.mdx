@@ -10,7 +10,7 @@ description: "Every GSD command, keyboard shortcut, and CLI flag."
 | `/gsd` | Step mode — execute one unit at a time, pause between each |
 | `/gsd next` | Explicit step mode (same as `/gsd`) |
 | `/gsd auto` | Autonomous mode — research, plan, execute, commit, repeat |
-| `/gsd quick` | Execute a quick task with GSD guarantees without full planning overhead |
+| `/gsd quick [--discuss] [--research] [--validate] [--full] <task>` | Execute a quick task with GSD guarantees; optionally add discussion, research, plan checking, and post-execution verification (`--full` enables all three stages) |
 | `/gsd stop` | Stop auto mode gracefully |
 | `/gsd pause` | Pause auto mode (preserves state, `/gsd auto` to resume) |
 | `/gsd steer` | Hard-steer plan documents during execution |
@@ -42,6 +42,8 @@ description: "Every GSD command, keyboard shortcut, and CLI flag."
 | `/gsd logs` | Browse activity logs, debug logs, and metrics |
 | `/gsd remote` | Control remote auto-mode |
 | `/gsd help` | Categorized command reference |
+
+Quick-task right-sizing flags are composable. Use `--discuss` to surface design choices before planning, `--research` to investigate approaches first, and `--validate` to add plan checking and independent post-execution verification. Passing all three is equivalent to `--full`; passing none preserves the lightweight quick-task flow.
 
 ## Configuration and diagnostics
 
@@ -161,6 +163,7 @@ In terminals without Kitty keyboard protocol support (macOS Terminal.app, JetBra
 | `gsd sessions` | Interactive session picker |
 | `gsd config` | Set up global API keys |
 | `gsd update` | Update GSD to the latest version |
+| `gsd quick <task>` | Execute a quick task without a TUI |
 
 ## Headless mode
 
@@ -169,6 +172,7 @@ In terminals without Kitty keyboard protocol support (macOS Terminal.app, JetBra
 ```bash
 gsd headless              # run auto mode
 gsd headless next         # run a single unit
+gsd quick --output-format json "fix typo"  # structured quick-task result
 gsd headless query        # instant JSON snapshot (~50ms, no LLM)
 gsd headless recover      # print the sealed recovery Preview for approval
 gsd headless --timeout 600000 auto   # with timeout

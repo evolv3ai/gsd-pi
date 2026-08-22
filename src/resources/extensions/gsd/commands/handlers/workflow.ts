@@ -9,7 +9,7 @@ import { showDiscuss, showHeadlessMilestoneCreation, showQueue } from "../../gui
 import { handleStart, handleTemplates, dispatchMarkdownPhasePlugin } from "../../commands-workflow-templates.js";
 import { gsdRoot } from "../../paths.js";
 import { deriveState } from "../../state.js";
-import { isParked, parkMilestone, unparkMilestone } from "../../milestone-actions.js";
+import { discardMilestone, isParked, parkMilestone, unparkMilestone } from "../../milestone-actions.js";
 import { loadEffectiveGSDPreferences } from "../../preferences.js";
 import { setPlanningDepth } from "../../planning-depth.js";
 import { nextMilestoneId, normalizeDiscussTarget } from "../../milestone-ids.js";
@@ -32,6 +32,7 @@ import {
   type WorkflowPlugin,
 } from "../../workflow-plugins.js";
 import { dispatchOneshot } from "../../workflow-dispatch.js";
+import { showConfirm } from "../../../shared/tui.js";
 import {
   fetchWorkflowSource,
   globalInstallDir,
@@ -677,6 +678,31 @@ export async function handleWorkflowCommand(trimmed: string, ctx: ExtensionComma
     const success = unparkMilestone(basePath, targetId);
     ctx.ui.notify(
       success ? `Unparked ${targetId}. It will resume its normal position in the queue.` : `Could not unpark ${targetId} — milestone not found or not parked.`,
+      success ? "info" : "warning",
+    );
+    return true;
+  }
+  if (trimmed === "discard" || trimmed.startsWith("discard ")) {
+    if (requireNotAutoActive("/gsd discard", ctx)) return true;
+    const args = trimmed.replace(/^discard\s*/, "").trim().split(/\s+/).filter(Boolean);
+    if (args.length !== 1) {
+      ctx.ui.notify("Usage: /gsd discard <milestone-id>", "warning");
+      return true;
+    }
+    const targetId = args[0]!;
+    const confirmed = await showConfirm(ctx, {
+      title: "Discard milestone?",
+      message: `This will permanently delete ${targetId} and all its contents.`,
+      confirmLabel: "Discard",
+      declineLabel: "Cancel",
+    });
+    if (!confirmed) {
+      ctx.ui.notify(`Discard of ${targetId} cancelled.`, "info");
+      return true;
+    }
+    const success = discardMilestone(projectRoot(), targetId);
+    ctx.ui.notify(
+      success ? `Discarded ${targetId}.` : `Could not discard ${targetId} — milestone not found.`,
       success ? "info" : "warning",
     );
     return true;

@@ -19,6 +19,7 @@ import type { GSDState, Phase } from "../types.js";
 import type { MinimalModelRegistry } from "../context-budget.js";
 
 type BlockedAdvanceResult = Extract<AutoAdvanceResult, { kind: "blocked" }>;
+export type AutoAdvanceFailureResult = Extract<AutoAdvanceResult, { kind: "paused" | "error" | "stopped" }>;
 
 import { debugCount, debugLog, debugTime } from "../debug-logger.js";
 import {
@@ -394,6 +395,24 @@ export async function decideOrchestratorDispatch(
     reason: action.matchedRule ?? "dispatch",
     preconditions: [],
   };
+}
+
+export function classifyAutoAdvanceFailure(input: {
+  error: unknown;
+  unitType?: string;
+  unitId?: string;
+}): AutoAdvanceFailureResult {
+  const recovery = classifyFailure(input);
+  if (recovery.action === "retry") {
+    return {
+      kind: "paused",
+      reason: recovery.reason,
+      failureKind: recovery.failureKind,
+      backoffMs: recovery.backoffMs,
+    };
+  }
+  if (recovery.action === "escalate") return { kind: "error", reason: recovery.reason };
+  return { kind: "stopped", reason: recovery.reason };
 }
 
 export class AutoOrchestrator implements AutoOrchestrationModule {
@@ -892,17 +911,6 @@ export class AutoOrchestrator implements AutoOrchestrationModule {
       return { ok: false, reason: `${result.kind}: ${result.reason}${repairDetail}` };
     }
     return { ok: true, reason: result.kind };
-  }
-
-  // ── RecoveryAdapter (folded) ─────────────────────────────────────────────
-
-  private classifyAndRecover(input: {
-    error: unknown;
-    unitType?: string;
-    unitId?: string;
-  }): { action: "retry" | "escalate" | "stop"; reason: string; backoffMs?: readonly number[] } {
-    const recovery = classifyFailure(input);
-    return { action: recovery.action, reason: recovery.reason, backoffMs: recovery.backoffMs };
   }
 
   /**
@@ -1461,21 +1469,16 @@ export class AutoOrchestrator implements AutoOrchestrationModule {
       this.postAdvanceRecord(advanced);
       return advanced;
     } catch (error) {
-      const recovery = this.classifyAndRecover({
+      let result: AutoAdvanceResult = classifyAutoAdvanceFailure({
         error,
         unitType: activeUnitFromWorker(this.s.workerId)?.unitType,
         unitId: activeUnitFromWorker(this.s.workerId)?.unitId,
       });
-      let result: AutoAdvanceResult;
-      if (recovery.action === "retry") {
-        result = { kind: "paused", reason: recovery.reason, backoffMs: recovery.backoffMs };
-      } else if (recovery.action === "escalate") {
+      if (result.kind === "error") {
         result = this.withLivenessInput(
-          { kind: "error", reason: recovery.reason },
+          result,
           { guardId: "advance-exception" },
         );
-      } else {
-        result = { kind: "stopped", reason: recovery.reason };
       }
 
       if (result.kind === "paused") {
@@ -1497,14 +1500,14 @@ export class AutoOrchestrator implements AutoOrchestrationModule {
         : result.kind === "stopped"
           ? "advance-stopped"
           : "advance-error";
-      this.journalTransition({ name: journalName, reason: recovery.reason });
+      this.journalTransition({ name: journalName, reason: result.reason });
 
       if (result.kind === "paused") {
-        this.notifyLifecycle({ name: "pause", detail: recovery.reason });
+        this.notifyLifecycle({ name: "pause", detail: result.reason });
       } else if (result.kind === "stopped") {
-        this.notifyLifecycle({ name: "stopped", detail: recovery.reason });
+        this.notifyLifecycle({ name: "stopped", detail: result.reason });
       } else if (result.kind === "error") {
-        this.notifyLifecycle({ name: "error", detail: recovery.reason });
+        this.notifyLifecycle({ name: "error", detail: result.reason });
       }
       this.postAdvanceRecord(result);
       return result;

@@ -23,7 +23,7 @@ import { validateConfiguredModel } from './startup-model-validation.js'
 import { migrateAnthropicDefaultToClaudeCode, migrateGeminiCliDefaultToAntigravity } from './provider-migrations.js'
 import { applyModelOverride } from './cli-model-override.js'
 import {
-  buildHeadlessAutoArgs,
+  buildHeadlessCommandArgs,
   parseCliArgs,
   runWebCliBranch,
   migrateLegacyFlatSessions,
@@ -382,6 +382,7 @@ const subcommandsExemptFromEarlyTtyCheck = new Set([
   'headless',
   'hermes',
   'read',
+  'quick',
   'install',
   'list',
   'remove',
@@ -536,12 +537,20 @@ if (cliFlags.messages[0] === 'headless') {
   process.exit(process.exitCode ?? 1)
 }
 
+// `gsd quick <task>` — first-class non-interactive shorthand for
+// `gsd headless quick <task>`. Always route through headless, even when a TTY
+// is attached, so task arguments can never fall through to the empty composer.
+if (cliFlags.messages[0] === 'quick') {
+  initResources(agentDir)
+  await runHeadlessCommand(buildHeadlessCommandArgs(cliFlags))
+}
+
 /**
  * Run a headless command by invoking the headless entrypoint with a synthetic
- * argv. Shared by the `auto` shorthand (#2732) and the auto-piped-stdout
- * redirect so they use the same bootstrap + dynamic-import dance.
+ * argv. Shared by CLI shorthands so they use the same bootstrap and dynamic
+ * import path as `gsd headless`.
  */
-async function runHeadlessFromAuto(headlessArgs: string[]): Promise<never> {
+async function runHeadlessCommand(headlessArgs: string[]): Promise<never> {
   await ensureRtkBootstrap()
   const { runHeadless, parseHeadlessArgs } = await import('./headless.js')
   const argv = [process.argv[0], process.argv[1], 'headless', ...headlessArgs]
@@ -581,7 +590,7 @@ async function probeDeferredProvidersForListModels(modelRegistry: ModelRegistryI
 // `gsd headless auto [args...]` (#2732). Keep terminal TTY launches in the
 // interactive path so Warp/iTerm/Terminal retain foreground ownership.
 if (shouldRedirectAutoToHeadless(cliFlags.messages[0], process.stdin.isTTY, process.stdout.isTTY)) {
-  await runHeadlessFromAuto(buildHeadlessAutoArgs(cliFlags))
+  await runHeadlessCommand(buildHeadlessCommandArgs(cliFlags))
 }
 
 // ---------------------------------------------------------------------------

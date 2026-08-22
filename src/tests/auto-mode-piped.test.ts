@@ -23,11 +23,11 @@ test('routes `gsd auto` with piped stdin to headless mode', () => {
   assert.equal(shouldRedirectAutoToHeadless('auto', false, true), true)
 })
 
-test('src/cli.ts routes `gsd auto` with piped stdout through the headless entrypoint', () => {
+test('src/cli.ts routes `gsd auto` and `gsd quick` through the headless entrypoint', (t) => {
   const tempDir = mkdtempSync(join(tmpdir(), 'gsd-auto-cli-route-'))
+  t.after(() => rmSync(tempDir, { recursive: true, force: true }))
   const loaderPath = join(tempDir, 'stub-loader.mjs')
-  try {
-    writeFileSync(loaderPath, `
+  writeFileSync(loaderPath, `
 import { existsSync } from 'node:fs'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 
@@ -80,6 +80,16 @@ const modules = new Map([
     passthrough.red = passthrough
     export default passthrough
   \`],
+  ['stub:resource-loader', \`
+    export const bareResourceLoaderOptions = () => ({})
+    export const buildResourceLoader = async () => ({})
+    export const getNewerManagedResourceVersion = () => undefined
+    export const initResources = () => {}
+  \`],
+  ['stub:onboarding', \`
+    export const runOnboarding = async () => {}
+    export const shouldRunOnboarding = async () => false
+  \`],
   ['stub:headless', \`
     export function parseHeadlessArgs(argv) {
       process.stderr.write('AUTO_REDIRECT_ARGV ' + JSON.stringify(argv) + '\\\\n')
@@ -97,6 +107,12 @@ export async function resolve(specifier, context, nextResolve) {
   if (specifier.startsWith('@gsd/pi-ai')) return { url: 'stub:pi-ai', shortCircuit: true }
   if (specifier.startsWith('@gsd/pi-tui')) return { url: 'stub:pi-tui', shortCircuit: true }
   if (specifier === 'chalk') return { url: 'stub:chalk', shortCircuit: true }
+  if (specifier === './resource-loader.js' && context.parentURL?.endsWith('/src/cli.ts')) {
+    return { url: 'stub:resource-loader', shortCircuit: true }
+  }
+  if (specifier === './onboarding.js' && context.parentURL?.endsWith('/src/cli.ts')) {
+    return { url: 'stub:onboarding', shortCircuit: true }
+  }
   if (specifier === './headless.js' && context.parentURL?.endsWith('/src/cli.ts')) {
     return { url: 'stub:headless', shortCircuit: true }
   }
@@ -118,45 +134,78 @@ export async function load(url, context, nextLoad) {
 }
 `)
 
-    const registerLoader = `
+  const registerLoader = `
       import { register } from 'node:module'
       import { pathToFileURL } from 'node:url'
       Object.defineProperty(process.stdin, 'isTTY', { configurable: true, value: true })
       Object.defineProperty(process.stdout, 'isTTY', { configurable: true, value: false })
       register(${JSON.stringify(pathToFileURL(loaderPath).href)}, pathToFileURL('./'))
-    `
-    const result = spawnSync(process.execPath, [
-      '--import',
-      `data:text/javascript,${encodeURIComponent(registerLoader)}`,
-      '--experimental-strip-types',
-      join(process.cwd(), 'src', 'cli.ts'),
-      'auto',
-      '--model',
-      'test-model',
-    ], {
-      cwd: process.cwd(),
-      env: {
-        ...process.env,
-        GSD_HOME: join(tempDir, 'home'),
-        GSD_RTK_DISABLED: '1',
-      },
-      encoding: 'utf8',
-      input: '',
-      stdio: ['pipe', 'pipe', 'pipe'],
-    })
+  `
+  const result = spawnSync(process.execPath, [
+    '--import',
+    `data:text/javascript,${encodeURIComponent(registerLoader)}`,
+    '--experimental-strip-types',
+    join(process.cwd(), 'src', 'cli.ts'),
+    'auto',
+    '--model',
+    'test-model',
+  ], {
+    cwd: process.cwd(),
+    env: {
+      ...process.env,
+      GSD_HOME: join(tempDir, 'home'),
+      GSD_RTK_DISABLED: '1',
+    },
+    encoding: 'utf8',
+    input: '',
+    stdio: ['pipe', 'pipe', 'pipe'],
+  })
 
-    assert.equal(result.status, 0, result.stderr)
-    const markerLine = result.stderr
-      .split(/\r?\n/)
-      .find((line) => line.startsWith('AUTO_REDIRECT_ARGV '))
-    assert.ok(markerLine, result.stderr)
+  assert.equal(result.status, 0, result.stderr)
+  const markerLine = result.stderr
+    .split(/\r?\n/)
+    .find((line) => line.startsWith('AUTO_REDIRECT_ARGV '))
+  assert.ok(markerLine, result.stderr)
 
-    const headlessArgv = JSON.parse(markerLine.slice('AUTO_REDIRECT_ARGV '.length)) as string[]
-    assert.deepEqual(headlessArgv.slice(2), ['headless', '--model', 'test-model', 'auto'])
-    assert.match(result.stderr, /AUTO_REDIRECT_RUN /)
-  } finally {
-    rmSync(tempDir, { recursive: true, force: true })
-  }
+  const headlessArgv = JSON.parse(markerLine.slice('AUTO_REDIRECT_ARGV '.length)) as string[]
+  assert.deepEqual(headlessArgv.slice(2), ['headless', '--model', 'test-model', 'auto'])
+  assert.match(result.stderr, /AUTO_REDIRECT_RUN /)
+
+  const quickRegisterLoader = registerLoader.replace(
+    "Object.defineProperty(process.stdout, 'isTTY', { configurable: true, value: false })",
+    "Object.defineProperty(process.stdout, 'isTTY', { configurable: true, value: true })",
+  )
+  const quickResult = spawnSync(process.execPath, [
+    '--import',
+    `data:text/javascript,${encodeURIComponent(quickRegisterLoader)}`,
+    '--experimental-strip-types',
+    join(process.cwd(), 'src', 'cli.ts'),
+    'quick',
+    '--output-format',
+    'json',
+    'fix the login button',
+  ], {
+    cwd: process.cwd(),
+    env: {
+      ...process.env,
+      GSD_HOME: join(tempDir, 'quick-home'),
+      GSD_RTK_DISABLED: '1',
+    },
+    encoding: 'utf8',
+    input: '',
+    stdio: ['pipe', 'pipe', 'pipe'],
+  })
+
+  assert.equal(quickResult.status, 0, quickResult.stderr)
+  const quickMarkerLine = quickResult.stderr
+    .split(/\r?\n/)
+    .find((line) => line.startsWith('AUTO_REDIRECT_ARGV '))
+  assert.ok(quickMarkerLine, quickResult.stderr)
+  const quickHeadlessArgv = JSON.parse(quickMarkerLine.slice('AUTO_REDIRECT_ARGV '.length)) as string[]
+  assert.deepEqual(
+    quickHeadlessArgv.slice(2),
+    ['headless', 'quick', '--output-format', 'json', 'fix the login button'],
+  )
 })
 
 test('keeps terminal `gsd auto` on the interactive path', () => {

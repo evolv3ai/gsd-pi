@@ -31,6 +31,16 @@ describe("help-text branding", () => {
     assert.ok(text.includes("--no-auth"), "help should list web no-auth mode");
     assert.ok(text.includes("external access control"), "help should warn about external access control");
   });
+
+  it("main and subcommand help document non-interactive quick tasks", () => {
+    const main = captureStdout(() => printHelp("1.2.3"));
+    const quick = captureStdout(() => printSubcommandHelp("quick", "1.2.3"));
+    const headless = captureStdout(() => printSubcommandHelp("headless", "1.2.3"));
+    assert.ok(main.includes("quick <task>"));
+    assert.ok(quick.includes("gsd headless quick"));
+    assert.ok(quick.includes("--output-format json"));
+    assert.ok(headless.includes("quick <task>"));
+  });
 });
 
 describe("help-text provider references", () => {

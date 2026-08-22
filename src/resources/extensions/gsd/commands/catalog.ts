@@ -17,7 +17,7 @@ export interface GsdCommandDefinition {
 type CompletionMap = Record<string, readonly GsdCommandDefinition[]>;
 
 export const GSD_COMMAND_DESCRIPTION =
-  "GSD — Git Ship Done: /gsd help|start|templates|next|auto|stop|pause|status|widget|visualize|brief|report|queue|quick|discuss|capture|triage|dispatch|verdict|history|undo|undo-task|reset-slice|rate|skip|export|cleanup|closeout|rebuild|db|model|mode|prefs|config|keys|hooks|run-hook|skill-health|doctor|debug|logs|forensics|changelog|migrate|remote|steer|knowledge|memory|new-milestone|new-project|parallel|cmux|park|unpark|init|setup|onboarding|inspect|extensions|update|upgrade|fast|mcp|rethink|workflow|codebase|notifications|ship|do|usage|context|session-report|backlog|pr-branch|add-tests|scan|language|worktree|eval-review";
+  "GSD — Git Ship Done: /gsd help|start|templates|next|auto|stop|pause|status|widget|visualize|brief|report|queue|quick|discuss|capture|triage|dispatch|verdict|history|undo|undo-task|reset-slice|rate|skip|export|cleanup|closeout|rebuild|db|model|mode|prefs|config|keys|hooks|run-hook|skill-health|doctor|debug|logs|forensics|changelog|migrate|remote|steer|knowledge|memory|new-milestone|new-project|parallel|cmux|park|unpark|discard|init|setup|onboarding|inspect|extensions|update|upgrade|fast|mcp|rethink|workflow|codebase|notifications|ship|do|usage|context|session-report|backlog|pr-branch|add-tests|scan|language|worktree|eval-review";
 
 export const TOP_LEVEL_SUBCOMMANDS: readonly GsdCommandDefinition[] = [
   { cmd: "help", desc: "Categorized command reference with descriptions" },
@@ -80,6 +80,7 @@ export const TOP_LEVEL_SUBCOMMANDS: readonly GsdCommandDefinition[] = [
   { cmd: "cmux", desc: "Manage cmux integration (status, sidebar, notifications, splits)" },
   { cmd: "park", desc: "Park a milestone — skip without deleting" },
   { cmd: "unpark", desc: "Reactivate a parked milestone" },
+  { cmd: "discard", desc: "Permanently discard one milestone (with confirmation)" },
   { cmd: "update", desc: "Update GSD to the latest version" },
   { cmd: "upgrade", desc: "Alias for update; installs the latest @opengsd package" },
   { cmd: "start", desc: "Start a workflow template (bugfix, spike, feature, etc.)" },
@@ -120,6 +121,12 @@ const NESTED_COMPLETIONS: CompletionMap = {
     { cmd: "--verbose", desc: "Show detailed step output" },
     { cmd: "--dry-run", desc: "Preview next step without executing" },
     { cmd: "--debug", desc: "Enable debug logging" },
+  ],
+  quick: [
+    { cmd: "--discuss", desc: "Surface design choices before planning" },
+    { cmd: "--research", desc: "Investigate approaches before planning" },
+    { cmd: "--validate", desc: "Check the plan and verify the result" },
+    { cmd: "--full", desc: "Enable discussion, research, and validation" },
   ],
   widget: [
     { cmd: "full", desc: "Full widget display" },

@@ -1186,6 +1186,66 @@ test("tool_result verifies the gate from result.structuredContent when event.det
   assert.ok(loadWriteGateSnapshot(dir).verifiedDepthMilestones.includes("M002"));
 });
 
+test("tool_result normalizes provider answers shape before verifying a depth gate (#1894)", async (t) => {
+  const dir = makeTempDir("provider-answers");
+  resetWriteGateState(dir);
+  t.after(() => {
+    resetWriteGateState(dir);
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  const { handlers, pi } = makeHookHarness();
+  registerHooks(pi, []);
+  const ctx = { cwd: dir, ui: { notify: () => undefined } } as any;
+  const questionId = "depth_verification_M001-sdflkr";
+  const questions = [{
+    id: questionId,
+    options: [
+      { label: "Confirm M001 (Recommended)" },
+      { label: "Not quite — let me clarify" },
+    ],
+  }];
+
+  setPendingGate(questionId, dir);
+
+  for (const handler of handlers.get("tool_result") ?? []) {
+    await handler({
+      toolCallId: "t-depth",
+      toolName: "ask_user_questions",
+      input: { questions },
+      details: {
+        answers: {
+          [questionId]: { answers: ["Confirm M001 (Recommended)"] },
+        },
+      },
+    }, ctx);
+  }
+
+  assert.equal(getPendingGate(dir), null, "provider-shaped confirmation must clear the pending gate");
+  assert.ok(
+    loadWriteGateSnapshot(dir).verifiedDepthMilestones.includes("M001-sdflkr"),
+    "provider-shaped confirmation must persist milestone depth verification",
+  );
+  assert.equal(
+    shouldBlockContextArtifactSave("CONTEXT", "M001-sdflkr", null, dir).block,
+    false,
+    "provider-shaped confirmation must unlock the matching milestone context",
+  );
+
+  let contextBlock: { block?: boolean } | undefined;
+  for (const handler of handlers.get("tool_call") ?? []) {
+    contextBlock = await handler({
+      toolName: "gsd_summary_save",
+      input: {
+        milestone_id: "M001-sdflkr",
+        artifact_type: "CONTEXT",
+        content: "# M001 Context\n",
+      },
+    }, ctx);
+  }
+  assert.notEqual(contextBlock?.block, true, "the subsequent milestone CONTEXT save must be permitted");
+});
+
 test("tool_result without details or structured content leaves the gate pending without crashing", async (t) => {
   const dir = makeTempDir("no-details");
   resetWriteGateState(dir);

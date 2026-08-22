@@ -74,6 +74,70 @@ test("executeGsdExec passes AbortSignal into sandbox options", async () => {
   assert.equal(capturedSignal, controller.signal);
 });
 
+test("executeGsdExec uses verification_timeout_ms as its configured default", async () => {
+  let capturedDefaultTimeout: number | undefined;
+
+  const result = await executeGsdExec(
+    { runtime: "bash", script: "pnpm verify:pr" },
+    {
+      baseDir: "/tmp/gsd-exec-verification-timeout-test",
+      preferences: {
+        context_mode: { enabled: true },
+        verification_timeout_ms: 180_000,
+      },
+      run: async (request, opts: ExecSandboxOptions) => {
+        capturedDefaultTimeout = opts.default_timeout_ms;
+        return makeExecResult(request);
+      },
+    },
+  );
+
+  assert.equal(result.isError, false);
+  assert.equal(capturedDefaultTimeout, 180_000);
+});
+
+test("executeGsdExec keeps the explicit context-mode timeout ahead of verification timeout", async () => {
+  let capturedDefaultTimeout: number | undefined;
+
+  await executeGsdExec(
+    { runtime: "bash", script: "pnpm test" },
+    {
+      baseDir: "/tmp/gsd-exec-explicit-timeout-test",
+      preferences: {
+        context_mode: { enabled: true, exec_timeout_ms: 45_000 },
+        verification_timeout_ms: 180_000,
+      },
+      run: async (request, opts: ExecSandboxOptions) => {
+        capturedDefaultTimeout = opts.default_timeout_ms;
+        return makeExecResult(request);
+      },
+    },
+  );
+
+  assert.equal(capturedDefaultTimeout, 45_000);
+});
+
+test("executeGsdExec keeps the sandbox default for unrelated workloads", async () => {
+  let capturedDefaultTimeout: number | undefined;
+
+  await executeGsdExec(
+    { runtime: "bash", script: "rg -n TODO src" },
+    {
+      baseDir: "/tmp/gsd-exec-unrelated-timeout-test",
+      preferences: {
+        context_mode: { enabled: true },
+        verification_timeout_ms: 180_000,
+      },
+      run: async (request, opts: ExecSandboxOptions) => {
+        capturedDefaultTimeout = opts.default_timeout_ms;
+        return makeExecResult(request);
+      },
+    },
+  );
+
+  assert.equal(capturedDefaultTimeout, 30_000);
+});
+
 test("gsd_exec surfaces aborted child termination distinctly from a clean exit", async () => {
   const result = await executeGsdExec(
     { runtime: "bash", script: "trap 'exit 0' TERM; sleep 60" },

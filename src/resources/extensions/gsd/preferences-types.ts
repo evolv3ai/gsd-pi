@@ -553,7 +553,7 @@ export interface GSDPreferences {
   verification_commands?: string[];
   verification_auto_fix?: boolean;
   verification_max_retries?: number;
-  /** Per-command host-verification spawn timeout in ms. Unset uses 120000. */
+  /** Per-command host-verification and verification-oriented gsd_exec timeout in ms. Unset host verification uses 120000. */
   verification_timeout_ms?: number;
   per_unit_cost_cap_usd?: number;
   /** Multiplier over the rolling per-unit cost average that triggers a cost-spike pause. Default: 3.0. The `burn-max` token profile ignores this and never pauses on spikes. */

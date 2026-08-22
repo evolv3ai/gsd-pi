@@ -818,23 +818,42 @@ function isContextDraftSummarySave(toolName: string, input: unknown): boolean {
 }
 
 /**
- * External engines (claude-code-cli) deliver ask_user_questions results as
- * relayed MCP tool results: the structured round payload arrives in
- * `result.structuredContent`, not in pi-native `event.details`. Without this
- * fallback, applyAskUserQuestionsGateResult sees no response for an answered
- * gate question and lands in the "waiting" branch — leaving a re-armed gate
- * permanently pending and the discuss→auto handoff blocked.
+ * Normalize supported ask_user_questions result shapes before gate handling.
+ * Some providers return top-level `answers` whose entries use `answers`, while
+ * native results use `response.answers` entries with `selected`. External
+ * engines may also relay either shape through `result.structuredContent`.
  */
-function resolveAskUserQuestionsGateDetails(event: { details?: unknown; result?: unknown }): any {
-  const hasRoundShape = (value: any): boolean =>
-    !!value && typeof value === "object" &&
-    (value.cancelled !== undefined || value.timed_out !== undefined || value.response !== undefined);
+function normalizeAskUserQuestionsAnswer(answer: any): any {
+  if (!answer || typeof answer !== "object" || answer.selected !== undefined) return answer;
+  return answer.answers !== undefined ? { ...answer, selected: answer.answers } : answer;
+}
 
-  const details = event.details as any;
-  if (hasRoundShape(details)) return details;
+function normalizeAskUserQuestionsRound(value: unknown): any | null {
+  if (!value || typeof value !== "object") return null;
+  const round = value as any;
+  const response = round.response ??
+    (round.answers !== undefined ? { answers: round.answers } : undefined);
+  if (!response && round.cancelled === undefined && round.timed_out === undefined) return null;
+  if (!response) return round;
+
+  return {
+    ...round,
+    response: {
+      ...response,
+      answers: Object.fromEntries(
+        Object.entries(response.answers ?? {}).map(
+          ([id, answer]) => [id, normalizeAskUserQuestionsAnswer(answer)],
+        ),
+      ),
+    },
+  };
+}
+
+function resolveAskUserQuestionsGateDetails(event: { details?: unknown; result?: unknown }): any {
+  const details = normalizeAskUserQuestionsRound(event.details);
+  if (details) return details;
   const structured = (event.result as { structuredContent?: unknown } | undefined)?.structuredContent;
-  if (hasRoundShape(structured)) return structured;
-  return details ?? {};
+  return normalizeAskUserQuestionsRound(structured) ?? {};
 }
 
 type StructuredQuestion = {

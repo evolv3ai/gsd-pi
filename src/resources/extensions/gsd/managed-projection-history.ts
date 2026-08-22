@@ -2254,7 +2254,25 @@ export function recordManagedProjectionFile(filePath: string): void {
   if (target !== null) recordManagedProjectionPath(target.targetRoot, filePath);
 }
 
-function createInitialProjectionDirectory(directoryPath: string): boolean {
+type InitialProjectionRootHandle = Pick<ProjectionRootIdentityLock, "createDirectory" | "close">;
+
+function openInitialProjectionRoot(projectionRoot: string): ProjectionRootIdentityLock {
+  const projectionStat = lstatSync(projectionRoot, { bigint: true });
+  if (!projectionStat.isDirectory() || projectionStat.isSymbolicLink()) {
+    throw new Error("managed projection root is not identity-stable");
+  }
+  return acquireProjectionRootIdentityLock(
+    realpathSync(projectionRoot),
+    projectionStat.dev.toString(),
+    projectionStat.ino.toString(),
+  );
+}
+
+function createInitialProjectionDirectory(
+  directoryPath: string,
+  nativeLockAvailable: () => boolean = isProjectionRootIdentityLockAvailable,
+  openProjectionRoot: (projectionRoot: string) => InitialProjectionRootHandle = openInitialProjectionRoot,
+): boolean {
   let projectionRoot = resolve(directoryPath);
   while (projectionRoot !== dirname(projectionRoot)
     && basename(projectionRoot).toLocaleLowerCase("en-US") !== ".gsd") {
@@ -2262,7 +2280,7 @@ function createInitialProjectionDirectory(directoryPath: string): boolean {
   }
   if (basename(projectionRoot).toLocaleLowerCase("en-US") !== ".gsd") return false;
   const targetRoot = dirname(projectionRoot);
-  if (!isProjectionRootIdentityLockAvailable()) {
+  if (!nativeLockAvailable()) {
     // Validate the project root before mkdir-ing under it, mirroring the
     // native lock's identity-stable, non-symlink root guard. A missing root
     // is not an error here: the recursive mkdir creates it (fresh worktrees
@@ -2292,17 +2310,28 @@ function createInitialProjectionDirectory(directoryPath: string): boolean {
   if (!rootStat.isDirectory() || rootStat.isSymbolicLink()) {
     throw new Error("managed projection project root is not identity-stable");
   }
-  const handle = acquireProjectionRootIdentityLock(
-    realpathSync(targetRoot),
-    rootStat.dev.toString(),
-    rootStat.ino.toString(),
-  );
+  // Bootstrap the projection root before acquiring the native identity lock.
+  // Locking targetRoot here makes a Windows worktree CWD contend with GSD's
+  // own current-directory handle. Once .gsd exists, pinning it gives the same
+  // fail-closed descendant creation without locking the parent worktree.
+  mkdirSync(projectionRoot, { recursive: true });
+  const handle = openManagedProjectionRootWithRetry(() => openProjectionRoot(projectionRoot));
   try {
-    handle.createDirectory(relative(targetRoot, resolve(directoryPath)).replaceAll("\\", "/"));
+    const logicalPath = relative(projectionRoot, resolve(directoryPath)).replaceAll("\\", "/");
+    if (logicalPath.length > 0) handle.createDirectory(logicalPath);
   } finally {
     handle.close();
   }
   return true;
+}
+
+export function _createInitialProjectionDirectoryForTest(
+  directoryPath: string,
+  openProjectionRoot: (
+    projectionRoot: string,
+  ) => Pick<ProjectionRootIdentityLock, "createDirectory" | "close">,
+): boolean {
+  return createInitialProjectionDirectory(directoryPath, () => true, openProjectionRoot);
 }
 
 export function createManagedProjectionDirectorySync(directoryPath: string): boolean {

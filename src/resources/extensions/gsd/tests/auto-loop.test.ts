@@ -288,7 +288,7 @@ function createLoopTestOrchestration(
         return { kind: "skipped", code: "no-dispatch" as const, reason: "pre-dispatch-skip" };
       }
       if (preDispatchResult.action === "retry") {
-        return { kind: "paused", reason: preDispatchResult.reason };
+        return { kind: "paused", reason: preDispatchResult.reason, failureKind: "runtime-unknown" as const };
       }
 
       const dispatch = await captureAutoSideEffects(() =>
@@ -306,7 +306,7 @@ function createLoopTestOrchestration(
         };
       }
       if (dispatch.result.action === "retry") {
-        return { kind: "paused", reason: dispatch.result.reason };
+        return { kind: "paused", reason: dispatch.result.reason, failureKind: "runtime-unknown" as const };
       }
 
       const data = dispatch.result.data;
@@ -3513,7 +3513,7 @@ test("autoLoop retries next iteration when orchestration reports paused", async 
       advance: async () => {
         advanceCalls++;
         return advanceCalls === 1
-          ? { kind: "paused" as const, reason: "provider transient; retry" }
+          ? { kind: "paused" as const, reason: "provider transient; retry", failureKind: "provider" as const }
           : { kind: "stopped" as const, reason: "done retrying" };
       },
       settle: async () => {},
@@ -5278,7 +5278,11 @@ test("ADR-047 #1655: identical transient pauses trip at the loop outcome boundar
     const session = makeLoopSession({ currentMilestoneId: "M001" });
     session.orchestration = {
       start: async () => ({ kind: "stopped" as const, reason: "unused" }),
-      advance: async () => ({ kind: "paused" as const, reason: "transient: database is locked" }),
+      advance: async () => ({
+        kind: "paused" as const,
+        reason: "transient: database is locked",
+        failureKind: "runtime-unknown" as const,
+      }),
       settle: async () => {},
       completeActiveUnit: async () => {},
       retryActiveUnit: async () => {},
@@ -5336,7 +5340,8 @@ test("#1852: projection-lock transient pauses exhaust their backoff and never we
       advanceCalls++;
       return {
         kind: "paused" as const,
-        reason: "projection root operation failed: file in use (os error 32)",
+        reason: "Projection root busy: native projection root identity locking failed",
+        failureKind: "projection-lock-transient" as const,
         backoffMs: [1, 1, 1],
       };
     },

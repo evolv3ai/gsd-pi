@@ -8,7 +8,7 @@
 | `/gsd next` | Explicit step mode (same as `/gsd`) |
 | `/gsd auto` | Autonomous mode — research, plan, execute, commit, repeat |
 | `/gsd auto --resume-wedge <id>` | Acknowledge the named liveness wedge and re-enter auto mode after applying its sanctioned recovery |
-| `/gsd quick` | Execute a quick task with GSD guarantees (atomic commits, state tracking) without full planning overhead |
+| `/gsd quick [--discuss] [--research] [--validate] [--full] <task>` | Execute a quick task with GSD guarantees; optionally add discussion, research, plan checking, and post-execution verification (`--full` enables all three stages) |
 | `/gsd do <text>` | Route freeform text to the right GSD command |
 | `/gsd stop` | Stop auto mode gracefully |
 | `/gsd pause` | Pause auto-mode (preserves state, `/gsd auto` to resume) |
@@ -53,6 +53,8 @@
 | `/gsd help` | Categorized command reference with descriptions for all GSD subcommands |
 
 `/gsd discuss` supports optional direct targets: `/gsd discuss M014`, `/gsd discuss M014/S03`, `/gsd discuss --milestone M014`, and `/gsd discuss --slice M014/S03`.
+
+Quick-task right-sizing flags are composable. Use `--discuss` to surface design choices before planning, `--research` to investigate approaches first, and `--validate` to add plan checking and independent post-execution verification. Passing all three is equivalent to `--full`; passing none preserves the lightweight quick-task flow.
 
 ## Visual Briefs
 
@@ -119,6 +121,7 @@ After writing the file, GSD attempts to open it in a browser using the local pla
 | `/gsd reset-slice` | Reopen the full terminal slice and every terminal task in one guarded database operation, preserve prior execution history, then refresh readable status |
 | `/gsd park` | Park a milestone — skip without deleting |
 | `/gsd unpark` | Reactivate a parked milestone |
+| `/gsd discard <milestone-id>` | Confirm and permanently discard one milestone without entering the smart-entry flow |
 | `/gsd rethink` | Conversational project reorganization — reorder, park, discard unadopted work, or add milestones |
 | Discard milestone | Available via `/gsd` wizard → "Milestone actions" → "Discard"; milestones with adopted canonical lifecycle history must be parked instead |
 
@@ -422,6 +425,7 @@ The following commands are sent directly in your **Telegram chat** to a configur
 | `gsd remove <source>` | Remove a previously installed extension |
 | `gsd list` | List installed extensions |
 | `gsd graph <subcommand>` | Build, query, status, or diff the project knowledge graph built from `.gsd/` artifacts |
+| `gsd quick <task>` | Execute a quick task without a TUI (alias for `gsd headless quick <task>`) |
 | `gsd headless --json` | Structured JSONL event stream to stdout for scripting, CI, and troubleshooting (alias: `--output-format stream-json`) |
 | `gsd headless new-milestone` | Create a new milestone from a context file (headless — no TUI required) |
 
@@ -435,6 +439,9 @@ gsd headless
 
 # Run a single unit
 gsd headless next
+
+# Execute a quick task and return task, branch, artifact, commit, and exit details
+gsd quick --output-format json "fix the login button on mobile"
 
 # Instant JSON snapshot — no LLM, ~50ms
 gsd headless query
@@ -474,6 +481,17 @@ echo "Build a CLI tool" | gsd headless new-milestone --context -
 In JSON output summaries, headless can also return `status: "no-work-deterministic"` for repeatable no-progress tails (for example select → input → cancelled). This status exits with code `1` and suppresses automatic restart loops.
 
 Any `/gsd` subcommand works as a positional argument — `gsd headless status`, `gsd headless doctor`, `gsd headless dispatch execute`, etc.
+
+### `gsd headless discard-milestone`
+
+Deletes one or more DB-only orphan milestone reservations without starting an RPC session or running projection reconciliation. The mandatory `--orphan-only` guard preflights the complete set and refuses if any target has hierarchy or artifact rows, planning content, a disk projection, queue/dependency references, a worktree or milestone branch, or an active lease/dispatch/worker. No target is deleted unless every target passes; successful deletion occurs in one transaction.
+
+```bash
+gsd headless discard-milestone M015 --orphan-only
+gsd headless discard-milestone M015 M016 --orphan-only
+```
+
+The command always writes one structured JSON object with `before` and `after` snapshots. Exit `0` means every requested row was removed and the canonical post-delete query found none; exit `1` is a refusal or error.
 
 ### `gsd headless recover`
 

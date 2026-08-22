@@ -191,6 +191,43 @@ describe("validateToolArguments integration", () => {
 		assert.deepEqual(validated.verificationEvidence, evidence);
 	});
 
+	test("accepts item-wrapped string fields for gsd_task_complete", () => {
+		const tool = {
+			name: "gsd_task_complete",
+			description: "complete task",
+			parameters: Type.Object({
+				verification: Type.Optional(Type.String()),
+				deviations: Type.Optional(Type.String()),
+				knownIssues: Type.Optional(Type.String()),
+				failureModes: Type.Optional(Type.String()),
+				loadProfile: Type.Optional(Type.String()),
+				negativeTests: Type.Optional(Type.String()),
+			}),
+		};
+		const validated = validateToolArguments(tool, {
+			type: "toolCall",
+			id: "complete-task-2",
+			name: "gsd_task_complete",
+			arguments: {
+				verification: { item: "npm test passed" },
+				deviations: { item: "None." },
+				knownIssues: { item: "Scenario 3b out-of-scope" },
+				failureModes: { item: "Dependency outage" },
+				loadProfile: { item: "Ten requests per second" },
+				negativeTests: { item: "Malformed input rejected" },
+			},
+		});
+
+		assert.deepEqual(validated, {
+			verification: "npm test passed",
+			deviations: "None.",
+			knownIssues: "Scenario 3b out-of-scope",
+			failureModes: "Dependency outage",
+			loadProfile: "Ten requests per second",
+			negativeTests: "Malformed input rejected",
+		});
+	});
+
 	test("accepts Edit calls that use Cursor-style old_string/new_string", () => {
 		const tool = {
 			name: "edit",

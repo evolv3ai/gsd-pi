@@ -306,11 +306,15 @@ test('HeadlessJsonResult accepts optional fields', () => {
     milestone: 'M001',
     phase: 'planning',
     nextAction: 'fix blocker',
+    task: { number: 7, slug: 'fix-login', description: 'fix login' },
+    branch: 'gsd/quick/7-fix-login',
     artifacts: ['ROADMAP.md'],
     commits: ['abc1234'],
   }
   assert.equal(result.sessionId, 'sess-abc')
   assert.equal(result.milestone, 'M001')
+  assert.equal(result.task?.number, 7)
+  assert.equal(result.branch, 'gsd/quick/7-fix-login')
   assert.deepEqual(result.artifacts, ['ROADMAP.md'])
   assert.deepEqual(result.commits, ['abc1234'])
 })

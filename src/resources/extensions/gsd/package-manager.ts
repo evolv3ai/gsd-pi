@@ -9,6 +9,39 @@ import { join } from "node:path";
 export type PackageManager = "npm" | "pnpm" | "yarn" | "bun";
 
 /**
+ * Make a relative package-manager executable path safe for cmd.exe.
+ *
+ * cmd.exe does not reliably treat `app/pnpm.cmd` as a path in command
+ * position. Keep Unix commands untouched, but on Windows emit the native,
+ * explicitly-relative form (`.\\app\\pnpm.cmd`).
+ */
+export function normalizeWindowsPackageManagerCommand(
+  command: string,
+  platform: NodeJS.Platform = process.platform,
+): string {
+  if (platform !== "win32") return command;
+
+  const match = command.match(/^(\s*)(?:(["'])(.*?)\2|(\S+))(.*)$/s);
+  if (!match) return command;
+
+  const executable = match[3] ?? match[4] ?? "";
+  if (!executable.includes("/") || !/(?:^|[\\/])(?:npm|pnpm|yarn|bun)(?:\.cmd|\.bat|\.exe)?$/i.test(executable)) {
+    return command;
+  }
+
+  let nativeExecutable = executable.replaceAll("/", "\\");
+  const isExplicitPath =
+    nativeExecutable.startsWith(".\\") ||
+    nativeExecutable.startsWith("..\\") ||
+    nativeExecutable.startsWith("\\") ||
+    /^[A-Za-z]:\\/.test(nativeExecutable);
+  if (!isExplicitPath) nativeExecutable = `.\\${nativeExecutable}`;
+
+  const quote = match[2] ?? "";
+  return `${match[1]}${quote}${nativeExecutable}${quote}${match[5]}`;
+}
+
+/**
  * Detect the package manager used by a project.
  *
  * Detection order (first match wins):

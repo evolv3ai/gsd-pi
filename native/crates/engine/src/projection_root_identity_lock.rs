@@ -77,6 +77,8 @@ const FILE_SHARE_WRITE: u32 = 0x0000_0002;
 const FILE_SHARE_DELETE: u32 = 0x0000_0004;
 
 static TEMPORARY_SEQUENCE: AtomicU64 = AtomicU64::new(0);
+#[cfg(any(windows, test))]
+const WINDOWS_OPERATION_RETRY_DELAYS_MS: [u64; 4] = [5, 10, 20, 40];
 #[cfg(feature = "test-fault-injection")]
 static MUTATION_BOUNDARY_FAULT: AtomicU8 = AtomicU8::new(0);
 
@@ -1942,6 +1944,33 @@ fn projection_path_error(path: &Path, error: std::io::Error) -> Error {
     projection_error(format!("{}: {error}", path.display()))
 }
 
+#[cfg(any(windows, test))]
+fn retry_windows_projection_operation<T>(
+    operation: &str,
+    mut attempt_operation: impl FnMut() -> std::io::Result<T>,
+    mut wait: impl FnMut(u64),
+) -> Result<T> {
+    for attempt in 0..=WINDOWS_OPERATION_RETRY_DELAYS_MS.len() {
+        match attempt_operation() {
+            Ok(value) => return Ok(value),
+            Err(error) => {
+                if is_windows_sharing_violation(&error) {
+                    if let Some(delay_ms) = WINDOWS_OPERATION_RETRY_DELAYS_MS.get(attempt) {
+                        wait(*delay_ms);
+                        continue;
+                    }
+                    return Err(projection_error(format!(
+                        "transient projection root sharing violation while {operation} after {} attempts: another process holds an incompatible handle ({error})",
+                        attempt + 1,
+                    )));
+                }
+                return Err(projection_error(format!("while {operation}: {error}")));
+            }
+        }
+    }
+    unreachable!("bounded Windows projection operation loop always returns")
+}
+
 /// Clears the thread-local errno before a readdir loop so a null return can
 /// distinguish end-of-directory from an I/O error. Without this, an I/O error
 /// would silently truncate listings that feed fail-closed occupant checks.
@@ -2092,20 +2121,26 @@ fn delete_windows_node(path: &Path, directory: bool) -> Result<()> {
 
 #[cfg(windows)]
 fn open_windows_delete_node(path: &Path) -> Result<File> {
-    let file = OpenOptions::new()
-        .access_mode(DELETE_ACCESS | FILE_READ_ATTRIBUTES | GENERIC_READ | GENERIC_WRITE)
-        // This is the shared (non-exclusive) delete-capable handle used to
-        // rename/delete existing projection and control files during journaled
-        // publication and exchange. It must include FILE_SHARE_DELETE so that
-        // when several such handles to the target, temporary, replaced, intent,
-        // and guard files are open at once, each other's rename/delete does not
-        // fault with ERROR_SHARING_VIOLATION (os error 32). This mirrors the
-        // FILE_SHARE_DELETE already carried by the temporary-file opens; callers
-        // that require exclusivity use `open_windows_exclusive_delete_node`.
-        .share_mode(0x0000_0001 | 0x0000_0002 | FILE_SHARE_DELETE)
-        .custom_flags(FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT)
-        .open(path)
-        .map_err(|error| projection_path_error(path, error))?;
+    let operation = format!("opening projection child at {}", path.display());
+    let file = retry_windows_projection_operation(
+        &operation,
+        || {
+            OpenOptions::new()
+                .access_mode(DELETE_ACCESS | FILE_READ_ATTRIBUTES | GENERIC_READ | GENERIC_WRITE)
+                // This is the shared (non-exclusive) delete-capable handle used to
+                // rename/delete existing projection and control files during journaled
+                // publication and exchange. It must include FILE_SHARE_DELETE so that
+                // when several such handles to the target, temporary, replaced, intent,
+                // and guard files are open at once, each other's rename/delete does not
+                // fault with ERROR_SHARING_VIOLATION (os error 32). This mirrors the
+                // FILE_SHARE_DELETE already carried by the temporary-file opens; callers
+                // that require exclusivity use `open_windows_exclusive_delete_node`.
+                .share_mode(0x0000_0001 | 0x0000_0002 | FILE_SHARE_DELETE)
+                .custom_flags(FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT)
+                .open(path)
+        },
+        |delay_ms| std::thread::sleep(std::time::Duration::from_millis(delay_ms)),
+    )?;
     let information = windows_file_information(&file)?;
     if information.file_attributes & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
         return Err(Error::new(
@@ -2394,18 +2429,28 @@ fn delete_windows_handle(file: File, directory: bool) -> Result<()> {
             "projection root contains an unsupported node".to_owned(),
         ));
     }
-    let mut disposition = WindowsFileDispositionInformation { delete_file: 1 };
-    let result = unsafe {
-        SetFileInformationByHandle(
-            file.as_raw_handle(),
-            FILE_DISPOSITION_INFO_CLASS,
-            (&mut disposition as *mut WindowsFileDispositionInformation).cast(),
-            std::mem::size_of::<WindowsFileDispositionInformation>() as u32,
-        )
-    };
-    if result == 0 {
-        return Err(projection_error(std::io::Error::last_os_error()));
-    }
+    let path_units = windows_handle_path(&file)?;
+    let path = String::from_utf16_lossy(&path_units);
+    let operation = format!("deleting projection child at {path}");
+    retry_windows_projection_operation(
+        &operation,
+        || {
+            let mut disposition = WindowsFileDispositionInformation { delete_file: 1 };
+            let result = unsafe {
+                SetFileInformationByHandle(
+                    file.as_raw_handle(),
+                    FILE_DISPOSITION_INFO_CLASS,
+                    (&mut disposition as *mut WindowsFileDispositionInformation).cast(),
+                    std::mem::size_of::<WindowsFileDispositionInformation>() as u32,
+                )
+            };
+            if result == 0 {
+                return Err(std::io::Error::last_os_error());
+            }
+            Ok(())
+        },
+        |delay_ms| std::thread::sleep(std::time::Duration::from_millis(delay_ms)),
+    )?;
     drop(file);
     Ok(())
 }
@@ -4578,6 +4623,12 @@ fn windows_handle_path(file: &File) -> Result<Vec<u16>> {
 
 #[cfg(windows)]
 fn rename_windows_handle(file: &File, target: &Path, parent: Option<&File>) -> Result<()> {
+    let source_units = windows_handle_path(file)?;
+    let source = String::from_utf16_lossy(&source_units);
+    let operation = format!(
+        "renaming projection child from {source} to {}",
+        target.display(),
+    );
     let raw: Vec<u16> = target.as_os_str().encode_wide().collect();
     let (name, root_directory) = windows_rename_target(parent, &raw);
     let root_offset = (std::mem::size_of::<u32>() + std::mem::align_of::<usize>() - 1)
@@ -4595,26 +4646,30 @@ fn rename_windows_handle(file: &File, target: &Path, parent: Option<&File>) -> R
         information[offset..offset + std::mem::size_of::<u16>()]
             .copy_from_slice(&value.to_ne_bytes());
     }
-    let mut status_block = WindowsIoStatusBlock {
-        status: 0,
-        information: 0,
-    };
-    let status = unsafe {
-        NtSetInformationFile(
-            file.as_raw_handle(),
-            &mut status_block,
-            information.as_mut_ptr().cast(),
-            information.len() as u32,
-            FILE_RENAME_INFORMATION_NT_CLASS,
-        )
-    };
-    if status < 0 {
-        let code = unsafe { RtlNtStatusToDosError(status) };
-        return Err(projection_error(std::io::Error::from_raw_os_error(
-            code as i32,
-        )));
-    }
-    Ok(())
+    retry_windows_projection_operation(
+        &operation,
+        || {
+            let mut status_block = WindowsIoStatusBlock {
+                status: 0,
+                information: 0,
+            };
+            let status = unsafe {
+                NtSetInformationFile(
+                    file.as_raw_handle(),
+                    &mut status_block,
+                    information.as_mut_ptr().cast(),
+                    information.len() as u32,
+                    FILE_RENAME_INFORMATION_NT_CLASS,
+                )
+            };
+            if status < 0 {
+                let code = unsafe { RtlNtStatusToDosError(status) };
+                return Err(std::io::Error::from_raw_os_error(code as i32));
+            }
+            Ok(())
+        },
+        |delay_ms| std::thread::sleep(std::time::Duration::from_millis(delay_ms)),
+    )
 }
 
 #[cfg(windows)]
@@ -6394,11 +6449,17 @@ fn rename_relative_between_exclusive(
 
 #[cfg(test)]
 mod sharing_violation_tests {
-    use super::{is_windows_sharing_violation, projection_path_error};
+    use super::{
+        is_windows_sharing_violation, projection_path_error, retry_windows_projection_operation,
+    };
     use std::path::Path;
 
     #[cfg(windows)]
-    use super::{open_windows_content_guard, FILE_SHARE_READ, FILE_SHARE_WRITE};
+    use super::{
+        open_windows_content_guard, open_windows_delete_node, open_windows_root_directory,
+        windows_file_identity, windows_identity_string, ProjectionRootIdentityLock,
+        FILE_SHARE_READ, FILE_SHARE_WRITE,
+    };
     #[cfg(windows)]
     use std::fs::OpenOptions;
     #[cfg(windows)]
@@ -6427,6 +6488,141 @@ mod sharing_violation_tests {
         assert!(message.contains(r"C:\repo\.gsd\worktrees\M001"));
         assert!(message.contains("another process holds an incompatible handle"));
         assert!(message.contains("os error 32"));
+    }
+
+    #[test]
+    fn windows_projection_operation_retries_sharing_violations() {
+        let mut attempts = 0;
+        let mut waits = Vec::new();
+        let result = retry_windows_projection_operation(
+            r"renaming projection child from C:\repo\.gsd\old.md to C:\repo\.gsd\new.md",
+            || {
+                attempts += 1;
+                if attempts < 3 {
+                    Err(std::io::Error::from_raw_os_error(32))
+                } else {
+                    Ok("renamed")
+                }
+            },
+            |delay_ms| waits.push(delay_ms),
+        )
+        .unwrap();
+
+        assert_eq!(result, "renamed");
+        assert_eq!(attempts, 3);
+        assert_eq!(waits, vec![5, 10]);
+    }
+
+    #[test]
+    fn windows_projection_operation_exhaustion_names_both_rename_paths() {
+        let mut attempts = 0;
+        let operation =
+            r"renaming projection child from C:\repo\.gsd\old.md to C:\repo\.gsd\new.md";
+        let error = retry_windows_projection_operation(
+            operation,
+            || {
+                attempts += 1;
+                Err::<(), _>(std::io::Error::from_raw_os_error(32))
+            },
+            |_| {},
+        )
+        .unwrap_err();
+        let message = error.to_string();
+
+        assert_eq!(attempts, 5);
+        assert!(message.contains(operation));
+        assert!(message.contains("after 5 attempts"));
+        assert!(message.contains("os error 32"));
+    }
+
+    #[test]
+    fn windows_projection_operation_does_not_retry_permanent_errors() {
+        let mut attempts = 0;
+        let mut waits = Vec::new();
+        let error = retry_windows_projection_operation(
+            r"opening projection child at C:\repo\.gsd\PLAN.md",
+            || {
+                attempts += 1;
+                Err::<(), _>(std::io::Error::from_raw_os_error(5))
+            },
+            |delay_ms| waits.push(delay_ms),
+        )
+        .unwrap_err();
+
+        assert_eq!(attempts, 1);
+        assert!(waits.is_empty());
+        assert!(error.to_string().contains("os error 5"));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn projection_exchange_retries_locked_plan_and_reports_the_operation() {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let directory = std::env::temp_dir().join(format!(
+            "gsd-projection-locked-plan-{}-{nonce}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&directory).unwrap();
+        let plan = directory.join("01-01-PLAN.md");
+        let temporary = directory.join(".gsd-projection-tmp-plan");
+        let guard = directory.join(".gsd-projection-exchange-plan");
+        std::fs::write(&plan, b"old plan").unwrap();
+        std::fs::write(&temporary, b"new plan").unwrap();
+        std::fs::write(&guard, b"").unwrap();
+
+        let root_file = open_windows_root_directory(&directory).unwrap();
+        let (volume, id) = windows_file_identity(&root_file).unwrap();
+        drop(root_file);
+        let mut lock = ProjectionRootIdentityLock::new(
+            directory.to_string_lossy().into_owned(),
+            volume.to_string(),
+            id.to_string(),
+        )
+        .unwrap();
+        let plan_identity =
+            windows_identity_string(&open_windows_delete_node(&plan).unwrap()).unwrap();
+        let temporary_identity =
+            windows_identity_string(&open_windows_delete_node(&temporary).unwrap()).unwrap();
+        let guard_identity =
+            windows_identity_string(&open_windows_delete_node(&guard).unwrap()).unwrap();
+        let held = OpenOptions::new()
+            .read(true)
+            .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE)
+            .open(&plan)
+            .unwrap();
+
+        let message = lock
+            .exchange_paths(
+                "01-01-PLAN.md".to_owned(),
+                ".gsd-projection-tmp-plan".to_owned(),
+                plan_identity.clone(),
+                temporary_identity.clone(),
+                ".gsd-projection-exchange-plan".to_owned(),
+                guard_identity.clone(),
+            )
+            .unwrap_err()
+            .to_string();
+        assert!(message.contains("opening projection child"));
+        assert!(message.contains(plan.to_string_lossy().as_ref()));
+        assert!(message.contains("after 5 attempts"));
+        assert!(message.contains("os error 32"));
+
+        drop(held);
+        lock.exchange_paths(
+            "01-01-PLAN.md".to_owned(),
+            ".gsd-projection-tmp-plan".to_owned(),
+            plan_identity,
+            temporary_identity,
+            ".gsd-projection-exchange-plan".to_owned(),
+            guard_identity,
+        )
+        .unwrap();
+        assert_eq!(std::fs::read(&plan).unwrap(), b"new plan");
+        lock.close().unwrap();
+        std::fs::remove_dir_all(directory).unwrap();
     }
 
     #[cfg(windows)]

@@ -5,6 +5,8 @@ You are executing a GSD quick task — a lightweight, focused unit of work outsi
 **Task directory:** `{{taskDir}}`
 **Branch:** `{{branch}}`
 
+{{qualityInstructions}}
+
 ## Instructions
 
 1. Read the task description above carefully. This is a focused, self-contained task.

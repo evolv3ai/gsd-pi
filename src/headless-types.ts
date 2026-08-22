@@ -34,6 +34,12 @@ export interface HeadlessJsonResult {
   milestone?: string
   phase?: string
   nextAction?: string
+  task?: {
+    number: number
+    slug: string
+    description: string
+  }
+  branch?: string
   artifacts?: string[]
   commits?: string[]
 }

@@ -51,6 +51,15 @@ function normalizeJsonStringCollections(args: Record<string, unknown>, keys: rea
 	}
 }
 
+function normalizeItemWrappedStrings(args: Record<string, unknown>, keys: readonly string[]): void {
+	for (const key of keys) {
+		const value = args[key];
+		if (isRecord(value) && typeof value.item === "string") {
+			args[key] = value.item;
+		}
+	}
+}
+
 function normalizeEditEntry(entry: unknown): void {
 	if (!isRecord(entry)) return;
 	if (typeof entry.oldText !== "string" && typeof entry.old_string === "string") {
@@ -139,6 +148,14 @@ export function normalizeToolArguments(toolName: string, args: unknown): unknown
 
 	if (canonical === "gsd_task_complete" || canonical === "gsd_complete_task") {
 		normalizeJsonStringCollections(args, ["verificationEvidence"]);
+		normalizeItemWrappedStrings(args, [
+			"verification",
+			"deviations",
+			"knownIssues",
+			"failureModes",
+			"loadProfile",
+			"negativeTests",
+		]);
 	}
 
 	return args;
